@@ -1,0 +1,36 @@
+{
+  "name": "Level 1 - Tutorial",
+  "width": 800,
+  "height": 600,
+  "metadata": {
+    "difficulty": "easy",
+    "description": "A simple tutorial level to get started"
+  },
+  "entities": [
+    {
+      "type": "player",
+      "x": 100,
+      "y": 500
+    },
+    {
+      "type": "platform",
+      "x": 0,
+      "y": 550,
+      "width": 800,
+      "height": 50
+    },
+    {
+      "type": "platform",
+      "x": 300,
+      "y": 400,
+      "width": 200,
+      "height": 20
+    },
+    {
+      "type": "enemy",
+      "x": 600,
+      "y": 500,
+      "enemy_type": "basic"
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "name": "Custom Level - Boss Fight",
+  "width": 1200,
+  "height": 900,
+  "metadata": {
+    "difficulty": "hard",
+    "description": "Epic boss battle arena",
+    "has_boss": true
+  },
+  "entities": [
+    {
+      "type": "player",
+      "x": 100,
+      "y": 800
+    },
+    {
+      "type": "platform",
+      "x": 0,
+      "y": 850,
+      "width": 1200,
+      "height": 50
+    },
+    {
+      "type": "platform",
+      "x": 300,
+      "y": 700,
+      "width": 200,
+      "height": 20
+    },
+    {
+      "type": "platform",
+      "x": 700,
+      "y": 600,
+      "width": 200,
+      "height": 20
+    },
+    {
+      "type": "platform",
+      "x": 500,
+      "y": 500,
+      "width": 200,
+      "height": 20
+    },
+    {
+      "type": "enemy",
+      "x": 400,
+      "y": 680,
+      "enemy_type": "basic"
+    },
+    {
+      "type": "enemy",
+      "x": 800,
+      "y": 580,
+      "enemy_type": "fast"
+    },
+    {
+      "type": "enemy",
+      "x": 600,
+      "y": 480,
+      "enemy_type": "boss"
+    }
+  ]
+}
