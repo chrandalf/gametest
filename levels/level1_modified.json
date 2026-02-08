@@ -1,0 +1,49 @@
+{
+  "name": "Level 1 - Modified",
+  "width": 800,
+  "height": 600,
+  "metadata": {
+    "difficulty": "easy",
+    "description": "A simple tutorial level to get started"
+  },
+  "entities": [
+    {
+      "type": "player",
+      "x": 100,
+      "y": 500
+    },
+    {
+      "type": "platform",
+      "x": 0,
+      "y": 550,
+      "width": 800,
+      "height": 50
+    },
+    {
+      "type": "platform",
+      "x": 300,
+      "y": 400,
+      "width": 200,
+      "height": 20
+    },
+    {
+      "type": "enemy",
+      "x": 600,
+      "y": 500,
+      "enemy_type": "basic"
+    },
+    {
+      "type": "platform",
+      "x": 600,
+      "y": 300,
+      "width": 150,
+      "height": 20
+    },
+    {
+      "type": "enemy",
+      "x": 650,
+      "y": 280,
+      "enemy_type": "fast"
+    }
+  ]
+}
