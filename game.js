@@ -2,6 +2,12 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
+// Constants
+const BASE_SCORE_PER_LEVEL = 100;
+const MAX_LAUNCH_SPEED = 20;
+const MIN_GAP_HEIGHT = 40;
+const MAX_GAP_REDUCTION = 60;
+
 // Game State
 let gameState = {
     level: 1,
@@ -226,7 +232,7 @@ function createLevel(levelNum) {
         default:
             // Progressive difficulty - gaps get smaller and more offset
             const numGaps = Math.min(2 + Math.floor(levelNum / 3), 4);
-            const gapHeight = Math.max(40, 100 - levelNum * 3);
+            const gapHeight = Math.max(MIN_GAP_HEIGHT, 100 - Math.min(levelNum * 3, MAX_GAP_REDUCTION));
             const spacing = canvas.height / (numGaps + 1);
             
             for (let i = 0; i < numGaps; i++) {
@@ -369,7 +375,7 @@ function gameLoop() {
 
 // Level complete
 function levelComplete() {
-    gameState.score += 100 * gameState.level;
+    gameState.score += BASE_SCORE_PER_LEVEL * gameState.level;
     gameState.level++;
     
     showMessage(`Level Complete! 🎯`, "success");
@@ -432,7 +438,7 @@ document.getElementById('launchBtn').addEventListener('click', () => {
     const angleRad = (angle * Math.PI) / 180;
     
     // Calculate velocity components
-    const speed = power / 100 * 20;
+    const speed = power / 100 * MAX_LAUNCH_SPEED;
     const vx = Math.cos(angleRad) * speed;
     const vy = -Math.sin(angleRad) * speed;
     
