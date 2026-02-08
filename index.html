@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slingshot Challenge</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="game-container">
+        <div class="header">
+            <h1>Slingshot Challenge</h1>
+            <div class="game-info">
+                <div class="info-item">Level: <span id="level">1</span></div>
+                <div class="info-item">Score: <span id="score">0</span></div>
+                <div class="info-item">Shots: <span id="shots">0</span></div>
+            </div>
+        </div>
+        
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label for="angleSlider">Angle: <span id="angleValue">45</span>°</label>
+                <input type="range" id="angleSlider" min="10" max="80" value="45" step="1">
+            </div>
+            <div class="control-group">
+                <label for="powerSlider">Power: <span id="powerValue">50</span>%</label>
+                <input type="range" id="powerSlider" min="10" max="100" value="50" step="1">
+            </div>
+            <button id="launchBtn" class="launch-btn">Launch!</button>
+            <button id="resetBtn" class="reset-btn">Reset Level</button>
+        </div>
+        
+        <div class="instructions">
+            <h3>How to Play:</h3>
+            <p>Adjust the angle and power, then launch the ball over the wall to hit the target!</p>
+            <p>Each level adds more challenging wall configurations.</p>
+        </div>
+    </div>
+    
+    <script src="game.js"></script>
+</body>
+</html>
