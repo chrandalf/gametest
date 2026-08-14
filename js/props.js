@@ -64,6 +64,8 @@ class ToiletStreamer {
     this.prev = [];
     this.spin = 0;
     this.unroll = 1.2;
+    this.detached = false;
+    this.detachT = 0;
     this.mesh = new DynamicMesh(gl, this.N * 4 + 8, this.N * 12 + 24);
     this.builder = new MeshBuilder();
     this.ready = false;
@@ -90,17 +92,35 @@ class ToiletStreamer {
     if (dt <= 0) return;
     const speed = car.speed;
     // Unrolled length chases the speed, and never winds back up.
-    const target = clamp(1.0 + speed * 0.34, 1.0, 9.0);
+    const MAXLEN = 17.0;
+    const target = clamp(1.0 + speed * 0.62, 1.0, MAXLEN);
     this.unroll = Math.max(this.unroll, target);
     this.unroll += (Math.max(target, this.unroll * 0.995) - this.unroll) * Math.min(1, dt * 0.8);
     this.spin += speed * dt * 1.6;
+
+    // Once the whole roll is out and you are still going, it tears off the door
+    // and tumbles away; a fresh roll is on the parcel shelf a few seconds later.
+    if (!this.detached && this.unroll >= MAXLEN - 0.05 && speed > 16) {
+      this.detached = true;
+      this.detachT = 0;
+      this.torn = true;
+    }
+    if (this.detached) {
+      this.detachT += dt;
+      if (this.detachT > 6) {
+        this.detached = false;
+        this.unroll = 1.0;
+        this.reset(car);
+        this.torn = false;
+      }
+    }
 
     const seg = this.unroll / (this.N - 1);
     const a = this.anchorWorld(car);
     const drag = Math.exp(-2.6 * dt);
     // Paper is light: it barely falls, and the wake behind a moving car lifts it
     // and shakes it about. Lift fades out above head height so it cannot balloon.
-    const GRAV = -3.4;
+    const GRAV = -GRAVITY * 0.35;   // paper falls slowly through air
     const wake = Math.min(speed * 0.5, 13);
 
     for (let i = 1; i < this.N; i++) {
@@ -118,8 +138,16 @@ class ToiletStreamer {
       p[2] += vz + az * dt * dt;
       if (p[1] < 0.05) { p[1] = 0.05; p[0] -= vx * 0.4; p[2] -= vz * 0.4; }
     }
-    this.pts[0][0] = a[0]; this.pts[0][1] = a[1]; this.pts[0][2] = a[2];
-    this.prev[0][0] = a[0]; this.prev[0][1] = a[1]; this.prev[0][2] = a[2];
+    if (!this.detached) {
+      this.pts[0][0] = a[0]; this.pts[0][1] = a[1]; this.pts[0][2] = a[2];
+      this.prev[0][0] = a[0]; this.prev[0][1] = a[1]; this.prev[0][2] = a[2];
+    } else {
+      const p0 = this.pts[0], q0 = this.prev[0];
+      const vx0 = (p0[0]-q0[0]) * drag, vy0 = (p0[1]-q0[1]) * drag, vz0 = (p0[2]-q0[2]) * drag;
+      q0[0] = p0[0]; q0[1] = p0[1]; q0[2] = p0[2];
+      p0[0] += vx0; p0[1] += vy0 - GRAVITY * 0.5 * dt * dt; p0[2] += vz0;
+      if (p0[1] < 0.05) p0[1] = 0.05;
+    }
 
     // Keep the segments a fixed distance apart.
     for (let iter = 0; iter < 3; iter++) {
@@ -128,7 +156,7 @@ class ToiletStreamer {
         let dx = q[0]-p[0], dy = q[1]-p[1], dz = q[2]-p[2];
         const d = Math.hypot(dx, dy, dz) || 1e-4;
         const diff = (d - seg) / d * 0.5;
-        const mp = i === 0 ? 0 : 1;
+        const mp = (i === 0 && !this.detached) ? 0 : 1;
         p[0] += dx * diff * mp; p[1] += dy * diff * mp; p[2] += dz * diff * mp;
         q[0] -= dx * diff; q[1] -= dy * diff; q[2] -= dz * diff;
       }

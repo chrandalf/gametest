@@ -1,6 +1,10 @@
 // Vehicles, traffic AI, pedestrians and the on-foot character.
 'use strict';
 
+// Earth gravity, in metres per second squared. Everything in this file works in
+// real units: metres, seconds, metres per second.
+const GRAVITY = 9.81;
+
 // ------------------------------------------------------------- geometry -----
 
 // The body is a lofted shell: a series of cross-sections down the length of the
@@ -110,15 +114,15 @@ function loft(b, sections, opt) {
 
 function buildCarMeshes(gl) {
   const paint = new MeshBuilder();
-  paint.style(TEX.METAL, [1, 1, 1], 0);
+  paint.style(TEX.METAL, [1, 1, 1], -0.001);   // negative emissive = glossy material
   loft(paint, CAR_SECTIONS, { steps: 4 });
   paint.style(TEX.PLAIN, [0.13, 0.13, 0.15], 0);
   paint.chamferBox(0, 0.52, 2.18, 0.90, 0.17, 0.14, 0.10, { perUnit: 1 });   // front bumper
   paint.chamferBox(0, 0.52, -2.20, 0.88, 0.17, 0.13, 0.10, { perUnit: 1 });  // rear bumper
-  paint.style(TEX.PLATE, [1, 1, 1], 0);
-  paint.quad([-0.40, 0.33, 2.30], [0.40, 0.33, 2.30], [0.40, 0.50, 2.30], [-0.40, 0.50, 2.30], 1, 1);
-  paint.style(TEX.PLATE, [1.0, 0.86, 0.18], 0);   // rear plates are yellow here
-  paint.quad([0.40, 0.36, -2.32], [-0.40, 0.36, -2.32], [-0.40, 0.53, -2.32], [0.40, 0.53, -2.32], 1, 1);
+  paint.style(TEX.PLATE, [1.35, 1.35, 1.32], 0.30);
+  paint.quad([-0.50, 0.30, 2.315], [0.50, 0.30, 2.315], [0.50, 0.55, 2.315], [-0.50, 0.55, 2.315], 1, 1);
+  paint.style(TEX.PLATE, [1.5, 1.24, 0.26], 0.34);   // rear plates are yellow here
+  paint.quad([0.50, 0.33, -2.335], [-0.50, 0.33, -2.335], [-0.50, 0.58, -2.335], [0.50, 0.58, -2.335], 1, 1);
   // Wing mirrors — small, but their absence is very noticeable.
   paint.style(TEX.METAL, [1, 1, 1], 0);
   for (const s of [-1, 1]) {
@@ -126,7 +130,7 @@ function buildCarMeshes(gl) {
   }
 
   const glass = new MeshBuilder();
-  glass.style(TEX.PLAIN, [0.11, 0.15, 0.21], 0);
+  glass.style(TEX.PLAIN, [0.11, 0.15, 0.21], -0.001);
   loft(glass, CABIN_SECTIONS, { steps: 4 });
 
   const lights = new MeshBuilder();
@@ -223,6 +227,10 @@ class Vehicle {
     this.ai = null;
     this.radius = 1.7;
     this.crashImpulse = 0;
+    this.y = 0; this.vy = 0;
+    this.airborne = false;
+    this.spinPitch = 0; this.spinRoll = 0;
+    this.spinPitchRate = 0; this.spinRollRate = 0;
   }
 
   get speed() { return Math.hypot(this.vx, this.vz); }
@@ -276,6 +284,50 @@ class Vehicle {
     this.x += this.vx * dt;
     this.z += this.vz * dt;
 
+    // Vertical: ramps push the car up, gravity brings it back.
+    const ramps = game.ramps;
+    const deck = (ramps && !this.airborne) ? ramps.heightAt(this.x, this.z) : null;
+    if (deck && !this.airborne) {
+      this.y = deck.y;
+      this.onRamp = deck;
+    } else if (!this.airborne && this.onRamp) {
+      // Left the ramp footprint: launch from wherever it was on the wedge. This
+      // triggers on exit rather than inside a narrow window at the lip, which a
+      // fast car can skip over entirely in one frame.
+      const launched = this.onRamp;
+      this.onRamp = null;
+      if (this.y > 0.25 && vf > 6) {
+        this.airborne = true;
+        this.vy = Math.abs(vf) * launched.slope * 1.35;   // m/s straight up
+        this.spinPitchRate = 0; this.spinRollRate = 0;
+      } else {
+        this.y = 0;
+      }
+    } else if (this.airborne) {
+      this.vy -= GRAVITY * dt;
+      this.y += this.vy * dt;
+      // In the air the driver can pitch and roll the car for style.
+      this.spinPitchRate += (steerIn === 0 ? -this.spinPitchRate * 2.5 : 0) * dt;
+      if (throttle !== 0) this.spinPitchRate = clamp(this.spinPitchRate + throttle * 5.5 * dt, -7, 7);
+      if (steerIn !== 0) this.spinRollRate = clamp(this.spinRollRate + steerIn * 6.5 * dt, -8, 8);
+      this.spinPitch += this.spinPitchRate * dt;
+      this.spinRoll += this.spinRollRate * dt;
+      if (this.y <= 0) {
+        this.y = 0;
+        this.airborne = false;
+        this.crashImpulse = Math.max(this.crashImpulse, Math.min(1, -this.vy / 22));
+        this.vy = 0;
+        // Straighten up on landing, losing speed if it was badly judged.
+        const messy = Math.abs(Math.sin(this.spinRoll)) + Math.abs(Math.sin(this.spinPitch));
+        this.vx *= 1 - clamp(messy * 0.3, 0, 0.6);
+        this.vz *= 1 - clamp(messy * 0.3, 0, 0.6);
+        this.spinPitch = 0; this.spinRoll = 0;
+        this.spinPitchRate = 0; this.spinRollRate = 0;
+      }
+    } else {
+      this.y = 0;
+    }
+
     // Body attitude for a bit of weight transfer.
     // Both terms lean the body outward through a corner; the yaw term used to
     // fight the slip term because it was tuned against a mirrored model matrix.
@@ -288,7 +340,7 @@ class Vehicle {
     this.slip = Math.abs(vr);
     this.steerRate = yawRate;
 
-    if (city) this.collide(city);
+    if (city && !this.airborne) this.collide(city);
   }
 
   collide(city) {
@@ -316,7 +368,8 @@ class Vehicle {
   }
 
   modelMatrix(out) {
-    return M4.compose(out, this.x, 0, this.z, this.yaw, this.pitch, this.roll, 1, 1, 1);
+    return M4.compose(out, this.x, this.y, this.z, this.yaw,
+                      this.pitch + this.spinPitch, this.roll + this.spinRoll, 1, 1, 1);
   }
 }
 
@@ -412,7 +465,7 @@ class Pedestrian {
     if (this.knocked > 0) {
       this.knocked -= dt;
       this.y += this.vy * dt;
-      this.vy -= 22 * dt;
+      this.vy -= GRAVITY * dt;
       this.x += this.vx * dt;
       this.z += this.vz * dt;
       this.vx *= 0.97; this.vz *= 0.97;

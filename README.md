@@ -38,6 +38,7 @@ node tools/bundle.js            # writes dist/nightfall-city.html (~105 KB)
 | `R` | respawn on the nearest road |
 | `T` | skip four hours |
 | `G` | start / cancel a time trial across the city |
+| ramps | hit one to launch — `A`/`D` for barrel rolls, `W`/`S` for flips |
 | `V` | start / stop recording a video clip |
 | `[` `]` | recording brightness |
 | `U` | hide the whole HUD for clean footage |
@@ -92,6 +93,16 @@ into things.
   capsules; cylinders carry radial normals so nothing looks faceted
 
 **Rendering**
+- Physically-sane lighting: albedo and tints are converted from sRGB to linear,
+  light is summed in linear space, and the result is tone mapped with an ACES
+  filmic curve — the single biggest difference between "flat" and "lit"
+- HDR pipeline at RGBA16F with 4x MSAA, resolved and run through a threshold /
+  separable-blur bloom chain, so lit windows, headlights and the sun disc bleed
+  the way bright things actually do
+- Fresnel-weighted specular: surfaces turn reflective at grazing angles, and car
+  paint and glass are flagged glossy for a tighter highlight
+- Colour grade on the way out: cool shadows, warm highlights, gentle S-curve,
+  vignette
 - Deferred-free forward renderer with a 2048² shadow map (hardware PCF, texel-snapped
   to stop crawling, faded at the edges)
 - Up to 16 dynamic point/spot lights — street lamps pool on the road, headlights
@@ -108,6 +119,13 @@ into things.
 - Buildings generated per lot with facade styles, shop fronts, parapets, roof
   clutter, water towers, setback towers and aircraft warning lights
 - Density and height fall off from downtown
+
+**Action**
+- Stunt ramps scattered on straight stretches. Air time, barrel rolls and flips
+  are tracked and scored, with a bonus for landing on the wheels
+- Real gravity: 9.81 m/s², with the whole simulation in metres and seconds
+- Rooftop snipers track the car with a laser that lags behind you, so holding a
+  straight line is what gets you hit. A hit shoves the car and rocks the camera
 
 **Details**
 - Lock the tyres up and they squeal — filtered noise driven by combined slide and

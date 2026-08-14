@@ -41,6 +41,7 @@ class City {
     this.buildings = [];      // minimap footprints
     this.parks = [];
     this.lights = [];         // street lamp positions, used for night point lights
+    this.ramps = new RampSet();
     this.chunks = [];
     this.hash = new Map();
     this.hashCell = 24;
@@ -213,6 +214,18 @@ class City {
           }
         }
       }
+    }
+
+    // Stunt ramps: a handful on straight stretches, facing along the road.
+    for (let n = 0; n < 7; n++) {
+      const horiz = rand() < 0.5;
+      const i = 1 + ((rand() * (GRID - 2)) | 0), j = 1 + ((rand() * (GRID - 2)) | 0);
+      const along = roadCenter(horiz ? j : i) + (rand() - 0.5) * (CELL * 0.4);
+      const across = roadCenter(horiz ? i : j) - LANE;
+      const x = horiz ? along : across;
+      const z = horiz ? across : along;
+      const yaw = horiz ? (rand() < 0.5 ? Math.PI / 2 : -Math.PI / 2) : (rand() < 0.5 ? 0 : Math.PI);
+      this.ramps.emit(chunkAt(i, j), x, z, yaw, 9.5, 6.4, 2.1);
     }
 
     for (const bld of builders) {

@@ -42,6 +42,7 @@ function start() {
 
   const t0 = performance.now();
   game.city = new City(gl, 20260814);
+  game.ramps = game.city.ramps;
   game.carMeshes = buildCarMeshes(gl);
   game.cube = buildCubeMesh(gl);
   game.body = buildBodyMeshes(gl);
@@ -50,6 +51,7 @@ function start() {
   game.dog = new NoddingDog();
   game.streamer = new ToiletStreamer(gl);
   game.skids = new SkidMarks(gl, 460);
+  game.stunts = new StuntTracker();
   game.markerBeam = buildMarkerMesh(gl, 1.5, 1.35, 70);
   console.log(`city built in ${(performance.now() - t0) | 0} ms, ` +
               `${game.city.chunks.length} chunks, ${game.city.buildings.length} buildings`);
@@ -86,6 +88,8 @@ function start() {
     if (game.city.resolveCircle(p, 0.6)) continue;   // spawned inside a wall
     game.peds.push(ped);
   }
+
+  game.snipers = new Snipers(gl, game.city, rand);
 
   nextDrop();
 
@@ -311,7 +315,8 @@ function update(dt) {
     // fast clean corner squeals without the car ever stepping out.
     const lateralG = Math.abs(car.steerRate || 0) * Math.abs(car.forwardSpeed);
     game.tyreLoad = (car.slip || 0) * 2.2 + lateralG * 0.55 + (keys.Space && car.speed > 6 ? 5 : 0);
-    game.skids.track(car, game.tyreLoad, throttle < 0);
+    game.skids.track(car, car.airborne ? 0 : game.tyreLoad, throttle < 0);
+    game.stunts.update(dt, car);
     game.dog.update(dt, car);
     game.streamer.update(dt, car);
   } else {
@@ -392,6 +397,8 @@ function update(dt) {
 
   updateRun(dt);
   updateTrial(dt);
+  game.stunts.tick(dt);
+  game.snipers.update(dt, { x: px, z: pz });
   updateCamera(dt);
   updateAudio(dt);
 }
@@ -509,7 +516,9 @@ function updateRun(dt) {
       say(`OUT OF TIME — ${r.score} delivered`);
       r.score = 0;
       r.streak = 0;
-      nextDrop();
+      game.snipers = new Snipers(gl, game.city, rand);
+
+  nextDrop();
       return;
     }
   }
@@ -526,7 +535,9 @@ function updateRun(dt) {
     say(first ? 'RUN STARTED — get to the next drop' : `DELIVERY ${r.score}  +${bonus | 0}s`);
     game.shake = Math.min(0.5, game.shake + 0.12);
     playThud(0.18);
-    nextDrop();
+    game.snipers = new Snipers(gl, game.city, rand);
+
+  nextDrop();
   }
 }
 
@@ -767,6 +778,7 @@ function render() {
   game.chunksDrawn = drawn;
   drawActors(r, env, false);
   r.drawSky(env);
+  r.present(env);
   gl.bindVertexArray(null);
 }
 
@@ -816,6 +828,14 @@ function drawActors(r, env, shadowPass) {
     drawPerson(r, ped, shadowPass, d);
   }
   if (!game.player.inCar) drawPerson(r, game.player.walker, shadowPass, 0);
+
+  // Sniper lasers.
+  if (!shadowPass && game.snipers.mesh.count) {
+    r.beginTranslucent();
+    r.setMaterial([1, 1, 1], 1.2, 0, 0.75);
+    r.draw(game.snipers.mesh, null);
+    r.endTranslucent();
+  }
 
   // Skid marks lie flat on the road, under everything else.
   if (!shadowPass && game.skids.mesh.count) {
@@ -1165,6 +1185,37 @@ function drawHud() {
   }
   c.textAlign = 'left';
 
+  // --- stunt banner ---
+  if (game.stunts.bannerT > 0) {
+    const a = clamp(game.stunts.bannerT / 0.7, 0, 1);
+    c.save();
+    c.globalAlpha = a;
+    c.textAlign = 'center';
+    c.font = '800 26px system-ui, sans-serif';
+    const tw = c.measureText(game.stunts.banner).width + 56;
+    c.fillStyle = 'rgba(0,0,0,0.55)';
+    roundRect(c, W/2 - tw/2, H * 0.42, tw, 52, 12); c.fill();
+    c.fillStyle = '#ffd34d';
+    c.fillText(game.stunts.banner, W/2, H * 0.42 + 14);
+    c.restore();
+  }
+  if (game.stunts.score > 0) {
+    c.textAlign = 'left';
+    c.fillStyle = 'rgba(255,255,255,0.75)';
+    c.font = '600 12px system-ui, sans-serif';
+    c.fillText(`stunt points ${game.stunts.score}`, 38, 92);
+  }
+  if (game.player.inCar && game.car.airborne) {
+    c.textAlign = 'center';
+    c.fillStyle = '#ffd34d';
+    c.font = '800 20px system-ui, sans-serif';
+    c.fillText('AIRBORNE', W/2, H * 0.36);
+  }
+  if (game.snipers.hitFlash > 0.01) {
+    c.fillStyle = `rgba(190,20,20,${(game.snipers.hitFlash * 0.28).toFixed(3)})`;
+    c.fillRect(0, 0, W, H);
+  }
+
   // --- help ---
   if (game.showHelp) {
     const lines = [
@@ -1173,7 +1224,7 @@ function drawHud() {
       'Shift — boost / sprint   F — get in / out of a car',
       'C — camera   R — respawn   T — skip time   P — pause',
       'V — record video   U — hide HUD   [ ] — clip brightness',
-      'G — time trial across the city',
+      'G — time trial   ramps launch you: steer for rolls, W/S for flips',
       'Click the window for mouse look. H hides this.',
     ];
     const bw = 340, bh = lines.length * 19 + 26;

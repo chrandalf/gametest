@@ -576,11 +576,11 @@ function makeTextureArray(gl) {
   painters[TEX.PLATE] = () => {
     // The square tile is stretched across a 4.7:1 plate, so the glyphs are drawn
     // pre-squashed here and come out correctly proportioned on the car.
-    fill('#f2f2ee');
-    ctx.fillStyle = '#111';
+    fill('#fbfbf7');
+    ctx.fillStyle = '#0a0a0a';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const size = 190;
+    const size = 205;
     ctx.font = `bold ${size}px "Arial Narrow", Arial, system-ui, sans-serif`;
     const w = ctx.measureText(PLATE_TEXT).width || 1;
     ctx.save();

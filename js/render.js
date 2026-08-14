@@ -24,6 +24,7 @@ out vec2 vUV;
 out float vLayer;
 out vec3 vTint;
 out float vEmis;
+out float vGloss;
 out vec4 vLightPos;
 
 void main() {
@@ -33,7 +34,8 @@ void main() {
   vUV = aUV;
   vLayer = aLayer;
   vTint = aTint;
-  vEmis = aEmis;
+  vEmis = abs(aEmis);
+  vGloss = aEmis < 0.0 ? 1.0 : 0.0;    // negative emissive flags a glossy material
   vLightPos = uLightVP * wp;
   gl_Position = uViewProj * wp;
 }`;
@@ -49,6 +51,7 @@ in vec2 vUV;
 in float vLayer;
 in vec3 vTint;
 in float vEmis;
+in float vGloss;
 in vec4 vLightPos;
 
 uniform sampler2DArray uAtlas;
@@ -93,25 +96,38 @@ float sampleShadow(vec3 n, float ndl) {
   return mix(s, 1.0, edge);
 }
 
+vec3 toLinear(vec3 c) { return c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878); }
+
 void main() {
   vec4 tex = texture(uAtlas, vec3(vUV, vLayer));
-  vec3 albedo = tex.rgb * vTint * uTintMul;
+  // Textures and tints are authored in sRGB; light must be summed in linear.
+  vec3 albedo = toLinear(tex.rgb) * toLinear(vTint) * toLinear(uTintMul);
 
   vec3 N = normalize(vNormal);
   float ndl = max(dot(N, uSunDir), 0.0);
   float shadow = ndl > 0.0 ? sampleShadow(N, ndl) : 1.0;
 
   // Hemisphere ambient: sky above, bounced ground light below.
-  vec3 ground = uFogColor * 0.45;
-  vec3 ambient = mix(ground, uSkyColor, N.y * 0.5 + 0.5) * uAmbColor;
+  vec3 skyLin = toLinear(uSkyColor);
+  vec3 fogLin = toLinear(uFogColor);
+  vec3 sunLin = toLinear(uSunColor) * 2.1;
+  vec3 ground = fogLin * 0.45;
+  vec3 ambient = mix(ground, skyLin, N.y * 0.5 + 0.5) * toLinear(uAmbColor) * 1.12;
 
-  vec3 color = albedo * (ambient + uSunColor * ndl * shadow);
+  vec3 color = albedo * (ambient + sunLin * ndl * shadow);
 
-  // Cheap specular sheen so glass and paint catch the sun.
+  // Specular with a Fresnel rim: surfaces go reflective at grazing angles,
+  // which is most of what sells glass, wet-looking asphalt and car paint.
   vec3 V = normalize(uCamPos - vWorld);
   vec3 H = normalize(V + uSunDir);
-  float spec = pow(max(dot(N, H), 0.0), 48.0) * shadow;
-  color += uSunColor * spec * 0.35;
+  float gloss = mix(24.0, 140.0, vGloss);
+  float spec = pow(max(dot(N, H), 0.0), gloss) * shadow;
+  float fres = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+  vec3 f0 = mix(vec3(0.04), albedo, vGloss * 0.35);
+  vec3 fresnel = f0 + (1.0 - f0) * fres;
+  color += sunLin * spec * fresnel * (1.2 + vGloss * 5.0) * ndl;
+  // Sky reflection at glancing angles keeps big flat faces from reading as paper.
+  color += skyLin * fres * mix(0.045, 0.55, vGloss) * shadow;
 
   // Street lamps and headlights.
   for (int i = 0; i < uLightCount; i++) {
@@ -127,17 +143,18 @@ void main() {
       float cd = dot(-Ln, normalize(uLightDir[i].xyz));
       spot = smoothstep(0.55, 0.88, cd);
     }
-    color += albedo * uLightCol[i] * (nd * att * spot);
+    color += albedo * toLinear(uLightCol[i]) * (nd * att * spot) * 3.0;
   }
 
   // Lit windows (alpha channel is the window mask) plus per-vertex emissives.
+  // These deliberately exceed 1.0 so the bloom pass picks them up.
   float mask = tex.a * uWindowMask;
-  float glow = mask * uNight * 1.35 + vEmis * (0.25 + 0.95 * uNight) + uEmisAdd;
-  color += albedo * glow + vec3(1.0, 0.92, 0.78) * (mask * uNight * 0.45);
+  float glow = mask * uNight * 1.9 + vEmis * (0.3 + 2.0 * uNight) + uEmisAdd * 1.6;
+  color += albedo * glow + vec3(1.0, 0.86, 0.62) * (mask * uNight * 0.7);
 
   float dist = length(uCamPos - vWorld);
   float fog = 1.0 - exp(-pow(dist * uFogDensity, 2.0));
-  color = mix(color, uFogColor, clamp(fog, 0.0, 1.0));
+  color = mix(color, fogLin * (1.0 + uNight * 0.4), clamp(fog, 0.0, 1.0));
 
   fragColor = vec4(color, uAlpha);
 }`;
@@ -211,6 +228,86 @@ void main() {
   fragColor = vec4(col, 1.0);
 }`;
 
+// Fullscreen pass shared by every post step.
+const POST_VS = `#version 300 es
+precision highp float;
+out vec2 vUv;
+void main() {
+  vec2 p = vec2((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0);
+  vUv = p * 0.5 + 0.5;
+  gl_Position = vec4(p, 0.0, 1.0);
+}`;
+
+// Bright-pass with a 4-tap box downsample, so the blur starts at half res.
+const BRIGHT_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uTex;
+uniform vec2 uTexel;
+uniform float uThreshold;
+out vec4 fragColor;
+void main() {
+  vec3 c = texture(uTex, vUv + uTexel * vec2(-0.5, -0.5)).rgb
+         + texture(uTex, vUv + uTexel * vec2( 0.5, -0.5)).rgb
+         + texture(uTex, vUv + uTexel * vec2(-0.5,  0.5)).rgb
+         + texture(uTex, vUv + uTexel * vec2( 0.5,  0.5)).rgb;
+  c *= 0.25;
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float k = max(l - uThreshold, 0.0) / max(l, 1e-4);
+  fragColor = vec4(c * k, 1.0);
+}`;
+
+const BLUR_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uTex;
+uniform vec2 uDir;
+out vec4 fragColor;
+void main() {
+  // 9-tap gaussian, run once per axis.
+  vec3 c = texture(uTex, vUv).rgb * 0.227027;
+  c += texture(uTex, vUv + uDir * 1.3846).rgb * 0.316216;
+  c += texture(uTex, vUv - uDir * 1.3846).rgb * 0.316216;
+  c += texture(uTex, vUv + uDir * 3.2308).rgb * 0.070270;
+  c += texture(uTex, vUv - uDir * 3.2308).rgb * 0.070270;
+  fragColor = vec4(c, 1.0);
+}`;
+
+const COMPOSITE_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform float uBloomStrength;
+uniform float uExposure;
+uniform float uNight;
+out vec4 fragColor;
+
+// Narkowicz ACES approximation: the filmic shoulder is what stops bright sky
+// and headlights from flattening into featureless white.
+vec3 aces(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+void main() {
+  vec3 scene = texture(uScene, vUv).rgb;
+  vec3 bloom = texture(uBloom, vUv).rgb;
+  vec3 c = scene + bloom * uBloomStrength;
+  c *= uExposure;
+  c = aces(c);
+
+  // Grade: cool the shadows, warm the highlights, then a soft vignette.
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(c * vec3(0.94, 0.98, 1.10), c * vec3(1.06, 1.01, 0.94), smoothstep(0.15, 0.85, l));
+  c = mix(vec3(l), c, 1.14);                         // a little extra saturation
+  c = clamp((c - 0.5) * 1.09 + 0.5, 0.0, 1.0);       // gentle S-curve on top
+  vec2 d = vUv - 0.5;
+  float vig = smoothstep(0.85, 0.28, dot(d, d) * 2.0);
+  c *= mix(1.0, vig, 0.42 + uNight * 0.18);
+
+  fragColor = vec4(pow(max(c, 0.0), vec3(1.0 / 2.2)), 1.0);
+}`;
+
 class Renderer {
   constructor(canvas) {
     const gl = canvas.getContext('webgl2', {
@@ -244,6 +341,19 @@ class Renderer {
     gl.readBuffer(gl.NONE);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
+    this.brightProg = createProgram(gl, POST_VS, BRIGHT_FS, 'bright');
+    this.blurProg = createProgram(gl, POST_VS, BLUR_FS, 'blur');
+    this.compositeProg = createProgram(gl, POST_VS, COMPOSITE_FS, 'composite');
+    // RGBA16F render targets need this extension; without it we fall back to
+    // 8-bit targets, which still tone map but cannot hold highlights.
+    this.hdr = !!gl.getExtension('EXT_color_buffer_float');
+    this.colorFormat = this.hdr ? gl.RGBA16F : gl.RGBA8;
+    this.samples = 0;
+    this.targets = null;
+    this.exposure = 0.95;
+    this.bloomStrength = 0.8;
+    this.bloomThreshold = 1.5;
+
     this.lightPos = new Float32Array(MAX_LIGHTS * 4);
     this.lightDir = new Float32Array(MAX_LIGHTS * 4);
     this.lightCol = new Float32Array(MAX_LIGHTS * 3);
@@ -265,7 +375,62 @@ class Renderer {
       this.canvas.width = w;
       this.canvas.height = h;
     }
+    this.ensureTargets(this.canvas.width, this.canvas.height);
     return this.canvas.clientWidth / Math.max(1, this.canvas.clientHeight);
+  }
+
+  // Offscreen chain: multisampled HDR -> resolved HDR -> half-res bloom pair.
+  ensureTargets(w, h) {
+    const gl = this.gl;
+    if (this.targets && this.targets.w === w && this.targets.h === h) return;
+    if (this.targets) {
+      const t = this.targets;
+      gl.deleteFramebuffer(t.msaaFbo); gl.deleteFramebuffer(t.resolveFbo);
+      gl.deleteRenderbuffer(t.msaaColor); gl.deleteRenderbuffer(t.msaaDepth);
+      gl.deleteTexture(t.sceneTex);
+      for (const b of t.bloom) { gl.deleteFramebuffer(b.fbo); gl.deleteTexture(b.tex); }
+    }
+    const maxSamples = gl.getParameter(gl.MAX_SAMPLES) || 0;
+    const samples = Math.min(4, maxSamples);
+    this.samples = samples;
+
+    const msaaFbo = gl.createFramebuffer();
+    const msaaColor = gl.createRenderbuffer();
+    const msaaDepth = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, msaaColor);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, this.colorFormat, w, h);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, msaaDepth);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH_COMPONENT24, w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, msaaFbo);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, msaaColor);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, msaaDepth);
+
+    const mkTex = (tw, th) => {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, this.colorFormat, tw, th);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      return t;
+    };
+    const sceneTex = mkTex(w, h);
+    const resolveFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, resolveFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTex, 0);
+
+    const bw = Math.max(2, w >> 1), bh = Math.max(2, h >> 1);
+    const bloom = [];
+    for (let i = 0; i < 2; i++) {
+      const tex = mkTex(bw, bh);
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      bloom.push({ tex, fbo });
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.targets = { w, h, bw, bh, msaaFbo, msaaColor, msaaDepth, resolveFbo, sceneTex, bloom };
   }
 
   beginShadowPass(lightVP) {
@@ -285,7 +450,7 @@ class Renderer {
 
   beginScenePass(env) {
     const gl = this.gl;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.targets.msaaFbo);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.disable(gl.POLYGON_OFFSET_FILL);
     gl.cullFace(gl.BACK);
@@ -377,6 +542,66 @@ class Renderer {
     }
     gl.bindVertexArray(mesh.vao);
     gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0);
+  }
+
+  // Resolve MSAA, build the bloom, tone map to the visible canvas.
+  present(env) {
+    const gl = this.gl;
+    const t = this.targets;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, t.msaaFbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, t.resolveFbo);
+    gl.blitFramebuffer(0, 0, t.w, t.h, 0, 0, t.w, t.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.bindVertexArray(this.emptyVao);
+
+    // Bright pass into bloom[0].
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.bloom[0].fbo);
+    gl.viewport(0, 0, t.bw, t.bh);
+    gl.useProgram(this.brightProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, t.sceneTex);
+    gl.uniform1i(this.brightProg.u.uTex, 0);
+    gl.uniform2f(this.brightProg.u.uTexel, 1 / t.w, 1 / t.h);
+    gl.uniform1f(this.brightProg.u.uThreshold, this.bloomThreshold);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // Two separable blur passes, ping-ponging between the two bloom buffers.
+    gl.useProgram(this.blurProg);
+    gl.uniform1i(this.blurProg.u.uTex, 0);
+    for (let pass = 0; pass < 2; pass++) {
+      for (const horiz of [true, false]) {
+        const src = t.bloom[0], dst = t.bloom[1];
+        gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+        gl.viewport(0, 0, t.bw, t.bh);
+        gl.bindTexture(gl.TEXTURE_2D, src.tex);
+        const step = 1 + pass;   // widen the kernel on the second pass
+        gl.uniform2f(this.blurProg.u.uDir,
+                     horiz ? step / t.bw : 0, horiz ? 0 : step / t.bh);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        t.bloom.reverse();
+      }
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, t.w, t.h);
+    gl.useProgram(this.compositeProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, t.sceneTex);
+    gl.uniform1i(this.compositeProg.u.uScene, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, t.bloom[0].tex);
+    gl.uniform1i(this.compositeProg.u.uBloom, 1);
+    gl.uniform1f(this.compositeProg.u.uBloomStrength, this.hdr ? this.bloomStrength : this.bloomStrength * 0.5);
+    gl.uniform1f(this.compositeProg.u.uExposure, this.exposure);
+    gl.uniform1f(this.compositeProg.u.uNight, env.night);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+    gl.bindVertexArray(null);
   }
 
   drawSky(env) {
