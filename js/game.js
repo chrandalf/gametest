@@ -131,7 +131,11 @@ function bindInput() {
 
   game.canvas.addEventListener('click', () => {
     startAudio();
-    if (!mouse.locked) game.canvas.requestPointerLock();
+    if (mouse.locked) return;
+    try {
+      const r = game.canvas.requestPointerLock();
+      if (r && typeof r.catch === 'function') r.catch(() => {});
+    } catch (e) { /* mouse look unavailable; keyboard still works */ }
   });
   document.addEventListener('pointerlockchange', () => {
     mouse.locked = document.pointerLockElement === game.canvas;
@@ -975,4 +979,8 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-window.addEventListener('DOMContentLoaded', start);
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', start);
+} else {
+  start();
+}

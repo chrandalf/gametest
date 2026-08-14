@@ -7,9 +7,22 @@ at load time and the whole city is generated from a seed in about 300 ms.
 ## Play
 
 Open `index.html` in any browser with WebGL2 (Chrome, Firefox, Safari 15+, Edge).
+Double-clicking the file works — there is nothing to install and nothing to build.
 
 ```
-python3 -m http.server 8000   # optional — file:// works too
+git clone -b claude/game-graphics-dev-vcra4y https://github.com/chrandalf/gametest
+cd gametest && python3 -m http.server 8000   # then visit localhost:8000
+```
+
+A local web server is optional but recommended: `file://` works in Chrome and
+Firefox, and some Safari builds restrict pointer lock there.
+
+### Single-file build
+
+To get one portable HTML file you can email or drop on any static host:
+
+```
+node tools/bundle.js            # writes dist/nightfall-city.html (~105 KB)
 ```
 
 ## Controls
