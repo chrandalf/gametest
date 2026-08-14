@@ -37,8 +37,32 @@ node tools/bundle.js            # writes dist/nightfall-city.html (~105 KB)
 | `C` | camera: chase, wide, bonnet |
 | `R` | respawn on the nearest road |
 | `T` | skip four hours |
+| `V` | start / stop recording a video clip |
+| `U` | hide the whole HUD for clean footage |
 | `P` / `H` | pause / hide help |
 | click | pointer-lock mouse look |
+
+## Recording
+
+Press `V`. The game composites the WebGL view and the HUD canvas into an
+offscreen canvas every frame, captures that at 60 fps via `MediaRecorder`, mixes
+in the Web Audio engine note, and downloads a WebM when you press `V` again. A
+timer and live file size show while it records — drawn *after* the frame is
+captured, so the REC badge never appears in the clip itself. Press `U` first if
+you want footage with no HUD at all.
+
+Chrome, Edge and Firefox support this; Safari's MediaRecorder support is patchy,
+and browsers block page-initiated downloads inside embedded frames — so record
+from a local copy rather than an embedded one. If a download ever fails to
+appear, the clip is still there: open `game.lastRecording.url` from the console.
+
+To convert to MP4:
+
+```
+ffmpeg -i nightfall-city-*.webm -c:v libx264 -crf 18 -pix_fmt yuv420p clip.mp4
+```
+
+Any screen recorder works too — OBS, macOS `Cmd+Shift+5`, Windows `Win+Alt+R`.
 
 ## The game
 
@@ -50,6 +74,15 @@ You can also just get out and walk around, steal any car on the road, and drive
 into things.
 
 ## What's in it
+
+**Geometry**
+- No hard-edged boxes: a `chamferBox` primitive cuts every edge and corner and
+  shades them with true rounded-box normals, so buildings, kerbs and props roll
+  off into the light instead of ending in a razor line
+- Cars are a lofted shell — rounded-rectangle cross-sections skinned down the
+  length with smooth normals, giving a waistline, tapered nose and curved roof
+- Downtown grows genuinely cylindrical towers; people are ellipsoids and
+  capsules; cylinders carry radial normals so nothing looks faceted
 
 **Rendering**
 - Deferred-free forward renderer with a 2048² shadow map (hardware PCF, texel-snapped

@@ -42,6 +42,7 @@ function start() {
   game.city = new City(gl, 20260814);
   game.carMeshes = buildCarMeshes(gl);
   game.cube = buildCubeMesh(gl);
+  game.body = buildBodyMeshes(gl);
   game.marker = buildMarkerMesh(gl, 3.4, 3.05, 5.5);
   game.markerBeam = buildMarkerMesh(gl, 1.5, 1.35, 70);
   console.log(`city built in ${(performance.now() - t0) | 0} ms, ` +
@@ -95,6 +96,9 @@ function start() {
   game.frustum = new Float32Array(24);
   game.lightFrustum = new Float32Array(24);
 
+  game.recorder = new Recorder();
+  game.hudVisible = true;
+
   bindInput();
   window.addEventListener('resize', layout);
   layout();
@@ -123,6 +127,8 @@ function bindInput() {
     if (e.code === 'KeyF') toggleCar();
     if (e.code === 'KeyR') resetCar();
     if (e.code === 'KeyT') game.clock = (game.clock + 4) % 24;
+    if (e.code === 'KeyV') game.recorder.toggle();
+    if (e.code === 'KeyU') game.hudVisible = !game.hudVisible;
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
     startAudio();
   });
@@ -707,8 +713,8 @@ function drawPerson(r, p, shadowPass, dist) {
   const hipY = 0.86 * s, shoulderY = 1.42 * s;
 
   if (!shadowPass) r.setMaterial(p.shirt, 0, 0);
-  put(_m, 0, 1.16 * s, 0, 0, 0.36 * s, 0.62 * s, 0.26 * s);
-  r.draw(game.cube, _m);
+  put(_m, 0, 1.15 * s, 0, 0, 0.62 * s, 0.74 * s, 0.44 * s);
+  r.draw(game.body.ball, _m);
 
   if (shadowPass) {
     // The torso alone is enough of a shadow silhouette.
@@ -718,23 +724,23 @@ function drawPerson(r, p, shadowPass, dist) {
   }
 
   r.setMaterial(p.skin, 0, 0);
-  put(_m, 0, 1.62 * s, 0, 0, 0.23 * s, 0.26 * s, 0.23 * s);
-  r.draw(game.cube, _m);
+  put(_m, 0, 1.60 * s, 0, 0, 0.42 * s, 0.48 * s, 0.42 * s);
+  r.draw(game.body.ball, _m);
 
   if (dist < 90) {
     r.setMaterial(p.pants, 0, 0);
     for (const [side, sw] of [[-1, swing], [1, swing2]]) {
       const cx = Math.sin(sw) * legLen * 0.5;
       const cy = -Math.cos(sw) * legLen * 0.5;
-      put(_m, side * 0.14 * s, hipY + cy, cx, sw, 0.16 * s, legLen, 0.19 * s);
-      r.draw(game.cube, _m);
+      put(_m, side * 0.16 * s, hipY + cy, cx, sw, 0.30 * s, legLen / 2, 0.32 * s);
+      r.draw(game.body.limb, _m);
     }
     r.setMaterial(p.shirt, 0, 0);
     for (const [side, sw] of [[-1, swing2 * 0.8], [1, swing * 0.8]]) {
       const cz = Math.sin(sw) * armLen * 0.5;
       const cy = -Math.cos(sw) * armLen * 0.5;
-      put(_m, side * 0.46 * s, shoulderY + cy, cz, sw, 0.13 * s, armLen, 0.15 * s);
-      r.draw(game.cube, _m);
+      put(_m, side * 0.37 * s, shoulderY + cy, cz, sw, 0.24 * s, armLen / 2, 0.26 * s);
+      r.draw(game.body.limb, _m);
     }
   }
   r.setMaterial([1, 1, 1], 0, 1);
@@ -749,6 +755,7 @@ function drawHud() {
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   c.clearRect(0, 0, W, H);
   c.textBaseline = 'top';
+  if (!game.hudVisible) return;
 
   const car = game.car;
   const inCar = game.player.inCar;
@@ -930,6 +937,7 @@ function drawHud() {
       'A / D — steer            Space — handbrake',
       'Shift — boost / sprint   F — get in / out of a car',
       'C — camera   R — respawn   T — skip time   P — pause',
+      'V — record video   U — hide the HUD for clean footage',
       'Click the window for mouse look. H hides this.',
     ];
     const bw = 340, bh = lines.length * 19 + 26;
@@ -975,6 +983,9 @@ function frame(now) {
   if (!game.paused) update(dt);
   render();
   drawHud();
+  game.recorder.tick(dt);
+  game.recorder.capture();
+  game.recorder.drawBadge(game.hctx, game.hud.width / game.hdpr, game.hdpr);
 
   requestAnimationFrame(frame);
 }

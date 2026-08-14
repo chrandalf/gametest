@@ -237,8 +237,8 @@ class City {
 
     // Sidewalk slab for the whole block.
     b.style(TEX.SIDEWALK, [1, 1, 1], 0);
-    b.box((x0+x1)/2, SIDEWALK_H/2, (z0+z1)/2, (x1-x0)/2, SIDEWALK_H/2, (z1-z0)/2,
-          { side: TEX.CONCRETE, top: TEX.SIDEWALK, perUnit: 0.22 });
+    b.chamferBox((x0+x1)/2, SIDEWALK_H/2, (z0+z1)/2, (x1-x0)/2, SIDEWALK_H/2, (z1-z0)/2, 0.09,
+          { top: TEX.SIDEWALK, perUnit: 0.22 });
 
     if (rand() < 0.12 + (1 - downtown) * 0.16) {
       this.buildPark(b, x0, z0, x1, z1);
@@ -314,8 +314,8 @@ class City {
 
     if (shopH > 0) {
       b.style(TEX.SHOP, [1, 1, 1], 0);
-      b.box(cx, shopH/2, cz, w/2 + 0.35, shopH/2, d/2 + 0.35,
-            { side: TEX.SHOP, skipTop: true, uvU: Math.max(1, Math.round(w / 9)), uvV: 1 });
+      b.chamferBox(cx, shopH/2, cz, w/2 + 0.35, shopH/2, d/2 + 0.35, 0.3,
+            { skipTop: true, uvU: Math.max(1, Math.round(w / 9)), uvV: 1 });
       b.style(TEX.CONCRETE, [0.9, 0.9, 0.88], 0);
       b.box(cx, shopH + 0.18, cz, w/2 + 0.6, 0.18, d/2 + 0.6,
             { side: TEX.CONCRETE, top: TEX.CONCRETE, perUnit: 0.3 });
@@ -325,25 +325,41 @@ class City {
     const uvU = Math.max(1, Math.round(w / (fac.cols * FLOOR_H)));
     const uvV = Math.max(1, Math.round(bodyH / (fac.rows * FLOOR_H)));
     b.style(fac.layer, tint, 0);
-    b.box(cx, shopH + bodyH/2, cz, w/2, bodyH/2, d/2,
-          { side: fac.layer, top: TEX.ROOF, topTint: [1, 1, 1],
-            uvU, uvV, topU: Math.max(1, w/12), topV: Math.max(1, d/12) });
+
+    // Downtown gets some genuinely round towers; everything else gets its
+    // vertical corners rolled off so the skyline is not all hard boxes.
+    const roundTower = downtown > 0.5 && height > 45 && Math.abs(w - d) < Math.min(w, d) * 0.45 && rand() < 0.34;
+    if (roundTower) {
+      const rad = Math.min(w, d) / 2;
+      b.cylinder(cx, shopH + bodyH/2, cz, rad, bodyH, 24,
+                 { uRepeat: Math.max(2, Math.round(2 * Math.PI * rad / (fac.cols * FLOOR_H) * fac.cols / 2)),
+                   vRepeat: uvV });
+      b.style(TEX.ROOF, [1, 1, 1], 0);
+      b.cylinder(cx, totalH + 0.12, cz, rad * 1.02, 0.24, 24, { uRepeat: 6, vRepeat: 1 });
+      b.style(fac.layer, tint, 0);
+    } else {
+      const corner = clamp(Math.min(w, d) * 0.07, 0.35, 1.4);
+      b.chamferBox(cx, shopH + bodyH/2, cz, w/2, bodyH/2, d/2, corner,
+                   { top: TEX.ROOF, topTint: [1, 1, 1], uvU, uvV });
+    }
 
     // Parapet wall around the roof.
     b.style(TEX.CONCRETE, tint, 0);
+    if (!roundTower) {
     const pw = 0.5, ph = 1.0;
     b.box(cx, totalH + ph/2, z0 + pw/2, w/2, ph/2, pw/2, { perUnit: 0.4 });
     b.box(cx, totalH + ph/2, z1 - pw/2, w/2, ph/2, pw/2, { perUnit: 0.4 });
     b.box(x0 + pw/2, totalH + ph/2, cz, pw/2, ph/2, d/2, { perUnit: 0.4 });
     b.box(x1 - pw/2, totalH + ph/2, cz, pw/2, ph/2, d/2, { perUnit: 0.4 });
+    }
 
     // Setback tower on tall buildings.
     if (height > 60 && rand() < 0.7) {
       const sw = w * (0.45 + rand() * 0.2), sd = d * (0.45 + rand() * 0.2);
       const sh = 8 + rand() * 26;
       b.style(fac.layer, tint, 0);
-      b.box(cx, totalH + sh/2, cz, sw/2, sh/2, sd/2,
-            { side: fac.layer, top: TEX.ROOF,
+      b.chamferBox(cx, totalH + sh/2, cz, sw/2, sh/2, sd/2, clamp(Math.min(sw, sd) * 0.09, 0.3, 1.6),
+            { top: TEX.ROOF,
               uvU: Math.max(1, Math.round(sw / (fac.cols * FLOOR_H))),
               uvV: Math.max(1, Math.round(sh / (fac.rows * FLOOR_H))) });
       // Aircraft warning light.
@@ -360,7 +376,7 @@ class City {
       const ux = lerp(x0 + uw + 1, x1 - uw - 1, rand());
       const uz = lerp(z0 + ud + 1, z1 - ud - 1, rand());
       b.style(TEX.METAL, [0.62, 0.64, 0.66], 0);
-      b.box(ux, totalH + uh/2, uz, uw/2, uh/2, ud/2, { perUnit: 0.5 });
+      b.chamferBox(ux, totalH + uh/2, uz, uw/2, uh/2, ud/2, 0.28, { perUnit: 0.5 });
     }
     if (rand() < 0.25 && w > 16) {
       // Water tower.
@@ -392,8 +408,8 @@ class City {
       if (rand() < 0.5) continue;
       const bx = lerp(x0 + 6, x1 - 6, rand()), bz = lerp(z0 + 6, z1 - 6, rand());
       b.style(TEX.BARK, [0.8, 0.65, 0.5], 0);
-      b.box(bx, SIDEWALK_H + 0.55, bz, 1.4, 0.08, 0.35, { perUnit: 1 });
-      b.box(bx, SIDEWALK_H + 0.85, bz - 0.32, 1.4, 0.35, 0.06, { perUnit: 1 });
+      b.chamferBox(bx, SIDEWALK_H + 0.55, bz, 1.4, 0.08, 0.35, 0.06, { perUnit: 1 });
+      b.chamferBox(bx, SIDEWALK_H + 0.85, bz - 0.32, 1.4, 0.35, 0.06, 0.05, { perUnit: 1 });
       b.style(TEX.METAL, [0.3, 0.32, 0.34], 0);
       b.box(bx - 1.2, SIDEWALK_H + 0.28, bz, 0.08, 0.28, 0.32, { perUnit: 1 });
       b.box(bx + 1.2, SIDEWALK_H + 0.28, bz, 0.08, 0.28, 0.32, { perUnit: 1 });
@@ -421,7 +437,7 @@ class City {
     b.box((x + ax)/2, SIDEWALK_H + h, (z + az)/2,
           Math.abs(dirX) * 0.8 + 0.12, 0.12, Math.abs(dirZ) * 0.8 + 0.12, { perUnit: 1 });
     b.style(TEX.PLAIN, [1.0, 0.93, 0.75], 0.9);
-    b.box(ax, SIDEWALK_H + h - 0.22, az, 0.42, 0.16, 0.42, { perUnit: 1, emis: 0.9 });
+    b.chamferBox(ax, SIDEWALK_H + h - 0.22, az, 0.42, 0.16, 0.42, 0.12, { perUnit: 1 });
     this.lights.push({ x: ax, y: SIDEWALK_H + h - 0.4, z: az });
   }
 
@@ -435,7 +451,8 @@ class City {
       const [wx, wz] = T(0, fz);
       const bb = new MeshBuilder();
       bb.style(layer, tint, emis || 0);
-      bb.box(0, y, 0, hw, hy, hl, { perUnit: 0.6, emis: emis || 0 });
+      if (emis) bb.box(0, y, 0, hw, hy, hl, { perUnit: 0.6, emis });
+      else bb.chamferBox(0, y, 0, hw, hy, hl, Math.min(hw, hy, hl) * 0.55, { perUnit: 0.6 });
       // Rotate the little box into place.
       for (let i = 0; i < bb.v.length; i += VERT_FLOATS) {
         const px = bb.v[i], pz = bb.v[i+2];

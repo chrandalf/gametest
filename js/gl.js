@@ -117,6 +117,140 @@ class MeshBuilder {
     return this;
   }
 
+  // Polygon with per-vertex normals supplied by a function of position, and
+  // winding fixed automatically to face outward. This is what lets chamfered
+  // and swept shapes read as smooth instead of faceted.
+  polyN(points, normalAt, uvAt) {
+    const n0 = normalAt(points[0]);
+    const ax = points[1][0]-points[0][0], ay = points[1][1]-points[0][1], az = points[1][2]-points[0][2];
+    const bx = points[2][0]-points[0][0], by = points[2][1]-points[0][1], bz = points[2][2]-points[0][2];
+    const gx = ay*bz - az*by, gy = az*bx - ax*bz, gz = ax*by - ay*bx;
+    const flip = (gx*n0[0] + gy*n0[1] + gz*n0[2]) < 0;
+    const order = flip ? points.slice().reverse() : points;
+    const idx = [];
+    for (const p of order) {
+      const n = normalAt(p);
+      const uv = uvAt ? uvAt(p) : [0, 0];
+      idx.push(this.vertex(p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1]));
+    }
+    for (let i = 1; i < idx.length - 1; i++) this.i.push(idx[0], idx[i], idx[i+1]);
+    return this;
+  }
+
+  // A box with its edges and corners cut back by `r`, shaded as if filleted.
+  // The normal at any point is the direction from the inner "core" box, which
+  // is exactly the normal of a true rounded box — so flat faces stay flat and
+  // the cut edges catch light as a smooth roll.
+  chamferBox(cx, cy, cz, hx, hy, hz, r, opt) {
+    opt = opt || {};
+    r = Math.max(0.001, Math.min(r, hx * 0.98, hy * 0.98, hz * 0.98));
+    const ax = hx - r, ay = hy - r, az = hz - r;
+    const perUnit = opt.perUnit || 0.25;
+    const uvU = opt.uvU, uvV = opt.uvV;
+
+    const normalAt = (p) => {
+      const qx = clamp(p[0] - cx, -ax, ax), qy = clamp(p[1] - cy, -ay, ay), qz = clamp(p[2] - cz, -az, az);
+      let nx = (p[0] - cx) - qx, ny = (p[1] - cy) - qy, nz = (p[2] - cz) - qz;
+      const len = Math.hypot(nx, ny, nz);
+      if (len < 1e-6) return [0, 1, 0];
+      return [nx/len, ny/len, nz/len];
+    };
+    // Planar UVs chosen by the dominant axis, so texture scale stays even.
+    const uvAt = (p) => {
+      const n = normalAt(p);
+      const anx = Math.abs(n[0]), any = Math.abs(n[1]), anz = Math.abs(n[2]);
+      let u, v, su, sv;
+      if (any >= anx && any >= anz) { u = p[0]-cx+hx; v = p[2]-cz+hz; su = hx*2; sv = hz*2; }
+      else if (anx >= anz) { u = p[2]-cz+hz; v = p[1]-cy+hy; su = hz*2; sv = hy*2; }
+      else { u = p[0]-cx+hx; v = p[1]-cy+hy; su = hx*2; sv = hy*2; }
+      return [uvU !== undefined ? u/su*uvU : u*perUnit,
+              uvV !== undefined ? v/sv*uvV : v*perUnit];
+    };
+    const P = (x, y, z) => [cx+x, cy+y, cz+z];
+    const face = (fixed, val, u1, v1) => {
+      // fixed: which axis is pinned; builds the inset rectangle for that face.
+      const pts = [];
+      for (const [su, sv] of [[-1,-1],[1,-1],[1,1],[-1,1]]) {
+        if (fixed === 0) pts.push(P(val, su*ay, sv*az));
+        else if (fixed === 1) pts.push(P(su*ax, val, sv*az));
+        else pts.push(P(su*ax, sv*ay, val));
+      }
+      void u1; void v1;
+      this.polyN(pts, normalAt, uvAt);
+    };
+
+    if (!opt.skipSides) {
+      face(0, hx); face(0, -hx);
+      face(2, hz); face(2, -hz);
+    }
+    if (!opt.skipTop) {
+      const keepLayer = this.layer, keepTint = this.tint;
+      if (opt.top !== undefined) this.style(opt.top, opt.topTint || keepTint, 0);
+      face(1, hy);
+      this.style(keepLayer, keepTint, 0);
+    }
+    if (opt.bottom) face(1, -hy);
+
+    // 12 edge strips.
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+      this.polyN([P(sx*ax, sy*hy, -az), P(sx*ax, sy*hy, az), P(sx*hx, sy*ay, az), P(sx*hx, sy*ay, -az)],
+                 normalAt, uvAt);
+    }
+    for (const sz of [-1, 1]) for (const sy of [-1, 1]) {
+      this.polyN([P(-ax, sy*hy, sz*az), P(ax, sy*hy, sz*az), P(ax, sy*ay, sz*hz), P(-ax, sy*ay, sz*hz)],
+                 normalAt, uvAt);
+    }
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      this.polyN([P(sx*hx, -ay, sz*az), P(sx*hx, ay, sz*az), P(sx*ax, ay, sz*hz), P(sx*ax, -ay, sz*hz)],
+                 normalAt, uvAt);
+    }
+    // 8 corner patches.
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
+      this.polyN([P(sx*ax, sy*hy, sz*az), P(sx*hx, sy*ay, sz*az), P(sx*ax, sy*ay, sz*hz)],
+                 normalAt, uvAt);
+    }
+    return this;
+  }
+
+  // Rounded-end column: the body of a person, an arm, a bollard.
+  capsule(cx, cy, cz, r, h, seg, rings) {
+    seg = seg || 12; rings = rings || 4;
+    const half = Math.max(0.0001, h / 2 - r);
+    const at = (theta, phi, capSign) => {
+      const sp = Math.sin(phi), cp = Math.cos(phi);
+      const nx = sp * Math.cos(theta), ny = cp, nz = sp * Math.sin(theta);
+      return { p: [cx + nx*r, cy + capSign*half + ny*r, cz + nz*r], n: [nx, ny, nz] };
+    };
+    const push = (o, u, v) => this.vertex(o.p[0], o.p[1], o.p[2], o.n[0], o.n[1], o.n[2], u, v);
+    // Barrel.
+    for (let i = 0; i < seg; i++) {
+      const t0 = i/seg*Math.PI*2, t1 = (i+1)/seg*Math.PI*2;
+      const a = push(at(t0, Math.PI/2, 1), i/seg*2, 0);
+      const b = push(at(t1, Math.PI/2, 1), (i+1)/seg*2, 0);
+      const c = push(at(t1, Math.PI/2, -1), (i+1)/seg*2, 2);
+      const d = push(at(t0, Math.PI/2, -1), i/seg*2, 2);
+      this.i.push(a, b, c, a, c, d);
+    }
+    // Caps.
+    for (const capSign of [1, -1]) {
+      for (let ri = 0; ri < rings; ri++) {
+        const p0 = (ri/rings) * (Math.PI/2), p1 = ((ri+1)/rings) * (Math.PI/2);
+        const phi0 = capSign > 0 ? p0 : Math.PI - p0;
+        const phi1 = capSign > 0 ? p1 : Math.PI - p1;
+        for (let i = 0; i < seg; i++) {
+          const t0 = i/seg*Math.PI*2, t1 = (i+1)/seg*Math.PI*2;
+          const a = push(at(t0, phi0, capSign), i/seg*2, 0);
+          const b = push(at(t1, phi0, capSign), (i+1)/seg*2, 0);
+          const c = push(at(t1, phi1, capSign), (i+1)/seg*2, 1);
+          const d = push(at(t0, phi1, capSign), i/seg*2, 1);
+          if (capSign > 0) this.i.push(a, b, c, a, c, d);
+          else this.i.push(a, c, b, a, d, c);
+        }
+      }
+    }
+    return this;
+  }
+
   cylinder(cx, cy, cz, r, h, seg, opt) {
     opt = opt || {};
     const axis = opt.axis || 'y';
@@ -129,10 +263,24 @@ class MeshBuilder {
       if (axis === 'x') return [cx + off, cy + c, cz + s];
       return [cx + c, cy + s, cz + off];
     };
+    // Barrel with radial (smooth) normals — a faceted tube reads as blocky.
+    const radial = (a) => {
+      const c = Math.cos(a), s = Math.sin(a);
+      if (axis === 'y') return [c, 0, s];
+      if (axis === 'x') return [0, c, s];
+      return [c, s, 0];
+    };
+    const uRep = opt.uRepeat || 1, vRep = opt.vRepeat || 1;
     for (let i = 0; i < seg; i++) {
       const a0 = i / seg * Math.PI * 2, a1 = (i + 1) / seg * Math.PI * 2;
-      this.quad(place(a1, 0), place(a0, 0), place(a0, 1), place(a1, 1),
-                (opt.uRepeat || 1) / seg, opt.vRepeat || 1);
+      const n0 = radial(a0), n1 = radial(a1);
+      const p00 = place(a0, 0), p10 = place(a1, 0), p11 = place(a1, 1), p01 = place(a0, 1);
+      const u0 = i / seg * uRep, u1 = (i + 1) / seg * uRep;
+      const v0 = this.vertex(p00[0], p00[1], p00[2], n0[0], n0[1], n0[2], u0, 0);
+      const v1 = this.vertex(p10[0], p10[1], p10[2], n1[0], n1[1], n1[2], u1, 0);
+      const v2 = this.vertex(p11[0], p11[1], p11[2], n1[0], n1[1], n1[2], u1, vRep);
+      const v3 = this.vertex(p01[0], p01[1], p01[2], n0[0], n0[1], n0[2], u0, vRep);
+      this.i.push(v0, v1, v2, v0, v2, v3);
     }
     // Caps
     for (const t of [0, 1]) {

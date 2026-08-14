@@ -3,42 +3,147 @@
 
 // ------------------------------------------------------------- geometry -----
 
+// The body is a lofted shell: a series of cross-sections down the length of the
+// car, each a rounded rectangle, skinned together with smooth normals. That is
+// what gives it a waistline, tapered nose and curved roof instead of a stack of
+// boxes. Sections are (z, halfWidth, yBottom, yTop, cornerRound).
+const CAR_SECTIONS = [
+  [-2.30, 0.60, 0.46, 0.86, 0.30],
+  [-2.10, 0.83, 0.38, 0.99, 0.34],
+  [-1.70, 0.94, 0.34, 1.06, 0.32],
+  [-1.20, 0.97, 0.33, 1.10, 0.30],
+  [-0.55, 0.98, 0.33, 1.12, 0.30],
+  [ 0.10, 0.97, 0.33, 1.10, 0.30],
+  [ 0.75, 0.94, 0.34, 1.05, 0.30],
+  [ 1.35, 0.90, 0.36, 0.99, 0.32],
+  [ 1.85, 0.83, 0.40, 0.93, 0.34],
+  [ 2.18, 0.66, 0.48, 0.84, 0.30],
+  [ 2.30, 0.50, 0.56, 0.78, 0.20],
+];
+
+// The greenhouse (cabin) sits on top, narrower and swept back.
+const CABIN_SECTIONS = [
+  [-1.62, 0.62, 1.06, 1.16, 0.08],
+  [-1.45, 0.78, 1.06, 1.38, 0.16],
+  [-1.00, 0.83, 1.08, 1.50, 0.18],
+  [-0.30, 0.84, 1.09, 1.53, 0.18],
+  [ 0.25, 0.82, 1.08, 1.50, 0.18],
+  [ 0.62, 0.78, 1.06, 1.38, 0.16],
+  [ 0.80, 0.66, 1.04, 1.16, 0.08],
+];
+
+// One ring of a rounded-rectangle cross-section, walked anticlockwise.
+function sectionRing(hw, y0, y1, round, steps) {
+  const cy = (y0 + y1) / 2, hy = (y1 - y0) / 2;
+  const r = Math.min(round, hw * 0.95, hy * 0.95);
+  const ax = hw - r, ay = hy - r;
+  const pts = [];
+  const corners = [[ax, ay], [-ax, ay], [-ax, -ay], [ax, -ay]];
+  for (let c = 0; c < 4; c++) {
+    const [ox, oy] = corners[c];
+    const base = c * Math.PI / 2;
+    for (let s = 0; s <= steps; s++) {
+      const a = base + (s / steps) * (Math.PI / 2);
+      pts.push([ox + Math.cos(a) * r, cy + oy + Math.sin(a) * r]);
+    }
+  }
+  return pts;
+}
+
+// Skin consecutive rings into a closed shell with averaged (smooth) normals.
+function loft(b, sections, opt) {
+  opt = opt || {};
+  const steps = opt.steps || 3;
+  const rings = sections.map(([z, hw, y0, y1, round]) => ({
+    z, pts: sectionRing(hw, y0, y1, round, steps),
+  }));
+  const n = rings[0].pts.length;
+
+  // Vertex normal = average of the two adjacent in-ring edge normals, tilted by
+  // the lengthwise taper so the nose and tail shade smoothly too.
+  const normalFor = (ri, pi) => {
+    const ring = rings[ri].pts;
+    const prev = ring[(pi - 1 + n) % n], cur = ring[pi], next = ring[(pi + 1) % n];
+    let nx = next[1] - prev[1], ny = -(next[0] - prev[0]);
+    const len = Math.hypot(nx, ny) || 1;
+    nx /= len; ny /= len;
+    const a = rings[Math.max(0, ri - 1)], c = rings[Math.min(rings.length - 1, ri + 1)];
+    const dz = c.z - a.z || 1;
+    const spread = (c.pts[pi][0] - a.pts[pi][0]) * nx + (c.pts[pi][1] - a.pts[pi][1]) * ny;
+    const nz = -spread / dz;
+    const l2 = Math.hypot(nx, ny, nz) || 1;
+    return [nx / l2, ny / l2, nz / l2];
+  };
+
+  const grid = [];
+  for (let ri = 0; ri < rings.length; ri++) {
+    const row = [];
+    for (let pi = 0; pi < n; pi++) {
+      const p = rings[ri].pts[pi];
+      const nrm = normalFor(ri, pi);
+      row.push(b.vertex(p[0], p[1], rings[ri].z, nrm[0], nrm[1], nrm[2],
+                        pi / n * 2, ri / rings.length * 2));
+    }
+    grid.push(row);
+  }
+  for (let ri = 0; ri < rings.length - 1; ri++) {
+    for (let pi = 0; pi < n; pi++) {
+      const q = (pi + 1) % n;
+      const a = grid[ri][pi], bb = grid[ri][q], c = grid[ri+1][q], d = grid[ri+1][pi];
+      b.i.push(a, bb, c, a, c, d);
+    }
+  }
+  // Flat end caps.
+  for (const [ri, dir] of [[0, -1], [rings.length - 1, 1]]) {
+    const ring = rings[ri];
+    const cx = ring.pts.reduce((s, p) => s + p[0], 0) / n;
+    const cy = ring.pts.reduce((s, p) => s + p[1], 0) / n;
+    const center = b.vertex(cx, cy, ring.z, 0, 0, dir, 0.5, 0.5);
+    const idx = ring.pts.map((p) => b.vertex(p[0], p[1], ring.z, 0, 0, dir, 0.5, 0.5));
+    for (let pi = 0; pi < n; pi++) {
+      const q = (pi + 1) % n;
+      if (dir > 0) b.i.push(center, idx[pi], idx[q]);
+      else b.i.push(center, idx[q], idx[pi]);
+    }
+  }
+}
+
 function buildCarMeshes(gl) {
   const paint = new MeshBuilder();
   paint.style(TEX.METAL, [1, 1, 1], 0);
-  paint.box(0, 0.62, -0.05, 0.95, 0.30, 2.15, { perUnit: 0.5 });           // lower body
-  paint.box(0, 0.95, 0.55, 0.90, 0.16, 1.55, { perUnit: 0.5 });            // hood line
-  paint.box(0, 1.28, -0.55, 0.80, 0.22, 0.95, { perUnit: 0.5 });           // roof pillar mass
-  paint.box(0, 1.48, -0.55, 0.74, 0.05, 0.90, { perUnit: 0.5 });           // roof
+  loft(paint, CAR_SECTIONS, { steps: 4 });
   paint.style(TEX.PLAIN, [0.13, 0.13, 0.15], 0);
-  paint.box(0, 0.55, 2.16, 0.92, 0.20, 0.10, { perUnit: 1 });              // front bumper
-  paint.box(0, 0.55, -2.16, 0.92, 0.20, 0.10, { perUnit: 1 });             // rear bumper
-  paint.box(0, 0.30, 0, 0.80, 0.10, 2.0, { perUnit: 1 });                  // underbody
+  paint.chamferBox(0, 0.52, 2.18, 0.90, 0.17, 0.14, 0.10, { perUnit: 1 });   // front bumper
+  paint.chamferBox(0, 0.52, -2.20, 0.88, 0.17, 0.13, 0.10, { perUnit: 1 });  // rear bumper
   paint.style(TEX.PLAIN, [0.9, 0.9, 0.92], 0);
-  paint.box(0, 0.42, 2.24, 0.42, 0.11, 0.04, { perUnit: 1 });              // plate
+  paint.chamferBox(0, 0.40, 2.28, 0.40, 0.10, 0.03, 0.03, { perUnit: 1 });   // plate
+  // Wing mirrors — small, but their absence is very noticeable.
+  paint.style(TEX.METAL, [1, 1, 1], 0);
+  for (const s of [-1, 1]) {
+    paint.chamferBox(s * 1.02, 1.18, 0.42, 0.13, 0.07, 0.10, 0.05, { perUnit: 1 });
+  }
 
   const glass = new MeshBuilder();
-  glass.style(TEX.GLASS, [0.35, 0.45, 0.55], 0);
-  glass.box(0, 1.22, 0.42, 0.78, 0.26, 0.14, { perUnit: 0.5, uvU: 1, uvV: 1 });   // windscreen
-  glass.box(0, 1.22, -1.50, 0.76, 0.26, 0.10, { perUnit: 0.5, uvU: 1, uvV: 1 });  // rear glass
-  glass.box(0.82, 1.24, -0.55, 0.03, 0.24, 0.92, { perUnit: 0.5, uvU: 1, uvV: 1 });
-  glass.box(-0.82, 1.24, -0.55, 0.03, 0.24, 0.92, { perUnit: 0.5, uvU: 1, uvV: 1 });
+  glass.style(TEX.PLAIN, [0.11, 0.15, 0.21], 0);
+  loft(glass, CABIN_SECTIONS, { steps: 4 });
 
   const lights = new MeshBuilder();
   lights.style(TEX.PLAIN, [1.0, 0.96, 0.85], 0);
-  lights.box(0.62, 0.86, 2.2, 0.24, 0.11, 0.05, { perUnit: 1 });
-  lights.box(-0.62, 0.86, 2.2, 0.24, 0.11, 0.05, { perUnit: 1 });
+  for (const s of [-1, 1]) {
+    lights.chamferBox(s * 0.50, 0.74, 2.14, 0.22, 0.09, 0.06, 0.05, { perUnit: 1 });
+  }
 
   const tail = new MeshBuilder();
   tail.style(TEX.PLAIN, [0.95, 0.12, 0.10], 0);
-  tail.box(0.66, 0.88, -2.2, 0.22, 0.10, 0.05, { perUnit: 1 });
-  tail.box(-0.66, 0.88, -2.2, 0.22, 0.10, 0.05, { perUnit: 1 });
+  for (const s of [-1, 1]) {
+    tail.chamferBox(s * 0.56, 0.82, -2.20, 0.21, 0.09, 0.05, 0.04, { perUnit: 1 });
+  }
 
   const wheel = new MeshBuilder();
-  wheel.style(TEX.PLAIN, [0.10, 0.10, 0.11], 0);
-  wheel.cylinder(0, 0, 0, 0.40, 0.32, 12, { axis: 'x', uRepeat: 4, vRepeat: 1 });
-  wheel.style(TEX.METAL, [0.75, 0.76, 0.78], 0);
-  wheel.cylinder(0, 0, 0, 0.22, 0.34, 10, { axis: 'x', uRepeat: 4, vRepeat: 1 });
+  wheel.style(TEX.PLAIN, [0.09, 0.09, 0.10], 0);
+  wheel.cylinder(0, 0, 0, 0.40, 0.30, 20, { axis: 'x', uRepeat: 6, vRepeat: 1 });
+  wheel.style(TEX.METAL, [0.78, 0.79, 0.82], 0);
+  wheel.cylinder(0, 0, 0, 0.235, 0.315, 16, { axis: 'x', uRepeat: 6, vRepeat: 1 });
 
   return {
     paint: paint.upload(gl),
@@ -82,6 +187,18 @@ function buildCubeMesh(gl) {
   b.style(TEX.PLAIN, [1, 1, 1], 0);
   b.box(0, 0, 0, 0.5, 0.5, 0.5, { perUnit: 1, bottom: true, uvU: 1, uvV: 1, topU: 1, topV: 1 });
   return b.upload(gl);
+}
+
+// Unit body parts for pedestrians: an ellipsoid torso/head and capsule limbs,
+// scaled per person. Boxes made everyone look like a filing cabinet.
+function buildBodyMeshes(gl) {
+  const ball = new MeshBuilder();
+  ball.style(TEX.PLAIN, [1, 1, 1], 0);
+  ball.sphere(0, 0, 0, 0.5, 12, 8, 1);
+  const limb = new MeshBuilder();
+  limb.style(TEX.PLAIN, [1, 1, 1], 0);
+  limb.capsule(0, 0, 0, 0.5, 2, 10, 3);
+  return { ball: ball.upload(gl), limb: limb.upload(gl) };
 }
 
 // -------------------------------------------------------------- vehicle -----
@@ -139,14 +256,20 @@ class Vehicle {
     const yawRate = this.steer * authority * 2.7 * Math.sign(vf || 1);
     this.yaw += yawRate * dt;
 
-    // Lateral grip: the handbrake breaks traction and lets the tail step out.
-    const grip = handbrake ? 1.6 : 9.0;
-    vr += yawRate * vf * dt * (handbrake ? 0.9 : 0.35);
+    // Rebuild the basis from the *new* heading. Thrust has to follow the nose as
+    // it points now — using the pre-steer basis makes the car crab sideways.
+    const nfx = Math.sin(this.yaw), nfz = Math.cos(this.yaw);
+    const nrx = nfz, nrz = -nfx;
+
+    // Lateral grip. Tyres scrub sideways motion away almost at once; only the
+    // handbrake lets the tail step out and hold a slide.
+    const grip = handbrake ? 1.8 : 17.0;
+    vr += yawRate * vf * dt * (handbrake ? 0.9 : 0.12);
     vr *= Math.exp(-grip * dt);
     if (handbrake) vf -= vf * 1.2 * dt;
 
-    this.vx = fx * vf + rx * vr;
-    this.vz = fz * vf + rz * vr;
+    this.vx = nfx * vf + nrx * vr;
+    this.vz = nfz * vf + nrz * vr;
 
     this.x += this.vx * dt;
     this.z += this.vz * dt;
@@ -175,6 +298,13 @@ class Vehicle {
         this.vx -= hit.nx * vn * 1.25;
         this.vz -= hit.nz * vn * 1.25;
         this.vx *= 0.55; this.vz *= 0.55;
+        // A scrape leaves the car moving sideways; the tyres bite immediately,
+        // so cut what is left of the lateral component rather than sliding on.
+        const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+        const vfwd = this.vx * fx + this.vz * fz;
+        const vlat = (this.vx * fz - this.vz * fx) * 0.35;
+        this.vx = fx * vfwd + fz * vlat;
+        this.vz = fz * vfwd - fx * vlat;
         this.crashImpulse = Math.max(this.crashImpulse, Math.min(1, before / 22));
       }
     }
