@@ -170,6 +170,7 @@ class MapWorld {
     this.hash = new Map();
     this.hashCell = 24;
     this.ramps = new RampSet();
+    this.plantCount = 0;
     this.build();
   }
 
@@ -215,6 +216,7 @@ class MapWorld {
 
     for (const road of d.roads) this.buildRoad(chunkFor, road);
     for (const b of d.buildings) this.buildBuilding(chunkFor, b, rand);
+    this.scatterPlanting(chunkFor, rand);
 
     for (const bld of builders) {
       if (bld.empty) continue;
@@ -227,6 +229,154 @@ class MapWorld {
     this.addCollider(minX - pad, maxZ + pad - w, maxX + pad, maxZ + pad, 30);
     this.addCollider(minX - pad, minZ - pad, minX - pad + w, maxZ + pad, 30);
     this.addCollider(maxX + pad - w, minZ - pad, maxX + pad, maxZ + pad, 30);
+  }
+
+  // Vegetation. An empty green plane is what makes a village read as sparse, so
+  // the gaps between roads and houses get planted with mixed species at mixed
+  // sizes, thinning out away from the settlement.
+  scatterPlanting(chunkFor, rand) {
+    const { minX, maxX, minZ, maxZ } = this.extent;
+    // Coarse grid of road points, for keeping planting off the carriageway.
+    const cell = 12;
+    const roadGrid = new Map();
+    const key = (x, z) => `${Math.floor(x / cell)},${Math.floor(z / cell)}`;
+    for (const r of this.data.roads) {
+      for (let i = 0; i < r.pts.length - 1; i++) {
+        const a = r.pts[i], b = r.pts[i + 1];
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        const steps = Math.max(1, Math.ceil(len / 6));
+        for (let k = 0; k <= steps; k++) {
+          const t = k / steps;
+          const x = a[0] + (b[0] - a[0]) * t, z = a[1] + (b[1] - a[1]) * t;
+          const w = r.width / 2 + 2.5;
+          const g = key(x, z);
+          roadGrid.set(g, Math.max(roadGrid.get(g) || 0, w));
+        }
+      }
+    }
+    const nearRoad = (x, z, pad) => {
+      for (let gx = -1; gx <= 1; gx++) {
+        for (let gz = -1; gz <= 1; gz++) {
+          const w = roadGrid.get(key(x + gx * cell, z + gz * cell));
+          if (w !== undefined && w + pad > 0) {
+            // Cheap: any planting in a cell touched by a road keeps its distance.
+            if (gx === 0 && gz === 0) return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    const cx = this.center[0], cz = this.center[1];
+    const spread = Math.max(maxX - minX, maxZ - minZ) * 0.5 + 90;
+    const target = clamp(Math.round((maxX - minX) * (maxZ - minZ) / 620), 200, 1400);
+
+    for (let n = 0; n < target * 3 && this.plantCount < target; n++) {
+      const x = lerp(minX - 70, maxX + 70, rand());
+      const z = lerp(minZ - 70, maxZ + 70, rand());
+      // Thin out with distance so the settlement stays the busiest part.
+      const d = Math.hypot(x - cx, z - cz) / spread;
+      if (rand() < d * 0.75) continue;
+      if (nearRoad(x, z, 0)) continue;
+      if (this.query(x, z, 3.5).length) continue;
+      const b = chunkFor(x, z);
+      const roll = rand();
+      if (roll < 0.30) this.palm(b, x, z, rand);
+      else if (roll < 0.46) this.cypress(b, x, z, rand);
+      else if (roll < 0.70) this.broadleaf(b, x, z, rand);
+      else this.bush(b, x, z, rand);
+      this.plantCount++;
+    }
+
+    // Grass tufts: crossed quads, cheap enough to carpet the open ground.
+    for (let n = 0; n < target * 6; n++) {
+      const x = lerp(minX - 40, maxX + 40, rand());
+      const z = lerp(minZ - 40, maxZ + 40, rand());
+      if (nearRoad(x, z, 0)) continue;
+      if (this.query(x, z, 2).length) continue;
+      const b = chunkFor(x, z);
+      const h = 0.5 + rand() * 0.8, w = 0.5 + rand() * 0.6;
+      const g = 0.55 + rand() * 0.5;
+      b.style(TEX.LEAVES, [g * 0.85, g, g * 0.6], 0);
+      for (let k = 0; k < 2; k++) {
+        const a = rand() * Math.PI + k * Math.PI / 2;
+        const dx = Math.cos(a) * w, dz = Math.sin(a) * w;
+        b.quad([x - dx, 0, z - dz], [x + dx, 0, z + dz],
+               [x + dx, h, z + dz], [x - dx, h, z - dz], 1, 1);
+        b.quad([x + dx, 0, z + dz], [x - dx, 0, z - dz],
+               [x - dx, h, z - dz], [x + dx, h, z + dz], 1, 1);
+      }
+    }
+  }
+
+  palm(b, x, z, rand) {
+    const h = 5.5 + rand() * 5;
+    const lean = (rand() - 0.5) * 0.5;
+    b.style(TEX.BARK, [0.85, 0.74, 0.55], 0);
+    // Curved trunk: short stacked segments, drifting with the lean.
+    const segs = 5;
+    let px = x, pz = z;
+    for (let i = 0; i < segs; i++) {
+      const t = i / segs, t1 = (i + 1) / segs;
+      const r = 0.28 * (1 - t * 0.4);
+      const nx = x + lean * t1 * t1 * h * 0.35, nz = z + lean * 0.4 * t1 * t1 * h * 0.35;
+      b.cylinder((px + nx) / 2, h * (t + t1) / 2, (pz + nz) / 2, r, h / segs + 0.15, 6,
+                 { uRepeat: 2, vRepeat: 1 });
+      px = nx; pz = nz;
+    }
+    const topX = px, topZ = pz;
+    const fronds = 7 + ((rand() * 4) | 0);
+    const green = 0.7 + rand() * 0.5;
+    b.style(TEX.LEAVES, [green * 0.8, green, green * 0.55], 0);
+    for (let i = 0; i < fronds; i++) {
+      const a = (i / fronds) * Math.PI * 2 + rand() * 0.3;
+      const len = 2.4 + rand() * 1.6;
+      const droop = 0.5 + rand() * 0.5;
+      const ex = topX + Math.cos(a) * len, ez = topZ + Math.sin(a) * len;
+      const ey = h - droop * 1.5;
+      const wdt = 0.42;
+      const px2 = -Math.sin(a) * wdt, pz2 = Math.cos(a) * wdt;
+      // Each frond is a long tapered strip, drawn both sides.
+      b.quad([topX - px2, h, topZ - pz2], [topX + px2, h, topZ + pz2],
+             [ex + px2 * 0.3, ey, ez + pz2 * 0.3], [ex - px2 * 0.3, ey, ez - pz2 * 0.3], 1, 1);
+      b.quad([topX + px2, h, topZ + pz2], [topX - px2, h, topZ - pz2],
+             [ex - px2 * 0.3, ey, ez - pz2 * 0.3], [ex + px2 * 0.3, ey, ez + pz2 * 0.3], 1, 1);
+    }
+  }
+
+  cypress(b, x, z, rand) {
+    const h = 5 + rand() * 6;
+    b.style(TEX.BARK, [0.55, 0.45, 0.35], 0);
+    b.cylinder(x, h * 0.12, z, 0.2, h * 0.24, 5, { vRepeat: 1 });
+    const g = 0.45 + rand() * 0.3;
+    b.style(TEX.LEAVES, [g * 0.7, g, g * 0.55], 0);
+    // Stacked spheres tapering to a point.
+    const tiers = 4;
+    for (let i = 0; i < tiers; i++) {
+      const t = i / tiers;
+      b.sphere(x, h * (0.25 + t * 0.72), z, (1.15 - t * 0.75) * (0.8 + rand() * 0.3),
+               8, 6, 1.5 - t * 0.3);
+    }
+  }
+
+  broadleaf(b, x, z, rand) {
+    const h = 3.5 + rand() * 4;
+    b.style(TEX.BARK, [1, 1, 1], 0);
+    b.cylinder(x, h / 2, z, 0.26 + rand() * 0.12, h, 6, { uRepeat: 2, vRepeat: 2 });
+    const g = 0.75 + rand() * 0.45;
+    b.style(TEX.LEAVES, [g * 0.85, g, g * 0.6], 0);
+    const r = 1.6 + rand() * 1.4;
+    b.sphere(x, h + r * 0.35, z, r, 9, 7, 0.82);
+    b.sphere(x + (rand() - 0.5) * r, h + r * 0.05, z + (rand() - 0.5) * r, r * 0.68, 8, 6, 0.9);
+    b.sphere(x + (rand() - 0.5) * r * 0.8, h + r * 0.6, z + (rand() - 0.5) * r * 0.8, r * 0.55, 7, 5, 0.9);
+  }
+
+  bush(b, x, z, rand) {
+    const g = 0.6 + rand() * 0.5;
+    b.style(TEX.LEAVES, [g * 0.8, g, g * 0.5], 0);
+    const r = 0.7 + rand() * 0.9;
+    b.sphere(x, r * 0.8, z, r, 8, 6, 0.85);
+    b.sphere(x + (rand() - 0.5) * r, r * 0.6, z + (rand() - 0.5) * r, r * 0.7, 7, 5, 0.85);
   }
 
   buildRoad(chunkFor, road) {
