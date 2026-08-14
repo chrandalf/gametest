@@ -465,7 +465,9 @@ class MapWorld {
       if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0];
       if (p[1] < z0) z0 = p[1]; if (p[1] > z1) z1 = p[1];
     }
-    this.addCollider(x0, z0, x1, z1, h);
+    // Bounding box for the broad phase, real footprint for the narrow phase.
+    const col = this.addCollider(x0, z0, x1, z1, h);
+    col.poly = ring;
     this.buildings.push({ x0, z0, x1, z1, h, downtown: 0 });
   }
 }

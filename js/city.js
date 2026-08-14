@@ -33,6 +33,35 @@ const CAR_COLORS = [
 
 const roadCenter = (i) => i * CELL;
 
+// --- polygon collision -------------------------------------------------------
+// A rotated or L-shaped footprint is nothing like its bounding box, and the
+// difference is felt as invisible walls sticking out past the corners.
+
+function pointInPoly(x, z, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], zi = poly[i][1], xj = poly[j][0], zj = poly[j][1];
+    if ((zi > z) !== (zj > z) &&
+        x < (xj - xi) * (z - zi) / (zj - zi + 1e-12) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// Nearest point on the polygon's boundary to (x, z).
+function closestOnPoly(x, z, poly) {
+  let bx = poly[0][0], bz = poly[0][1], best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const ax = poly[j][0], az = poly[j][1];
+    const ex = poly[i][0] - ax, ez = poly[i][1] - az;
+    const len2 = ex * ex + ez * ez;
+    const t = len2 > 1e-12 ? clamp(((x - ax) * ex + (z - az) * ez) / len2, 0, 1) : 0;
+    const px = ax + ex * t, pz = az + ez * t;
+    const d = (x - px) * (x - px) + (z - pz) * (z - pz);
+    if (d < best) { best = d; bx = px; bz = pz; }
+  }
+  return [bx, bz, Math.sqrt(best)];
+}
+
 class City {
   constructor(gl, seed) {
     this.gl = gl;
@@ -90,7 +119,9 @@ class City {
   topAt(x, z) {
     let top = 0;
     for (const c of this.query(x, z, 0.01)) {
-      if (c.top > top) top = c.top;
+      if (c.top <= top) continue;
+      if (c.poly && !pointInPoly(x, z, c.poly)) continue;
+      top = c.top;
     }
     return top;
   }
@@ -101,6 +132,21 @@ class City {
     let hit = null;
     for (const c of this.query(pos.x, pos.z, r)) {
       if (aboveY !== undefined && c.top <= aboveY + 0.4) continue;   // driving on it
+      if (c.poly) {
+        const [bx, bz, dist] = closestOnPoly(pos.x, pos.z, c.poly);
+        const inside = pointInPoly(pos.x, pos.z, c.poly);
+        if (!inside && dist > r) continue;
+        // Push out to the boundary along the outward direction either way.
+        let ox = inside ? bx - pos.x : pos.x - bx;
+        let oz = inside ? bz - pos.z : pos.z - bz;
+        let ol = Math.hypot(ox, oz);
+        if (ol < 1e-5) { ox = 1; oz = 0; ol = 1; }
+        ox /= ol; oz /= ol;
+        pos.x = bx + ox * r;
+        pos.z = bz + oz * r;
+        hit = { nx: ox, nz: oz };
+        continue;
+      }
       const cx = clamp(pos.x, c.x0, c.x1);
       const cz = clamp(pos.z, c.z0, c.z1);
       let dx = pos.x - cx, dz = pos.z - cz;
