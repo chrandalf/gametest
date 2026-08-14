@@ -37,7 +37,9 @@ node tools/bundle.js            # writes dist/nightfall-city.html (~105 KB)
 | `C` | camera: chase, wide, bonnet |
 | `R` | respawn on the nearest road |
 | `T` | skip four hours |
+| `G` | start / cancel a time trial across the city |
 | `V` | start / stop recording a video clip |
+| `[` `]` | recording brightness |
 | `U` | hide the whole HUD for clean footage |
 | `P` / `H` | pause / hide help |
 | click | pointer-lock mouse look |
@@ -66,9 +68,14 @@ Any screen recorder works too — OBS, macOS `Cmd+Shift+5`, Windows `Win+Alt+R`.
 
 ## The game
 
-Drive through the yellow pillar of light to start a courier run. Every delivery
-tops the clock back up, and the top-ups get smaller as your streak grows, so the
-run ends eventually — the score is how many you made before it did.
+**Courier run.** Drive through the yellow pillar of light to start. Every
+delivery tops the clock back up, and the top-ups get smaller as your streak
+grows, so the run ends eventually — the score is how many you made before it did.
+
+**Time trial** (`G`). Puts you on a start line at one edge of the city and times
+you to the opposite edge, through four checkpoints that jog across the grid so
+it needs real corners rather than one straight blast. Routes are ~700 m and
+randomised each run; your best time is kept for the session.
 
 You can also just get out and walk around, steal any car on the road, and drive
 into things.
@@ -101,6 +108,17 @@ into things.
 - Buildings generated per lot with facade styles, shop fronts, parapets, roof
   clutter, water towers, setback towers and aircraft warning lights
 - Density and height fall off from downtown
+
+**Details**
+- Lock the tyres up and they squeal — filtered noise driven by combined slide and
+  cornering load, so a fast clean corner protests without the car stepping out —
+  and they lay dark rubber on the road from a ring buffer of trail quads
+- A nodding dog on the parcel shelf, run as a damped spring off the car's own
+  acceleration, visible through the tinted rear glass
+- A toilet roll streaming out of the back door: a Verlet chain with drag, wake
+  lift and flutter, whose unrolled length grows with speed up to nine metres
+- Number plates read E901 GBL, painted into the texture array pre-squashed so
+  the glyphs come out correctly proportioned on the 4.7:1 plate
 
 **Simulation**
 - Arcade car physics with a real velocity vector: grip, weight transfer, body roll,

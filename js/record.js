@@ -28,6 +28,14 @@ class Recorder {
     this.status = '';
     this.statusT = 0;
     this.lastUrl = null;
+    // WebM from MediaRecorder is tagged limited-range but carries full-range
+    // pixels, so most players crush the result. Lift the frames on the way in.
+    this.exposure = 1.18;
+  }
+
+  adjustExposure(delta) {
+    this.exposure = clamp(this.exposure + delta, 1.0, 2.0);
+    this.note(`Recording brightness ${Math.round(this.exposure * 100)}%`, 2.5);
   }
 
   get supported() {
@@ -82,13 +90,18 @@ class Recorder {
       } catch (e) { /* silent clip is better than no clip */ }
     }
 
+    // A host-mediated save is capped at 16 MB, so trade some bitrate for length
+    // there; a local recording keeps the higher rate and cleaner dark areas.
+    const hosted = !!((typeof window !== 'undefined' && window.claude) ||
+                      (typeof claude !== 'undefined' ? claude : null));
+    const bitrate = hosted ? 8000000 : 14000000;
     const mime = REC_MIME_CANDIDATES.find(
       (m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m));
     let rec;
     try {
       rec = new MediaRecorder(stream, mime
-        ? { mimeType: mime, videoBitsPerSecond: 8000000 }
-        : { videoBitsPerSecond: 8000000 });
+        ? { mimeType: mime, videoBitsPerSecond: bitrate }
+        : { videoBitsPerSecond: bitrate });
     } catch (e) {
       this.note('Could not start the recorder: ' + e.message, 5);
       return;
@@ -145,7 +158,13 @@ class Recorder {
     const c = this.ctx;
     // Both source canvases are drawn this same frame, so the WebGL drawing
     // buffer is still readable here even without preserveDrawingBuffer.
+    const e = this.exposure;
+    if (e > 1.001 && 'filter' in c) {
+      c.filter = `brightness(${e.toFixed(3)}) contrast(${(1 + (e - 1) * 0.28).toFixed(3)}) ` +
+                 `saturate(${(1 + (e - 1) * 0.35).toFixed(3)})`;
+    }
     c.drawImage(this.view, 0, 0, this.w, this.h);
+    if ('filter' in c) c.filter = 'none';    // the HUD is already the right level
     c.drawImage(this.hudCanvas, 0, 0, this.w, this.h);
   }
 
@@ -224,7 +243,8 @@ class Recorder {
     const t = this.elapsed;
     const label = `${String(Math.floor(t / 60)).padStart(2, '0')}:` +
                   `${String(Math.floor(t % 60)).padStart(2, '0')}`;
-    const size = this.bytes ? `  ${(this.bytes / 1048576).toFixed(0)} MB` : '';
+    const size = (this.bytes ? `  ${(this.bytes / 1048576).toFixed(0)} MB` : '') +
+                 `  ·  ${Math.round(this.exposure * 100)}%`;
     c.save();
     c.textAlign = 'left';
     c.font = '700 13px system-ui, sans-serif';

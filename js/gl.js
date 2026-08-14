@@ -372,14 +372,61 @@ class MeshBuilder {
   }
 }
 
+// Geometry that is rebuilt every frame (skid trails, cloth strips). Buffers are
+// allocated once at a fixed capacity and refilled with bufferSubData.
+class DynamicMesh {
+  constructor(gl, maxVerts, maxIndices) {
+    this.gl = gl;
+    this.count = 0;
+    this.capacityV = maxVerts;
+    this.capacityI = maxIndices;
+    this.vao = gl.createVertexArray();
+    gl.bindVertexArray(this.vao);
+    this.vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, maxVerts * VERT_FLOATS * 4, gl.DYNAMIC_DRAW);
+    const stride = VERT_FLOATS * 4;
+    for (const [loc, size, off] of [[0,3,0],[1,3,3],[2,2,6],[3,1,8],[4,3,9],[5,1,12]]) {
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, off * 4);
+    }
+    this.ebo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ebo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, maxIndices * 4, gl.DYNAMIC_DRAW);
+    gl.bindVertexArray(null);
+    this.vScratch = new Float32Array(maxVerts * VERT_FLOATS);
+    this.iScratch = new Uint32Array(maxIndices);
+    this.min = [-1e5, -1e5, -1e5];
+    this.max = [1e5, 1e5, 1e5];
+  }
+
+  update(builder) {
+    const gl = this.gl;
+    const nv = Math.min(builder.v.length, this.capacityV * VERT_FLOATS);
+    const ni = Math.min(builder.i.length, this.capacityI);
+    if (!ni) { this.count = 0; return; }
+    for (let i = 0; i < nv; i++) this.vScratch[i] = builder.v[i];
+    for (let i = 0; i < ni; i++) this.iScratch[i] = builder.i[i];
+    gl.bindVertexArray(this.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.vScratch.subarray(0, nv));
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ebo);
+    gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, this.iScratch.subarray(0, ni));
+    gl.bindVertexArray(null);
+    this.count = ni;
+  }
+}
+
 // ------------------------------------------------- procedural texture set ---
 
 const TEX = {
   ASPHALT: 0, SIDEWALK: 1, GRASS: 2, ROOF: 3, PLAIN: 4,
   GLASS: 5, OFFICE: 6, BRICK: 7, MODERN: 8, TOWER: 9,
   SHOP: 10, METAL: 11, CONCRETE: 12, LEAVES: 13, BARK: 14, MARK: 15,
+  PLATE: 16,
 };
-const TEX_COUNT = 16;
+const TEX_COUNT = 17;
+const PLATE_TEXT = 'E901 GBL';
 const TEX_SIZE = 256;
 
 function makeTextureArray(gl) {
@@ -525,6 +572,26 @@ function makeTextureArray(gl) {
   };
 
   painters[TEX.PLAIN] = () => { fill('#ffffff'); noise(6); };
+
+  painters[TEX.PLATE] = () => {
+    // The square tile is stretched across a 4.7:1 plate, so the glyphs are drawn
+    // pre-squashed here and come out correctly proportioned on the car.
+    fill('#f2f2ee');
+    ctx.fillStyle = '#111';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const size = 190;
+    ctx.font = `bold ${size}px "Arial Narrow", Arial, system-ui, sans-serif`;
+    const w = ctx.measureText(PLATE_TEXT).width || 1;
+    ctx.save();
+    ctx.translate(S / 2, S / 2);
+    ctx.scale((S * 0.92) / w, 1);
+    ctx.fillText(PLATE_TEXT, 0, 6);
+    ctx.restore();
+    ctx.strokeStyle = '#2a2a2a';
+    ctx.lineWidth = 7;
+    ctx.strokeRect(3.5, 3.5, S - 7, S - 7);
+  };
   painters[TEX.MARK] = () => { fill('#f2f2ee'); noise(10); };
 
   painters[TEX.GLASS] = () => {

@@ -115,8 +115,10 @@ function buildCarMeshes(gl) {
   paint.style(TEX.PLAIN, [0.13, 0.13, 0.15], 0);
   paint.chamferBox(0, 0.52, 2.18, 0.90, 0.17, 0.14, 0.10, { perUnit: 1 });   // front bumper
   paint.chamferBox(0, 0.52, -2.20, 0.88, 0.17, 0.13, 0.10, { perUnit: 1 });  // rear bumper
-  paint.style(TEX.PLAIN, [0.9, 0.9, 0.92], 0);
-  paint.chamferBox(0, 0.40, 2.28, 0.40, 0.10, 0.03, 0.03, { perUnit: 1 });   // plate
+  paint.style(TEX.PLATE, [1, 1, 1], 0);
+  paint.quad([-0.40, 0.33, 2.30], [0.40, 0.33, 2.30], [0.40, 0.50, 2.30], [-0.40, 0.50, 2.30], 1, 1);
+  paint.style(TEX.PLATE, [1.0, 0.86, 0.18], 0);   // rear plates are yellow here
+  paint.quad([0.40, 0.36, -2.32], [-0.40, 0.36, -2.32], [-0.40, 0.53, -2.32], [0.40, 0.53, -2.32], 1, 1);
   // Wing mirrors — small, but their absence is very noticeable.
   paint.style(TEX.METAL, [1, 1, 1], 0);
   for (const s of [-1, 1]) {
@@ -284,6 +286,7 @@ class Vehicle {
 
     this.wheelSpin += vf * dt / 0.4;
     this.slip = Math.abs(vr);
+    this.steerRate = yawRate;
 
     if (city) this.collide(city);
   }

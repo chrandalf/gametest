@@ -12,6 +12,8 @@ const game = {
   shake: 0,
   stats: { hits: 0, knocked: 0, topSpeed: 0 },
   run: { active: false, score: 0, best: 0, timeLeft: 0, target: null, streak: 0, message: '', messageT: 0 },
+  trial: { active: false, phase: 'idle', route: [], idx: 0, t: 0, countdown: 0, best: null, last: null },
+  tyreLoad: 0,
 };
 
 const keys = Object.create(null);
@@ -44,6 +46,10 @@ function start() {
   game.cube = buildCubeMesh(gl);
   game.body = buildBodyMeshes(gl);
   game.marker = buildMarkerMesh(gl, 3.4, 3.05, 5.5);
+  game.dogMeshes = buildDogMeshes(gl);
+  game.dog = new NoddingDog();
+  game.streamer = new ToiletStreamer(gl);
+  game.skids = new SkidMarks(gl, 460);
   game.markerBeam = buildMarkerMesh(gl, 1.5, 1.35, 70);
   console.log(`city built in ${(performance.now() - t0) | 0} ms, ` +
               `${game.city.chunks.length} chunks, ${game.city.buildings.length} buildings`);
@@ -129,6 +135,9 @@ function bindInput() {
     if (e.code === 'KeyT') game.clock = (game.clock + 4) % 24;
     if (e.code === 'KeyV') game.recorder.toggle();
     if (e.code === 'KeyU') game.hudVisible = !game.hudVisible;
+    if (e.code === 'KeyG') toggleTimeTrial();
+    if (e.code === 'BracketRight') game.recorder.adjustExposure(0.06);
+    if (e.code === 'BracketLeft') game.recorder.adjustExposure(-0.06);
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
     startAudio();
   });
@@ -224,7 +233,29 @@ function startAudio() {
   filter.connect(gain); gain.connect(master);
   osc.start(); sub.start();
 
-  game.audio = { ctx, master, osc, sub, filter, gain };
+  // Tyre squeal: looping noise through a resonant bandpass.
+  const noiseLen = 2;
+  const buf = ctx.createBuffer(1, ctx.sampleRate * noiseLen, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  let last = 0;
+  for (let i = 0; i < data.length; i++) {
+    const white = Math.random() * 2 - 1;
+    last = (last + 0.04 * white) / 1.04;      // slightly pink, less hissy
+    data[i] = last * 3.2;
+  }
+  const skidSrc = ctx.createBufferSource();
+  skidSrc.buffer = buf;
+  skidSrc.loop = true;
+  const skidFilter = ctx.createBiquadFilter();
+  skidFilter.type = 'bandpass';
+  skidFilter.frequency.value = 1600;
+  skidFilter.Q.value = 3.2;
+  const skidGain = ctx.createGain();
+  skidGain.gain.value = 0;
+  skidSrc.connect(skidFilter); skidFilter.connect(skidGain); skidGain.connect(master);
+  skidSrc.start();
+
+  game.audio = { ctx, master, osc, sub, filter, gain, skidGain, skidFilter };
 }
 
 function updateAudio(dt) {
@@ -239,6 +270,10 @@ function updateAudio(dt) {
   a.osc.frequency.value = 55 + rpm * 190;
   a.sub.frequency.value = 27 + rpm * 95;
   a.filter.frequency.value = 380 + rpm * 1500;
+
+  const squeal = inCar ? clamp((game.tyreLoad - 1.6) / 7, 0, 1) : 0;
+  a.skidGain.gain.value += (squeal * 0.5 - a.skidGain.gain.value) * Math.min(1, dt * 12);
+  a.skidFilter.frequency.value = 1250 + squeal * 1500 + Math.sin(game.time * 9) * 120;
 }
 
 function playThud(strength) {
@@ -271,6 +306,14 @@ function update(dt) {
     const boost = keys.ShiftLeft || keys.ShiftRight ? 1.35 : 1;
     car.drive(dt, throttle * boost, steer, !!keys.Space, game.city);
     game.stats.topSpeed = Math.max(game.stats.topSpeed, car.speed * 3.6);
+
+    // Tyres protest from actual sliding and from sheer cornering load, so a
+    // fast clean corner squeals without the car ever stepping out.
+    const lateralG = Math.abs(car.steerRate || 0) * Math.abs(car.forwardSpeed);
+    game.tyreLoad = (car.slip || 0) * 2.2 + lateralG * 0.55 + (keys.Space && car.speed > 6 ? 5 : 0);
+    game.skids.track(car, game.tyreLoad, throttle < 0);
+    game.dog.update(dt, car);
+    game.streamer.update(dt, car);
   } else {
     const w = p.walker;
     // Movement is relative to where the camera is looking.
@@ -348,6 +391,7 @@ function update(dt) {
   game.shake *= Math.exp(-dt * 3.4);
 
   updateRun(dt);
+  updateTrial(dt);
   updateCamera(dt);
   updateAudio(dt);
 }
@@ -450,7 +494,7 @@ function say(msg) { game.run.message = msg; game.run.messageT = 2.6; }
 function updateRun(dt) {
   const r = game.run;
   if (r.messageT > 0) r.messageT -= dt;
-  if (!r.target) return;
+  if (!r.target || game.trial.active) return;
 
   const px = game.player.inCar ? game.car.x : game.player.walker.x;
   const pz = game.player.inCar ? game.car.z : game.player.walker.z;
@@ -483,6 +527,104 @@ function updateRun(dt) {
     game.shake = Math.min(0.5, game.shake + 0.12);
     playThud(0.18);
     nextDrop();
+  }
+}
+
+// ---------------------------------------------------------- time trial -----
+
+// Builds a route from one edge of the city to the opposite edge: a start, a few
+// checkpoints that jog across the grid so it is not a single straight blast,
+// and a finish.
+function buildTrialRoute(rand) {
+  const last = GRID - 1;
+  const horizontal = rand() < 0.5;
+  const forward = rand() < 0.5;
+  const startMain = forward ? 0 : last;
+  const endMain = forward ? last : 0;
+  const cross = [1 + ((rand() * (GRID - 2)) | 0), 1 + ((rand() * (GRID - 2)) | 0)];
+
+  const nodes = [];
+  const steps = 4;
+  for (let k = 0; k <= steps; k++) {
+    const t = k / steps;
+    const main = Math.round(lerp(startMain, endMain, t));
+    // Weave between two cross-streets so the route needs real corners.
+    const lane = k === 0 || k === steps ? cross[0]
+               : clamp(Math.round(lerp(cross[0], cross[1], (k % 2) ? 1 : 0.15)), 0, last);
+    nodes.push(horizontal ? { i: main, j: lane } : { i: lane, j: main });
+  }
+
+  const route = [];
+  for (let k = 0; k < nodes.length; k++) {
+    const n = nodes[k];
+    const prev = nodes[k - 1] || n;
+    const di = Math.sign(n.i - prev.i), dj = Math.sign(n.j - prev.j);
+    const t = laneTarget(n.i, n.j, di || (horizontal ? (forward ? 1 : -1) : 0),
+                                   dj || (horizontal ? 0 : (forward ? 1 : -1)));
+    route.push({ x: t.x, z: t.z, node: n });
+  }
+  return route;
+}
+
+function toggleTimeTrial() {
+  const tr = game.trial;
+  if (tr.active) {
+    tr.active = false;
+    tr.phase = 'idle';
+    say('Time trial cancelled');
+    return;
+  }
+  const route = buildTrialRoute(game.rand);
+  if (route.length < 2) return;
+  tr.route = route;
+  tr.idx = 1;
+  tr.t = 0;
+  tr.countdown = 3.2;
+  tr.phase = 'countdown';
+  tr.active = true;
+
+  // Put the car on the start line, pointing at the first checkpoint.
+  if (!game.player.inCar) { game.player.inCar = true; game.player.walker = null; }
+  const car = game.car;
+  const s = route[0], n = route[1];
+  car.x = s.x; car.z = s.z;
+  car.vx = 0; car.vz = 0; car.roll = 0; car.pitch = 0;
+  car.yaw = Math.atan2(n.x - s.x, n.z - s.z);
+  game.streamer.reset(car);
+  say('TIME TRIAL — cross the city');
+}
+
+function updateTrial(dt) {
+  const tr = game.trial;
+  if (!tr.active) return;
+  const car = game.car;
+
+  if (tr.phase === 'countdown') {
+    tr.countdown -= dt;
+    car.vx = 0; car.vz = 0;
+    if (tr.countdown <= 0) { tr.phase = 'running'; say('GO!'); }
+    return;
+  }
+  if (tr.phase !== 'running') return;
+
+  tr.t += dt;
+  const cp = tr.route[tr.idx];
+  if (!cp) { tr.phase = 'idle'; tr.active = false; return; }
+  tr.distance = Math.hypot(cp.x - car.x, cp.z - car.z);
+  if (tr.distance < 6.5) {
+    tr.idx++;
+    if (tr.idx >= tr.route.length) {
+      tr.phase = 'done';
+      tr.active = false;
+      tr.last = tr.t;
+      const record = tr.best === null || tr.t < tr.best;
+      if (record) tr.best = tr.t;
+      say(record ? `FINISH ${tr.t.toFixed(2)}s — NEW BEST` : `FINISH ${tr.t.toFixed(2)}s (best ${tr.best.toFixed(2)}s)`);
+      playThud(0.5);
+    } else {
+      playThud(0.15);
+      say(`CHECKPOINT ${tr.idx - 1}/${tr.route.length - 1}  ${tr.t.toFixed(1)}s`);
+    }
   }
 }
 
@@ -645,8 +787,11 @@ function drawActors(r, env, shadowPass) {
     r.draw(game.carMeshes.paint, _m);
 
     if (!shadowPass) {
-      r.setMaterial([1, 1, 1], 0, 0);
+      r.beginTranslucent();
+      r.setMaterial([1, 1, 1], 0, 0, 0.62);
       r.draw(game.carMeshes.glass, _m);
+      r.endTranslucent();
+      r.setMaterial([1, 1, 1], 0, 0);
       r.setMaterial([1, 1, 1], headlightsOn ? 1.2 : 0.05, 0);
       r.draw(game.carMeshes.lights, _m);
       r.setMaterial([1, 1, 1], car.braking ? 1.4 : (headlightsOn ? 0.45 : 0.05), 0);
@@ -672,8 +817,53 @@ function drawActors(r, env, shadowPass) {
   }
   if (!game.player.inCar) drawPerson(r, game.player.walker, shadowPass, 0);
 
+  // Skid marks lie flat on the road, under everything else.
+  if (!shadowPass && game.skids.mesh.count) {
+    r.setMaterial([1, 1, 1], 0, 0);
+    r.draw(game.skids.mesh, null);
+  }
+
+  // Props that ride with the player's car.
+  if (game.player.inCar) {
+    const car = game.car;
+    car.modelMatrix(_m);
+    if (!shadowPass) r.setMaterial([1, 1, 1], 0, 0);
+    // Nodding dog on the parcel shelf.
+    M4.compose(_m2, 0, 1.02, -1.30, 0, 0, 0, 1, 1, 1);
+    M4.mul(_m3, _m, _m2);
+    r.draw(game.dogMeshes.body, _m3);
+    M4.compose(_m2, 0, 1.02 + 0.20, -1.30 - 0.02, game.dog.yawAngle, game.dog.angle, 0, 1, 1, 1);
+    M4.mul(_m3, _m, _m2);
+    r.draw(game.dogMeshes.head, _m3);
+    // Toilet roll trailing out of the back door.
+    if (game.streamer.mesh.count) {
+      if (!shadowPass) r.setMaterial([1, 1, 1], 0, 0);
+      r.draw(game.streamer.mesh, null);
+    }
+  }
+
+  // Time-trial checkpoints.
+  const tr = game.trial;
+  if (tr.active && !shadowPass) {
+    const pulse = 0.5 + Math.sin(game.time * 4) * 0.35;
+    r.beginTranslucent();
+    for (let k = tr.idx; k < Math.min(tr.route.length, tr.idx + 2); k++) {
+      const cp = tr.route[k];
+      const nextUp = k === tr.idx;
+      const finish = k === tr.route.length - 1;
+      const tint = finish ? [0.5, 1.0, 0.55] : [0.35, 0.85, 1.0];
+      M4.compose(_m, cp.x, 0.12, cp.z, game.time * 0.7, 0, 0, 1, 1, 1);
+      r.setMaterial(tint, nextUp ? pulse : pulse * 0.4, 0, nextUp ? 0.45 : 0.2);
+      r.draw(game.marker, _m);
+      M4.compose(_m, cp.x, 0.12, cp.z, -game.time * 0.35, 0, 0, 1, 1, 1);
+      r.setMaterial(tint, pulse * 0.5, 0, nextUp ? 0.14 : 0.07);
+      r.draw(game.markerBeam, _m);
+    }
+    r.endTranslucent();
+  }
+
   // Delivery marker: spins, pulses, and glows at night.
-  const t = game.run.target;
+  const t = game.trial.active ? null : game.run.target;
   if (t && !shadowPass) {
     const pulse = 0.55 + Math.sin(game.time * 3.2) * 0.35;
     r.beginTranslucent();
@@ -868,9 +1058,54 @@ function drawHud() {
   c.fillText(`${game.fps.toFixed(0)} fps · ${inCar ? 'driving' : 'on foot'}`, 38, 60);
   c.fillText(`top ${game.stats.topSpeed.toFixed(0)} km/h · ${game.stats.hits} prangs`, 38, 76);
 
+  // --- time trial panel ---
+  const tr = game.trial;
+  if (tr.active || tr.phase === 'done') {
+    const cp = tr.route[Math.min(tr.idx, tr.route.length - 1)];
+    c.textAlign = 'center';
+    c.fillStyle = 'rgba(0,0,0,0.45)';
+    roundRect(c, W/2 - 132, 8, 264, tr.active ? 52 : 34, 10); c.fill();
+    c.fillStyle = '#5ad1ff';
+    c.font = '700 11px system-ui, sans-serif';
+    c.fillText('TIME TRIAL', W/2, 14);
+    c.fillStyle = '#fff';
+    c.font = '700 24px system-ui, sans-serif';
+    if (tr.phase === 'countdown') {
+      c.fillText(Math.ceil(tr.countdown) > 0 ? String(Math.ceil(tr.countdown)) : 'GO', W/2, 28);
+    } else {
+      c.fillText(`${(tr.phase === 'done' ? (tr.last || 0) : tr.t).toFixed(2)}s`, W/2, 28);
+    }
+    if (tr.active) {
+      c.font = '600 12px system-ui, sans-serif';
+      c.fillStyle = 'rgba(255,255,255,0.7)';
+      const total = tr.route.length - 1;
+      c.fillText(`checkpoint ${Math.min(tr.idx, total)} / ${total}` +
+                 (tr.best !== null ? `   ·   best ${tr.best.toFixed(2)}s` : ''), W/2, 44);
+    }
+    if (cp && tr.phase === 'running') {
+      const camYaw = Math.atan2(game.cam.target[0] - game.cam.pos[0],
+                                game.cam.target[2] - game.cam.pos[2]);
+      const bearing = Math.atan2(cp.x - px, cp.z - pz) - camYaw;
+      c.save();
+      c.translate(W/2, 116);
+      c.fillStyle = 'rgba(0,0,0,0.42)';
+      c.beginPath(); c.arc(0, 0, 34, 0, 6.284); c.fill();
+      c.rotate(bearing);
+      c.fillStyle = '#5ad1ff';
+      c.beginPath();
+      c.moveTo(0, -22); c.lineTo(13, 12); c.lineTo(0, 5); c.lineTo(-13, 12);
+      c.closePath(); c.fill();
+      c.restore();
+      c.fillStyle = 'rgba(255,255,255,0.85)';
+      c.font = '600 13px system-ui, sans-serif';
+      c.fillText(`${Math.round(tr.distance || 0)} m`, W/2, 156);
+    }
+    c.textAlign = 'left';
+  }
+
   // --- objective compass, score and timer ---
   const run = game.run;
-  if (run.target) {
+  if (run.target && !tr.active && tr.phase !== 'done') {
     const camYaw = Math.atan2(game.cam.target[0] - game.cam.pos[0],
                               game.cam.target[2] - game.cam.pos[2]);
     const bearing = Math.atan2(run.target.x - px, run.target.z - pz) - camYaw;
@@ -937,7 +1172,8 @@ function drawHud() {
       'A / D — steer            Space — handbrake',
       'Shift — boost / sprint   F — get in / out of a car',
       'C — camera   R — respawn   T — skip time   P — pause',
-      'V — record video   U — hide the HUD for clean footage',
+      'V — record video   U — hide HUD   [ ] — clip brightness',
+      'G — time trial across the city',
       'Click the window for mouse look. H hides this.',
     ];
     const bw = 340, bh = lines.length * 19 + 26;
