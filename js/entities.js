@@ -160,6 +160,58 @@ function buildCarMeshes(gl) {
   };
 }
 
+// The van. Boxier and taller than the cars, and carrying a certain novelty
+// advertising prop on the nose — a sight gag borrowed from The IT Crowd.
+function buildVanMeshes(gl) {
+  const paint = new MeshBuilder();
+  paint.style(TEX.METAL, [1, 1, 1], -0.001);
+  paint.chamferBox(0, 1.30, -0.55, 1.05, 0.92, 1.95, 0.38, { perUnit: 0.5 });   // box body
+  paint.chamferBox(0, 0.86, 1.62, 1.00, 0.50, 0.70, 0.30, { perUnit: 0.5 });    // stubby bonnet
+  paint.chamferBox(0, 1.34, 1.05, 1.02, 0.56, 0.30, 0.26, { perUnit: 0.5 });    // cab front
+  paint.style(TEX.PLAIN, [0.13, 0.13, 0.15], 0);
+  paint.chamferBox(0, 0.50, 2.22, 0.98, 0.18, 0.14, 0.10, { perUnit: 1 });      // front bumper
+  paint.chamferBox(0, 0.50, -2.42, 0.98, 0.18, 0.13, 0.10, { perUnit: 1 });     // rear bumper
+  paint.chamferBox(0, 0.30, 0, 0.86, 0.10, 2.1, 0.08, { perUnit: 1 });          // underbody
+  paint.style(TEX.PLATE, [1.5, 1.24, 0.26], 0.34);
+  paint.quad([0.45, 0.32, -2.46], [-0.45, 0.32, -2.46], [-0.45, 0.56, -2.46], [0.45, 0.56, -2.46], 1, 1);
+
+  const glass = new MeshBuilder();
+  glass.style(TEX.PLAIN, [0.11, 0.15, 0.21], -0.001);
+  glass.chamferBox(0, 1.52, 1.32, 0.92, 0.36, 0.10, 0.07, { perUnit: 1 });      // windscreen
+  glass.chamferBox(1.02, 1.50, 0.55, 0.05, 0.30, 0.55, 0.05, { perUnit: 1 });
+  glass.chamferBox(-1.02, 1.50, 0.55, 0.05, 0.30, 0.55, 0.05, { perUnit: 1 });
+
+  // The prop itself: a big cartoon dome bolted to the front, exactly as daft as
+  // it was on television.
+  const prop = new MeshBuilder();
+  prop.style(TEX.PLAIN, [0.96, 0.76, 0.70], 0);
+  prop.sphere(0, 1.55, 2.05, 1.02, 16, 12, 0.86);
+  prop.style(TEX.PLAIN, [0.80, 0.42, 0.40], 0);
+  prop.sphere(0, 1.60, 2.92, 0.26, 10, 8, 0.9);
+  prop.style(TEX.METAL, [0.55, 0.56, 0.58], 0);
+  for (const s of [-1, 1]) prop.cylinder(s * 0.55, 1.05, 2.0, 0.05, 0.9, 5, { axis: 'y' });
+
+  const lights = new MeshBuilder();
+  lights.style(TEX.PLAIN, [1.0, 0.96, 0.85], 0);
+  for (const s of [-1, 1]) lights.chamferBox(s * 0.72, 0.80, 2.18, 0.20, 0.10, 0.06, 0.05, { perUnit: 1 });
+
+  const tail = new MeshBuilder();
+  tail.style(TEX.PLAIN, [0.95, 0.12, 0.10], 0);
+  for (const s of [-1, 1]) tail.chamferBox(s * 0.82, 0.90, -2.44, 0.16, 0.16, 0.05, 0.04, { perUnit: 1 });
+
+  return {
+    paint: paint.upload(gl), glass: glass.upload(gl), prop: prop.upload(gl),
+    lights: lights.upload(gl), tail: tail.upload(gl),
+  };
+}
+
+const VAN_WHEELS = [
+  [ 0.95, 0.45,  1.45, true],
+  [-0.95, 0.45,  1.45, true],
+  [ 0.95, 0.45, -1.60, false],
+  [-0.95, 0.45, -1.60, false],
+];
+
 // A hollow glowing tube you drive through — the delivery marker.
 function buildMarkerMesh(gl, rOut, rIn, h) {
   const b = new MeshBuilder();

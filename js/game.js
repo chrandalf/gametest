@@ -45,6 +45,7 @@ function start() {
   game.city = new City(gl, 20260814);
   game.ramps = game.city.ramps;
   game.carMeshes = buildCarMeshes(gl);
+  game.vanMeshes = buildVanMeshes(gl);
   game.cube = buildCubeMesh(gl);
   game.body = buildBodyMeshes(gl);
   game.marker = buildMarkerMesh(gl, 3.4, 3.05, 5.5);
@@ -75,6 +76,14 @@ function start() {
       CAR_COLORS[(rand() * CAR_COLORS.length) | 0], rand);
     if (Math.hypot(car.x - game.car.x, car.z - game.car.z) < 18) continue;
     game.traffic.push(car);
+  }
+  // One NPC is the van, in white with the novelty prop on the front.
+  if (game.traffic.length) {
+    const van = game.traffic[(rand() * game.traffic.length) | 0];
+    van.van = true;
+    van.color = [0.95, 0.95, 0.97];
+    van.maxSpeed = Math.min(van.maxSpeed, 15);
+    game.van = van;
   }
   game.abandoned = [];
 
@@ -883,19 +892,24 @@ function drawActors(r, env, shadowPass) {
     if (d > (shadowPass ? 180 : 460)) continue;
     car.modelMatrix(_m);
 
+    const M = car.van ? game.vanMeshes : game.carMeshes;
     if (!shadowPass) r.setMaterial(car.color, 0, 0);
-    r.draw(game.carMeshes.paint, _m);
+    r.draw(M.paint, _m);
+    if (car.van && !shadowPass) {
+      r.setMaterial([1, 1, 1], 0, 0);
+      r.draw(M.prop, _m);
+    }
 
     if (!shadowPass) {
       r.beginTranslucent();
       r.setMaterial([1, 1, 1], 0, 0, 0.62);
-      r.draw(game.carMeshes.glass, _m);
+      r.draw(M.glass, _m);
       r.endTranslucent();
       r.setMaterial([1, 1, 1], 0, 0);
       r.setMaterial([1, 1, 1], headlightsOn ? 1.2 : 0.05, 0);
-      r.draw(game.carMeshes.lights, _m);
+      r.draw(M.lights, _m);
       r.setMaterial([1, 1, 1], car.braking ? 1.4 : (headlightsOn ? 0.45 : 0.05), 0);
-      r.draw(game.carMeshes.tail, _m);
+      r.draw(M.tail, _m);
       // Nitro flame out of the back.
       if (car === game.car && game.nitro.active) {
         const flick = 0.75 + Math.sin(game.time * 47) * 0.25;
@@ -910,7 +924,7 @@ function drawActors(r, env, shadowPass) {
     }
 
     if (d < (shadowPass ? 60 : 140)) {
-      for (const [wx, wy, wz, steerable] of WHEELS) {
+      for (const [wx, wy, wz, steerable] of (car.van ? VAN_WHEELS : WHEELS)) {
         M4.compose(_m2, wx, wy, wz, steerable ? car.steer : 0, car.wheelSpin, 0, 1, 1, 1);
         M4.mul(_m3, _m, _m2);
         r.draw(game.carMeshes.wheel, _m3);
