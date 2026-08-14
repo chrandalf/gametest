@@ -157,6 +157,7 @@ function bindInput() {
     if (e.code === 'KeyG') toggleTimeTrial();
     if (e.code === 'KeyM' && typeof SAMPLE_VILLAGE !== 'undefined') loadMapWorld(SAMPLE_VILLAGE, 'Sample Village');
     if (e.code === 'KeyN') document.getElementById('mapfile').click();
+    if (e.code === 'KeyK') loadTableWorld();
     if (e.code === 'KeyB' && game.isMap) location.reload();
     if (e.code === 'BracketRight') game.recorder.adjustExposure(0.06);
     if (e.code === 'BracketLeft') game.recorder.adjustExposure(-0.06);
@@ -422,6 +423,26 @@ function update(dt) {
   }
   game.shake *= Math.exp(-dt * 3.4);
 
+  if (game.isTable && game.city.pocketAt && p.inCar) {
+    const pk = game.city.pocketAt(car.x, car.z);
+    if (pk && !car.potted) {
+      car.potted = 1.1;
+      game.stats.potted = (game.stats.potted || 0) + 1;
+      say('POTTED');
+      playThud(0.5);
+    }
+  }
+  if (car.potted) {
+    car.potted -= dt;
+    car.y -= 26 * dt;                       // drop into the pocket
+    if (car.potted <= 0) {
+      car.potted = 0;
+      car.x = game.city.spawn.x; car.z = game.city.spawn.z;
+      car.y = 0; car.vx = 0; car.vz = 0; car.yaw = 0;
+      car.airborne = false;
+    }
+  }
+
   updateRun(dt);
   updateTrial(dt);
   game.stunts.tick(dt);
@@ -451,8 +472,14 @@ function updateCamera(dt) {
       cam.fov = 66 + sp * 0.22;
       return applyShake(cam);
     }
-    dist = game.camMode === 1 ? 15 : 9.2 + sp * 0.08;
-    height = game.camMode === 1 ? 7.5 : 3.5 + sp * 0.02;
+    if (game.isTable) {
+      // Pulled back and looking down, so the car reads as a toy.
+      dist = game.camMode === 1 ? 46 : 26 + sp * 0.35;
+      height = game.camMode === 1 ? 40 : 20 + sp * 0.2;
+    } else {
+      dist = game.camMode === 1 ? 15 : 9.2 + sp * 0.08;
+      height = game.camMode === 1 ? 7.5 : 3.5 + sp * 0.02;
+    }
     tx = car.x; ty = 1.1; tz = car.z;
     look = 6 + sp * 0.16;
   } else {
@@ -545,6 +572,31 @@ function loadMapWorld(json, label) {
   say(`Loaded ${game.mapLabel} — ${world.buildings.length} buildings`);
   console.log(`map: ${world.buildings.length} buildings, ${world.chunks.length} chunks, ` +
               `${world.roadNodes.length} road nodes`);
+  return true;
+}
+
+// Micro Machines mode.
+function loadTableWorld() {
+  const gl = game.renderer.gl;
+  const world = new TableWorld(gl, game.rand);
+  game.city = world;
+  game.ramps = world.ramps;
+  game.isMap = true;
+  game.isTable = true;
+  game.traffic = [];
+  game.peds = [];
+  game.abandoned = [];
+  game.snipers = { list: [], mesh: { count: 0 }, hitFlash: 0, update() {} };
+  game.skids = new SkidMarks(gl, 460);
+  const car = game.car;
+  car.x = world.spawn.x; car.z = world.spawn.z; car.y = 0;
+  car.yaw = 0; car.vx = 0; car.vz = 0; car.airborne = false;
+  if (!game.player.inCar) { game.player.inCar = true; game.player.walker = null; }
+  game.streamer.reset(car);
+  game.trial.active = false; game.trial.phase = 'idle';
+  game.camMode = 0;
+  nextDrop();
+  say('MICRO MACHINES — mind the pockets');
   return true;
 }
 
@@ -1352,7 +1404,7 @@ function drawHud() {
       'Shift — NITRO (refills, and stunts top it up)   F — in / out of car',
       'C — camera   R — respawn   T — skip time   P — pause',
       'V — record video   U — hide HUD   [ ] — clip brightness',
-      'G — time trial   M — load sample village   N — open a map file   B — back',
+      'G — time trial   M — village   K — MICRO MACHINES   N — map file   B — back',
       'Click the window for mouse look. H hides this.',
     ];
     const bw = 340, bh = lines.length * 19 + 26;
