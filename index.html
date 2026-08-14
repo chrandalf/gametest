@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Nightfall City</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #05070c;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #fff;
+  }
+  #wrap { position: fixed; inset: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #view { z-index: 1; }
+  #hud { z-index: 2; pointer-events: none; }
+  #vignette {
+    position: absolute; inset: 0; z-index: 3; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0) 45%, rgba(0,0,0,0.45) 100%);
+  }
+  #loading, #fatal {
+    position: absolute; inset: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 14px; text-align: center; padding: 32px;
+    background: linear-gradient(160deg, #0b1220, #05070c);
+  }
+  #fatal { display: none; color: #ff8a7a; }
+  #loading h1 {
+    font-size: clamp(28px, 6vw, 54px); font-weight: 800; letter-spacing: -0.02em;
+    background: linear-gradient(90deg, #ffd34d, #ff7a4d 45%, #5ad1ff);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  #loading p { color: #93a3bb; font-size: 14px; max-width: 420px; line-height: 1.6; }
+  .dots::after {
+    content: ''; animation: dots 1.2s steps(4, end) infinite;
+  }
+  @keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="view"></canvas>
+  <canvas id="hud"></canvas>
+  <div id="vignette"></div>
+  <div id="loading">
+    <h1>NIGHTFALL CITY</h1>
+    <p class="dots">Pouring concrete, wiring streetlights, hiring drivers</p>
+    <p style="color:#5c6c86;font-size:12px">WebGL2 · no engine, no libraries</p>
+  </div>
+  <div id="fatal"></div>
+</div>
+
+<script src="js/math.js"></script>
+<script src="js/gl.js"></script>
+<script src="js/render.js"></script>
+<script src="js/city.js"></script>
+<script src="js/entities.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
