@@ -85,11 +85,22 @@ class City {
     return out;
   }
 
+  // Height of whatever solid is under a point: a rooftop if the point is over a
+  // building, otherwise the street. This is what makes roof landings possible.
+  topAt(x, z) {
+    let top = 0;
+    for (const c of this.query(x, z, 0.01)) {
+      if (c.top > top) top = c.top;
+    }
+    return top;
+  }
+
   // Push a circle out of any building it overlaps. Returns the surface normal
   // of the last hit, or null when nothing was touched.
-  resolveCircle(pos, r) {
+  resolveCircle(pos, r, aboveY) {
     let hit = null;
     for (const c of this.query(pos.x, pos.z, r)) {
+      if (aboveY !== undefined && c.top <= aboveY + 0.4) continue;   // driving on it
       const cx = clamp(pos.x, c.x0, c.x1);
       const cz = clamp(pos.z, c.z0, c.z1);
       let dx = pos.x - cx, dz = pos.z - cz;
@@ -227,6 +238,17 @@ class City {
       const yaw = horiz ? (rand() < 0.5 ? Math.PI / 2 : -Math.PI / 2) : (rand() < 0.5 ? 0 : Math.PI);
       this.ramps.emit(chunkAt(i, j), x, z, yaw, 9.5, 6.4, 2.1);
     }
+    // A few mega ramps: steep enough to put a nitro-boosted car on a roof.
+    for (let n = 0; n < 4; n++) {
+      const horiz = rand() < 0.5;
+      const i = 1 + ((rand() * (GRID - 2)) | 0), j = 1 + ((rand() * (GRID - 2)) | 0);
+      const along = roadCenter(horiz ? j : i) + (rand() - 0.5) * (CELL * 0.3);
+      const across = roadCenter(horiz ? i : j) - LANE;
+      const x = horiz ? along : across;
+      const z = horiz ? across : along;
+      const yaw = horiz ? (rand() < 0.5 ? Math.PI / 2 : -Math.PI / 2) : (rand() < 0.5 ? 0 : Math.PI);
+      this.ramps.emit(chunkAt(i, j), x, z, yaw, 15.0, 7.2, 5.4);
+    }
 
     for (const bld of builders) {
       if (bld.empty) continue;
@@ -354,6 +376,28 @@ class City {
       const corner = clamp(Math.min(w, d) * 0.07, 0.35, 1.4);
       b.chamferBox(cx, shopH + bodyH/2, cz, w/2, bodyH/2, d/2, corner,
                    { top: TEX.ROOF, topTint: [1, 1, 1], uvU, uvV });
+    }
+
+    // Facade relief: without it a building is a flat box no matter how good the
+    // lighting is. Ledges every few floors and corner pilasters give the sun
+    // something to cast a line of shadow from.
+    if (!roundTower) {
+      const bandGap = FLOOR_H * (height > 70 ? 6 : 4);
+      b.style(TEX.CONCRETE, tint, 0);
+      for (let y = shopH + bandGap; y < totalH - 1.2; y += bandGap) {
+        b.chamferBox(cx, y, cz, w/2 + 0.22, 0.17, d/2 + 0.22, 0.1,
+                     { perUnit: 0.5, skipTop: true });
+      }
+      // Pilasters up the corners, slightly proud of the wall.
+      const pil = Math.min(0.85, Math.min(w, d) * 0.09);
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          b.chamferBox(cx + sx * (w/2 - pil * 0.35), shopH + bodyH/2, cz + sz * (d/2 - pil * 0.35),
+                       pil, bodyH/2, pil, pil * 0.35, { perUnit: 0.45, skipTop: true });
+        }
+      }
+      // A cornice under the parapet reads as a real roofline.
+      b.chamferBox(cx, totalH - 0.35, cz, w/2 + 0.42, 0.35, d/2 + 0.42, 0.18, { perUnit: 0.5 });
     }
 
     // Parapet wall around the roof.

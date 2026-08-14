@@ -112,7 +112,7 @@ void main() {
   vec3 fogLin = toLinear(uFogColor);
   vec3 sunLin = toLinear(uSunColor) * 2.1;
   vec3 ground = fogLin * 0.45;
-  vec3 ambient = mix(ground, skyLin, N.y * 0.5 + 0.5) * toLinear(uAmbColor) * 1.12;
+  vec3 ambient = mix(ground, skyLin, N.y * 0.35 + 0.65) * toLinear(uAmbColor) * 1.45;
 
   vec3 color = albedo * (ambient + sunLin * ndl * shadow);
 

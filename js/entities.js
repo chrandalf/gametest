@@ -227,7 +227,7 @@ class Vehicle {
     this.ai = null;
     this.radius = 1.7;
     this.crashImpulse = 0;
-    this.y = 0; this.vy = 0;
+    this.y = 0; this.vy = 0; this.surfaceY = 0;
     this.airborne = false;
     this.spinPitch = 0; this.spinRoll = 0;
     this.spinPitchRate = 0; this.spinRollRate = 0;
@@ -236,8 +236,9 @@ class Vehicle {
   get speed() { return Math.hypot(this.vx, this.vz); }
   get forwardSpeed() { return this.vx * Math.sin(this.yaw) + this.vz * Math.cos(this.yaw); }
 
-  // throttle: -1..1, steerIn: -1..1, handbrake: bool
-  drive(dt, throttle, steerIn, handbrake, city) {
+  // throttle: -1..1, steerIn: -1..1, handbrake: bool. `nitro` adds thrust on
+  // top of the engine and is what gets a car high enough to land on a roof.
+  drive(dt, throttle, steerIn, handbrake, city, nitro) {
     const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
     const rx = fz, rz = -fx;
     let vf = this.vx * fx + this.vz * fz;
@@ -246,6 +247,7 @@ class Vehicle {
     const MAX = 46;
     const powerCurve = 1 - clamp(Math.abs(vf) / MAX, 0, 1) * 0.75;
     if (throttle > 0) vf += throttle * 26 * powerCurve * dt;
+    if (nitro) vf += 34 * dt * (1 - clamp(Math.abs(vf) / 78, 0, 1));
     else if (throttle < 0) {
       // Brake first, then reverse.
       if (vf > 0.5) vf -= 34 * dt;
@@ -290,6 +292,7 @@ class Vehicle {
     if (deck && !this.airborne) {
       this.y = deck.y;
       this.onRamp = deck;
+      this.surfaceY = 0;
     } else if (!this.airborne && this.onRamp) {
       // Left the ramp footprint: launch from wherever it was on the wedge. This
       // triggers on exit rather than inside a narrow window at the lip, which a
@@ -312,8 +315,11 @@ class Vehicle {
       if (steerIn !== 0) this.spinRollRate = clamp(this.spinRollRate + steerIn * 6.5 * dt, -8, 8);
       this.spinPitch += this.spinPitchRate * dt;
       this.spinRoll += this.spinRollRate * dt;
-      if (this.y <= 0) {
-        this.y = 0;
+      // Land on whatever is underneath: a rooftop counts.
+      const surface = city ? city.topAt(this.x, this.z) : 0;
+      if (this.y <= surface) {
+        this.y = surface;
+        this.surfaceY = surface;
         this.airborne = false;
         this.crashImpulse = Math.max(this.crashImpulse, Math.min(1, -this.vy / 22));
         this.vy = 0;
@@ -325,7 +331,15 @@ class Vehicle {
         this.spinPitchRate = 0; this.spinRollRate = 0;
       }
     } else {
-      this.y = 0;
+      // Grounded: follow the surface, and drop off the edge of a roof.
+      const surface = city ? city.topAt(this.x, this.z) : 0;
+      if (surface < this.y - 0.35) {
+        this.airborne = true;
+        this.vy = 0;
+      } else {
+        this.y = surface;
+        this.surfaceY = surface;
+      }
     }
 
     // Body attitude for a bit of weight transfer.
@@ -345,7 +359,7 @@ class Vehicle {
 
   collide(city) {
     const p = { x: this.x, z: this.z };
-    const hit = city.resolveCircle(p, this.radius);
+    const hit = city.resolveCircle(p, this.radius, this.y);
     if (hit) {
       const before = this.speed;
       this.x = p.x; this.z = p.z;

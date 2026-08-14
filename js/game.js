@@ -14,6 +14,7 @@ const game = {
   run: { active: false, score: 0, best: 0, timeLeft: 0, target: null, streak: 0, message: '', messageT: 0 },
   trial: { active: false, phase: 'idle', route: [], idx: 0, t: 0, countdown: 0, best: null, last: null },
   tyreLoad: 0,
+  nitro: { charge: 1, active: false },
 };
 
 const keys = Object.create(null);
@@ -306,9 +307,17 @@ function update(dt) {
 
   if (p.inCar) {
     const throttle = (keys.KeyW || keys.ArrowUp ? 1 : 0) + (keys.KeyS || keys.ArrowDown ? -1 : 0);
-    const steer = (keys.KeyA || keys.ArrowLeft ? -1 : 0) + (keys.KeyD || keys.ArrowRight ? 1 : 0);
-    const boost = keys.ShiftLeft || keys.ShiftRight ? 1.35 : 1;
-    car.drive(dt, throttle * boost, steer, !!keys.Space, game.city);
+    // Screen-right is -X for a camera looking down +Z, so D must decrease yaw.
+    // (The AI's steering sign is the opposite convention and must stay as is:
+    // its control loop needs positive steer to increase yaw.)
+    const steer = (keys.KeyA || keys.ArrowLeft ? 1 : 0) + (keys.KeyD || keys.ArrowRight ? -1 : 0);
+    // Nitro: a finite tank on Shift that refills slowly, plus a chunk back for
+    // every stunt landed.
+    const n = game.nitro;
+    const wants = (keys.ShiftLeft || keys.ShiftRight) && throttle > 0;
+    n.active = wants && n.charge > 0.02;
+    n.charge = clamp(n.charge + (n.active ? -dt * 0.42 : dt * 0.13), 0, 1);
+    car.drive(dt, throttle, steer, !!keys.Space, game.city, n.active);
     game.stats.topSpeed = Math.max(game.stats.topSpeed, car.speed * 3.6);
 
     // Tyres protest from actual sliding and from sheer cornering load, so a
@@ -317,6 +326,7 @@ function update(dt) {
     game.tyreLoad = (car.slip || 0) * 2.2 + lateralG * 0.55 + (keys.Space && car.speed > 6 ? 5 : 0);
     game.skids.track(car, car.airborne ? 0 : game.tyreLoad, throttle < 0);
     game.stunts.update(dt, car);
+    if (game.stunts.bannerT > 3.15) game.nitro.charge = clamp(game.nitro.charge + 0.35, 0, 1);
     game.dog.update(dt, car);
     game.streamer.update(dt, car);
   } else {
@@ -324,7 +334,7 @@ function update(dt) {
     // Movement is relative to where the camera is looking.
     const camYaw = w.yaw + 0; // filled below from mouse-driven camera
     void camYaw;
-    let mx = (keys.KeyD || keys.ArrowRight ? 1 : 0) + (keys.KeyA || keys.ArrowLeft ? -1 : 0);
+    let mx = (keys.KeyD || keys.ArrowRight ? -1 : 0) + (keys.KeyA || keys.ArrowLeft ? 1 : 0);
     let mz = (keys.KeyW || keys.ArrowUp ? 1 : 0) + (keys.KeyS || keys.ArrowDown ? -1 : 0);
     const yaw = game.walkCamYaw || 0;
     const wx = Math.sin(yaw) * mz + Math.cos(yaw) * mx;
@@ -808,6 +818,16 @@ function drawActors(r, env, shadowPass) {
       r.draw(game.carMeshes.lights, _m);
       r.setMaterial([1, 1, 1], car.braking ? 1.4 : (headlightsOn ? 0.45 : 0.05), 0);
       r.draw(game.carMeshes.tail, _m);
+      // Nitro flame out of the back.
+      if (car === game.car && game.nitro.active) {
+        const flick = 0.75 + Math.sin(game.time * 47) * 0.25;
+        r.beginTranslucent();
+        r.setMaterial([1.0, 0.55, 0.18], 3.2 * flick, 0, 0.8);
+        M4.compose(_m2, 0, 0.62, -2.5 - flick * 0.5, 0, 0, 0, 0.5, 0.42, 1.4 + flick);
+        M4.mul(_m3, _m, _m2);
+        r.draw(game.body.ball, _m3);
+        r.endTranslucent();
+      }
       r.setMaterial([1, 1, 1], 0, 0);
     }
 
@@ -1185,6 +1205,22 @@ function drawHud() {
   }
   c.textAlign = 'left';
 
+  // --- nitro ---
+  if (game.player.inCar) {
+    const n = game.nitro;
+    const bw = 150, bx = W - bw - 26, by = H - 176;
+    c.fillStyle = 'rgba(0,0,0,0.42)';
+    roundRect(c, bx, by, bw, 22, 7); c.fill();
+    const g = c.createLinearGradient(bx, 0, bx + bw, 0);
+    g.addColorStop(0, '#5ad1ff'); g.addColorStop(1, n.active ? '#ff7a4d' : '#9b8cff');
+    c.fillStyle = g;
+    roundRect(c, bx + 3, by + 3, (bw - 6) * n.charge, 16, 5); c.fill();
+    c.fillStyle = 'rgba(255,255,255,0.85)';
+    c.font = '700 10px system-ui, sans-serif';
+    c.textAlign = 'left';
+    c.fillText('NITRO  (shift)', bx + 8, by + 6);
+  }
+
   // --- stunt banner ---
   if (game.stunts.bannerT > 0) {
     const a = clamp(game.stunts.bannerT / 0.7, 0, 1);
@@ -1221,7 +1257,7 @@ function drawHud() {
     const lines = [
       'W / S — accelerate, brake & reverse',
       'A / D — steer            Space — handbrake',
-      'Shift — boost / sprint   F — get in / out of a car',
+      'Shift — NITRO (refills, and stunts top it up)   F — in / out of car',
       'C — camera   R — respawn   T — skip time   P — pause',
       'V — record video   U — hide HUD   [ ] — clip brightness',
       'G — time trial   ramps launch you: steer for rolls, W/S for flips',
