@@ -110,6 +110,11 @@ function start() {
   game.recorder = new Recorder();
   game.hudVisible = true;
 
+  const mf = document.getElementById('mapfile');
+  if (mf) mf.addEventListener('change', (ev) => {
+    if (ev.target.files && ev.target.files[0]) loadMapFromFile(ev.target.files[0]);
+  });
+
   bindInput();
   window.addEventListener('resize', layout);
   layout();
@@ -141,6 +146,9 @@ function bindInput() {
     if (e.code === 'KeyV') game.recorder.toggle();
     if (e.code === 'KeyU') game.hudVisible = !game.hudVisible;
     if (e.code === 'KeyG') toggleTimeTrial();
+    if (e.code === 'KeyM' && typeof SAMPLE_VILLAGE !== 'undefined') loadMapWorld(SAMPLE_VILLAGE, 'Sample Village');
+    if (e.code === 'KeyN') document.getElementById('mapfile').click();
+    if (e.code === 'KeyB' && game.isMap) location.reload();
     if (e.code === 'BracketRight') game.recorder.adjustExposure(0.06);
     if (e.code === 'BracketLeft') game.recorder.adjustExposure(-0.06);
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
@@ -487,11 +495,80 @@ function applyShake(cam) {
   cam.pos[2] += Math.cos(t * 1.3) * s;
 }
 
+// ------------------------------------------------------------ map import ---
+
+// Replace the world with one built from OSM data. Grid-specific systems
+// (traffic lanes, courier drops) are rebuilt from the map's own road nodes.
+function loadMapWorld(json, label) {
+  const gl = game.renderer.gl;
+  let world;
+  try {
+    const data = osmToWorld(json);
+    world = new MapWorld(gl, data);
+    if (!world.chunks.length) throw new Error('nothing drawable in this file');
+    game.mapLabel = label || data.origin.label || 'imported map';
+  } catch (e) {
+    say(`Map failed: ${e.message}`);
+    console.error(e);
+    return false;
+  }
+
+  game.city = world;
+  game.ramps = world.ramps;
+  game.isMap = true;
+  // Real roads are not a grid, so the grid traffic and pedestrians go.
+  game.traffic = [];
+  game.peds = [];
+  game.abandoned = [];
+  game.snipers = new Snipers(gl, world, game.rand);
+  game.skids = new SkidMarks(gl, 460);
+
+  const spawn = world.roadNodes.length
+    ? world.roadNodes[(game.rand() * world.roadNodes.length) | 0]
+    : { x: world.center[0], z: world.center[1] };
+  const car = game.car;
+  car.x = spawn.x; car.z = spawn.z; car.y = 0;
+  car.vx = 0; car.vz = 0; car.airborne = false;
+  if (!game.player.inCar) { game.player.inCar = true; game.player.walker = null; }
+  game.streamer.reset(car);
+  game.trial.active = false; game.trial.phase = 'idle';
+  nextDrop();
+  say(`Loaded ${game.mapLabel} — ${world.buildings.length} buildings`);
+  console.log(`map: ${world.buildings.length} buildings, ${world.chunks.length} chunks, ` +
+              `${world.roadNodes.length} road nodes`);
+  return true;
+}
+
+function loadMapFromFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      loadMapWorld(JSON.parse(reader.result), file.name);
+    } catch (e) {
+      say('That file is not JSON the importer understands');
+    }
+  };
+  reader.readAsText(file);
+}
+
 // ---------------------------------------------------------- courier run ----
 
 // Pick a drop-off at a random intersection, always a decent drive away.
 function nextDrop() {
   const rand = game.rand;
+  if (game.isMap && game.city.roadNodes && game.city.roadNodes.length > 4) {
+    const px0 = game.player.inCar ? game.car.x : game.player.walker.x;
+    const pz0 = game.player.inCar ? game.car.z : game.player.walker.z;
+    let pick = null, bestScore = -1;
+    for (let n = 0; n < 30; n++) {
+      const c = game.city.roadNodes[(rand() * game.city.roadNodes.length) | 0];
+      const d = Math.hypot(c.x - px0, c.z - pz0);
+      const score = -Math.abs(d - 190) + rand() * 40;
+      if (d > 70 && score > bestScore) { bestScore = score; pick = { x: c.x, z: c.z }; }
+    }
+    game.run.target = pick || game.city.roadNodes[0];
+    return;
+  }
   const px = game.player.inCar ? game.car.x : game.player.walker.x;
   const pz = game.player.inCar ? game.car.z : game.player.walker.z;
   let best = null, bestScore = -1;
@@ -588,6 +665,7 @@ function buildTrialRoute(rand) {
 }
 
 function toggleTimeTrial() {
+  if (game.isMap) { say('Time trials are city-only for now'); return; }
   const tr = game.trial;
   if (tr.active) {
     tr.active = false;
@@ -678,7 +756,7 @@ function environment() {
   void day;
   return {
     sunDir, sunColor, skyColor, fogColor, ambColor, night,
-    fogDensity: lerp(0.0026, 0.0034, night),
+    fogDensity: (game.isMap ? 0.0011 : 1) * lerp(0.0026, 0.0034, night),
     time: game.time,
     lights: collectLights(night),
   };
@@ -1260,7 +1338,7 @@ function drawHud() {
       'Shift — NITRO (refills, and stunts top it up)   F — in / out of car',
       'C — camera   R — respawn   T — skip time   P — pause',
       'V — record video   U — hide HUD   [ ] — clip brightness',
-      'G — time trial   ramps launch you: steer for rolls, W/S for flips',
+      'G — time trial   M — load sample village   N — open a map file   B — back',
       'Click the window for mouse look. H hides this.',
     ];
     const bw = 340, bh = lines.length * 19 + 26;
