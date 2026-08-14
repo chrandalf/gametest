@@ -65,15 +65,20 @@ const M4 = {
     return o;
   },
 
-  // Translate * RotateY * RotateX * RotateZ * Scale
+  // Translate * RotateY * RotateX * RotateZ * Scale.
+  //
+  // Yaw follows the same convention as the rest of the game: forward is
+  // (sin yaw, 0, cos yaw), so the model's local +Z (a car's bonnet) ends up
+  // pointing exactly where the movement code sends it. mIJ below is row I,
+  // column J; the array is column-major, so column J is written to o[J*4 + I].
   compose(o, px, py, pz, yaw, pitch, roll, sx, sy, sz) {
     const cy=Math.cos(yaw), sy_=Math.sin(yaw);
     const cp=Math.cos(pitch), sp=Math.sin(pitch);
     const cr=Math.cos(roll), sr=Math.sin(roll);
     // R = Ry * Rx * Rz
-    const m00 = cy*cr + sy_*sp*sr, m01 = cp*sr, m02 = -sy_*cr + cy*sp*sr;
-    const m10 = -cy*sr + sy_*sp*cr, m11 = cp*cr, m12 = sy_*sr + cy*sp*cr;
-    const m20 = sy_*cp, m21 = -sp, m22 = cy*cp;
+    const m00 = cy*cr + sy_*sp*sr, m01 = -cy*sr + sy_*sp*cr, m02 = sy_*cp;
+    const m10 = cp*sr,             m11 = cp*cr,              m12 = -sp;
+    const m20 = -sy_*cr + cy*sp*sr, m21 = sy_*sr + cy*sp*cr, m22 = cy*cp;
     o[0]=m00*sx; o[1]=m10*sx; o[2]=m20*sx; o[3]=0;
     o[4]=m01*sy; o[5]=m11*sy; o[6]=m21*sy; o[7]=0;
     o[8]=m02*sz; o[9]=m12*sz; o[10]=m22*sz; o[11]=0;

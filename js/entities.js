@@ -275,7 +275,9 @@ class Vehicle {
     this.z += this.vz * dt;
 
     // Body attitude for a bit of weight transfer.
-    const targetRoll = clamp(-vr * 0.02 - yawRate * Math.abs(vf) * 0.012, -0.16, 0.16);
+    // Both terms lean the body outward through a corner; the yaw term used to
+    // fight the slip term because it was tuned against a mirrored model matrix.
+    const targetRoll = clamp(-vr * 0.02 + yawRate * Math.abs(vf) * 0.012, -0.16, 0.16);
     const targetPitch = clamp((throttle > 0 ? -0.03 : 0) + (this.braking ? 0.05 : 0), -0.1, 0.1);
     this.roll += (targetRoll - this.roll) * clamp(dt * 6, 0, 1);
     this.pitch += (targetPitch - this.pitch) * clamp(dt * 6, 0, 1);
