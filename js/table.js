@@ -186,6 +186,41 @@ class TableWorld {
       this.lights.push({ x: lx, y: 74, z: 0 });
     }
 
+    // The circuit: an oval racing line inside the cushions, squeezed in at the
+    // middle so it runs either side of the rack rather than through it.
+    this.circuit = [];
+    const n = 16, rx = halfX * 0.74, rz = halfZ * 0.60;
+    for (let i = 0; i < n; i++) {
+      const a = i / n * Math.PI * 2;
+      const pinch = 1 - 0.18 * Math.abs(Math.cos(a));
+      this.circuit.push({ x: Math.cos(a) * rx, z: Math.sin(a) * rz * pinch });
+    }
+    // Paint the racing line on the baize so the course is visible.
+    b.style(TEX.MARK, [0.95, 0.9, 0.55], 0.25);
+    for (let i = 0; i < n; i++) {
+      const p0 = this.circuit[i], p1 = this.circuit[(i + 1) % n];
+      let dx = p1.x - p0.x, dz = p1.z - p0.z;
+      const len = Math.hypot(dx, dz) || 1;
+      dx /= len; dz /= len;
+      const w = 0.9, nx = -dz * w, nz = dx * w;
+      // Dashed, so it reads as a track marking rather than a painted stripe.
+      for (let k = 0; k < 4; k++) {
+        const t0 = k / 4 + 0.06, t1 = (k + 1) / 4 - 0.06;
+        const ax = p0.x + dx * len * t0, az = p0.z + dz * len * t0;
+        const bx = p0.x + dx * len * t1, bz = p0.z + dz * len * t1;
+        b.quad([ax - nx, 0.07, az - nz], [ax + nx, 0.07, az + nz],
+               [bx + nx, 0.07, bz + nz], [bx - nx, 0.07, bz - nz], 1, 1);
+      }
+    }
+    // Start/finish line across the first gate.
+    const g0 = this.circuit[0], g1 = this.circuit[1];
+    const gy = Math.atan2(g1.x - g0.x, g1.z - g0.z);
+    const px = Math.cos(gy) * 16, pz = -Math.sin(gy) * 16;
+    b.style(TEX.MARK, [1, 1, 1], 0.4);
+    b.quad([g0.x - px, 0.08, g0.z - pz], [g0.x + px, 0.08, g0.z + pz],
+           [g0.x + px + Math.sin(gy) * 3, 0.08, g0.z + pz + Math.cos(gy) * 3],
+           [g0.x - px + Math.sin(gy) * 3, 0.08, g0.z - pz + Math.cos(gy) * 3], 6, 1);
+
     this.chunks.push(b.upload(gl));
 
     this.extent = { minX: -halfX, maxX: halfX, minZ: -halfZ, maxZ: halfZ };

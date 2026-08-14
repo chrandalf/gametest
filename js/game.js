@@ -443,6 +443,11 @@ function update(dt) {
     }
   }
 
+  if (game.race) {
+    game.race.update(dt, { city: game.city }, car);
+    if (game.race.state === 'countdown') { car.vx = 0; car.vz = 0; }
+  }
+
   updateRun(dt);
   updateTrial(dt);
   game.stunts.tick(dt);
@@ -583,6 +588,7 @@ function loadTableWorld() {
   game.ramps = world.ramps;
   game.isMap = true;
   game.isTable = true;
+  game.race = null;
   game.traffic = [];
   game.peds = [];
   game.abandoned = [];
@@ -596,8 +602,20 @@ function loadTableWorld() {
   game.trial.active = false; game.trial.phase = 'idle';
   game.camMode = 0;
   nextDrop();
-  say('MICRO MACHINES — mind the pockets');
+  startRace(world);
   return true;
+}
+
+// Line up a race on the table's circuit.
+function startRace(world) {
+  if (!world.circuit) return;
+  game.race = new Race(game.renderer.gl, world, game.rand, 3);
+  const car = game.car;
+  car.x = game.race.playerGrid.x;
+  car.z = game.race.playerGrid.z;
+  car.yaw = game.race.playerGrid.yaw;
+  car.vx = 0; car.vz = 0; car.y = 0; car.airborne = false;
+  game.race.say('MICRO MACHINES — 3 laps', 3);
 }
 
 function loadMapFromFile(file) {
@@ -664,9 +682,7 @@ function updateRun(dt) {
       say(`OUT OF TIME — ${r.score} delivered`);
       r.score = 0;
       r.streak = 0;
-      game.snipers = new Snipers(gl, game.city, rand);
-
-  nextDrop();
+      nextDrop();
       return;
     }
   }
@@ -683,9 +699,7 @@ function updateRun(dt) {
     say(first ? 'RUN STARTED — get to the next drop' : `DELIVERY ${r.score}  +${bonus | 0}s`);
     game.shake = Math.min(0.5, game.shake + 0.12);
     playThud(0.18);
-    game.snipers = new Snipers(gl, game.city, rand);
-
-  nextDrop();
+    nextDrop();
   }
 }
 
@@ -936,6 +950,7 @@ const _m = M4.create(), _m2 = M4.create(), _m3 = M4.create();
 function drawActors(r, env, shadowPass) {
   const cam = game.cam;
   const cars = [game.car, ...game.traffic, ...game.abandoned];
+  if (game.race) for (const r of game.race.racers) cars.push(r);
   const headlightsOn = env.night > 0.25;
 
   for (const car of cars) {
@@ -1363,6 +1378,47 @@ function drawHud() {
     c.font = '700 10px system-ui, sans-serif';
     c.textAlign = 'left';
     c.fillText('NITRO  (shift)', bx + 8, by + 6);
+  }
+
+  // --- race ---
+  if (game.race) {
+    const R = game.race;
+    const pos = R.position(), field = R.racers.length + 1;
+    c.textAlign = 'center';
+    c.fillStyle = 'rgba(0,0,0,0.45)';
+    roundRect(c, W/2 - 150, 8, 300, 50, 10); c.fill();
+    c.fillStyle = '#ffd34d';
+    c.font = '700 11px system-ui, sans-serif';
+    c.fillText('MICRO MACHINES', W/2, 13);
+    c.fillStyle = '#fff';
+    c.font = '700 22px system-ui, sans-serif';
+    if (R.state === 'countdown') {
+      c.fillText(Math.ceil(R.countdown) > 0 ? String(Math.ceil(R.countdown)) : 'GO', W/2, 28);
+    } else {
+      c.fillText(`P${pos}/${field}    LAP ${Math.min(R.player.lap + 1, R.laps)}/${R.laps}` +
+                 `    ${R.time.toFixed(1)}s`, W/2, 28);
+    }
+    // The field, in order.
+    const order = R.standings();
+    c.textAlign = 'left';
+    c.font = '600 12px system-ui, sans-serif';
+    for (let i = 0; i < order.length; i++) {
+      const e = order[i];
+      c.fillStyle = e.isPlayer ? '#ffd34d' : 'rgba(255,255,255,0.62)';
+      c.fillText(`${i + 1}. ${e.name}${e.finished ? '  ✓' : ''}`, 26, 130 + i * 17);
+    }
+    if (R.bannerT > 0) {
+      c.textAlign = 'center';
+      c.globalAlpha = clamp(R.bannerT / 0.6, 0, 1);
+      c.fillStyle = 'rgba(0,0,0,0.5)';
+      const tw = c.measureText(R.banner).width + 80;
+      roundRect(c, W/2 - tw/2, H * 0.3, tw, 46, 10); c.fill();
+      c.fillStyle = '#ffd34d';
+      c.font = '800 22px system-ui, sans-serif';
+      c.fillText(R.banner, W/2, H * 0.3 + 13);
+      c.globalAlpha = 1;
+      c.textAlign = 'left';
+    }
   }
 
   // --- stunt banner ---
