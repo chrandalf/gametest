@@ -7,18 +7,38 @@
 // sits in a valley instead of running up a hill.
 'use strict';
 
-const TERRAIN_AMP = 26;      // metres between the lowest and highest junction
-const MAX_STEP = 5.5;        // metres of rise allowed between neighbours
+const TERRAIN_AMP = 30;      // metres between the lowest and highest junction
+const MAX_STEP = 5.5;        // metres of rise allowed between built-up neighbours
+const WILD_STEP = 17;        // ...and where there is nothing but trees and fields
 const RIVER_DEPTH = 4.5;     // how far the river valley sits below its banks
+const HILL_HEIGHT = 62;      // how far a proper hill stands above the plain
 
 class Terrain {
   // n is the number of junctions per axis (GRID), spacing is CELL.
-  constructor(seed, n, spacing, riverCells) {
+  constructor(seed, n, spacing, riverCells, zones) {
     this.n = n;
     this.spacing = spacing;
+    this.zones = zones;
     this.h = new Float32Array(n * n);
-    this.flat = !TERRAIN_AMP;
+    this.hills = [];
     this.build(seed >>> 0, riverCells || []);
+  }
+
+  // The rank of the built-up-ness around a junction. Roads through town have
+  // to stay gentle; a track through the woods can climb.
+  rankAtNode(i, j) {
+    if (!this.zones) return RANK_MAX;
+    let r = 0;
+    for (const [bi, bj] of [[i-1, j-1], [i, j-1], [i-1, j], [i, j]]) {
+      if (bi < 0 || bj < 0 || bi >= this.n - 1 || bj >= this.n - 1) continue;
+      r = Math.max(r, this.zones.rankAt(bi, bj));
+    }
+    return r;
+  }
+
+  stepLimit(i, j, i2, j2) {
+    const wild = Math.max(this.rankAtNode(i, j), this.rankAtNode(i2, j2)) <= 1;
+    return wild ? WILD_STEP : MAX_STEP;
   }
 
   idx(i, j) { return clamp(j, 0, this.n - 1) * this.n + clamp(i, 0, this.n - 1); }
@@ -40,6 +60,27 @@ class Terrain {
     }
     const span = Math.max(1e-4, hi - lo);
     for (let k = 0; k < this.h.length; k++) this.h[k] = (this.h[k] - lo) / span * TERRAIN_AMP;
+
+    // A hill or two, standing well clear of anything built: the smoothing
+    // pass would flatten them otherwise, so they go where it is allowed to
+    // leave a steep slope, and they are what you drive up for the view.
+    const hrand = makeRandom(seed ^ 0x7f4a7c15);
+    for (let attempt = 0; attempt < 60 && this.hills.length < 2; attempt++) {
+      const ci = 1 + hrand() * (n - 2), cj = 1 + hrand() * (n - 2);
+      if (this.rankAtNode(Math.round(ci), Math.round(cj)) > 1) continue;
+      let clear = true;
+      for (const h of this.hills) if (Math.hypot(h.i - ci, h.j - cj) < n * 0.4) clear = false;
+      if (!clear) continue;
+      const hill = { i: ci, j: cj, reach: 1.6 + hrand() * 0.8, height: HILL_HEIGHT * (0.7 + hrand() * 0.5) };
+      this.hills.push(hill);
+      for (let j = 0; j < n; j++) {
+        for (let i = 0; i < n; i++) {
+          const d = Math.hypot(i - hill.i, j - hill.j) / hill.reach;
+          if (d >= 1) continue;
+          this.h[this.idx(i, j)] += hill.height * (1 - smoothstep(0, 1, d));
+        }
+      }
+    }
 
     // The river picks a level and its corridor is cut down to it. Junctions on
     // the corners of a water block are pinned, so the channel is level.
@@ -73,8 +114,9 @@ class Terrain {
             if (i + di >= n || j + dj >= n) continue;
             const a = this.idx(i, j), b = this.idx(i + di, j + dj);
             const d = this.h[a] - this.h[b];
-            if (Math.abs(d) <= MAX_STEP) continue;
-            const excess = Math.abs(d) - MAX_STEP;
+            const limit = this.stepLimit(i, j, i + di, j + dj);
+            if (Math.abs(d) <= limit) continue;
+            const excess = Math.abs(d) - limit;
             const hiK = d > 0 ? a : b;
             if (this.riverNodes.has(hiK)) {
               // Cannot lower a pinned node; raise its neighbour instead.

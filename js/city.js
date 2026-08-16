@@ -75,7 +75,7 @@ class City {
     this.seed = (seed === undefined ? DEFAULT_SEED : seed) >>> 0;
     this.rand = makeRandom(this.seed);
     this.zones = new ZoneMap(this.seed, GRID - 1);
-    this.terrain = new Terrain(this.seed ^ 0x3c6ef35f, GRID, CELL, this.zones.river);
+    this.terrain = new Terrain(this.seed ^ 0x3c6ef35f, GRID, CELL, this.zones.river, this.zones);
     this.lift = 0;            // vertical offset applied while building a block
     this.colliders = [];      // { x0, z0, x1, z1, top }
     this.buildings = [];      // minimap footprints
@@ -543,7 +543,9 @@ class City {
       }
       const drop = this.lift - low + 1.2;
       if (drop > 0.2) {
-        b.style(TEX.CONCRETE, [0.74, 0.72, 0.68], 0);
+        // Concrete in town, bare earth out in the country.
+        if (rank >= 3) b.style(TEX.CONCRETE, [0.74, 0.72, 0.68], 0);
+        else b.style(TEX.DIRT, [0.82, 0.78, 0.66], 0);
         b.box((x0+x1)/2, -drop/2, (z0+z1)/2, (x1-x0)/2, drop/2, (z1-z0)/2,
               { skipTop: true, perUnit: 0.22 });
       }
