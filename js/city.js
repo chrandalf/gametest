@@ -70,6 +70,8 @@ class City {
     this.seed = (seed === undefined ? DEFAULT_SEED : seed) >>> 0;
     this.rand = makeRandom(this.seed);
     this.zones = new ZoneMap(this.seed, GRID - 1);
+    this.terrain = new Terrain(this.seed ^ 0x3c6ef35f, GRID, CELL, this.zones.river);
+    this.lift = 0;            // vertical offset applied while building a block
     this.colliders = [];      // { x0, z0, x1, z1, top }
     this.buildings = [];      // minimap footprints
     this.parks = [];
@@ -85,8 +87,10 @@ class City {
 
   // ------------------------------------------------------------ collision --
 
+  // `top` is given in the local frame of whatever is being built, so the
+  // current lift is added here rather than at every call site.
   addCollider(x0, z0, x1, z1, top) {
-    const c = { x0, z0, x1, z1, top };
+    const c = { x0, z0, x1, z1, top: top + this.lift };
     const idx = this.colliders.length;
     this.colliders.push(c);
     const cs = this.hashCell;
@@ -104,7 +108,7 @@ class City {
   // A solid you can also land on: collides, and shows on the minimap.
   addBuilding(x0, z0, x1, z1, top, downtown) {
     this.addCollider(x0, z0, x1, z1, top);
-    this.buildings.push({ x0, z0, x1, z1, h: top, downtown: downtown || 0 });
+    this.buildings.push({ x0, z0, x1, z1, h: top + this.lift, downtown: downtown || 0 });
   }
 
   query(x, z, r) {
@@ -126,10 +130,24 @@ class City {
     return out;
   }
 
+  // The surface with nothing built on it: a block's plateau if the point is on
+  // one, otherwise the interpolated ground between junctions.
+  groundY(x, z) {
+    const bi = Math.floor((x - ROAD/2) / CELL), bj = Math.floor((z - ROAD/2) / CELL);
+    const inBlock = bi >= 0 && bj >= 0 && bi < GRID - 1 && bj < GRID - 1 &&
+                    x > roadCenter(bi) + ROAD/2 && x < roadCenter(bi + 1) - ROAD/2 &&
+                    z > roadCenter(bj) + ROAD/2 && z < roadCenter(bj + 1) - ROAD/2;
+    if (inBlock) {
+      const lift = this.terrain.blockLift(bi, bj);
+      return this.zones.zoneAt(bi, bj) === Z.WATER ? lift + WATER_Y : lift;
+    }
+    return this.terrain.at(x, z);
+  }
+
   // Height of whatever solid is under a point: a rooftop if the point is over a
-  // building, otherwise the street. This is what makes roof landings possible.
+  // building, otherwise the ground. This is what makes roof landings possible.
   topAt(x, z) {
-    let top = 0;
+    let top = this.groundY(x, z);
     for (const c of this.query(x, z, 0.01)) {
       if (c.top <= top) continue;
       if (c.poly && !pointInPoly(x, z, c.poly)) continue;
@@ -197,6 +215,35 @@ class City {
 
   // ---------------------------------------------------------- generation ---
 
+  // An axis-aligned patch that follows the ground. Everything laid on the
+  // surface — tarmac, grass, paint — goes through here, so nothing can end up
+  // buried or hovering.
+  sheet(b, x0, z0, x1, z1, sub, yOff, uRepeat, vRepeat) {
+    const T = this.terrain;
+    const n = Math.max(1, sub | 0);
+    for (let a = 0; a < n; a++) {
+      for (let c = 0; c < n; c++) {
+        const ax0 = lerp(x0, x1, a / n), ax1 = lerp(x0, x1, (a + 1) / n);
+        const az0 = lerp(z0, z1, c / n), az1 = lerp(z0, z1, (c + 1) / n);
+        const u0 = uRepeat * a / n, u1 = uRepeat * (a + 1) / n;
+        const v0 = vRepeat * c / n, v1 = vRepeat * (c + 1) / n;
+        // Four corners at their own heights: the patch twists with the ground.
+        const p = [[ax0, T.at(ax0, az1) + yOff, az1], [ax1, T.at(ax1, az1) + yOff, az1],
+                   [ax1, T.at(ax1, az0) + yOff, az0], [ax0, T.at(ax0, az0) + yOff, az0]];
+        const ex = p[1][0]-p[0][0], ey = p[1][1]-p[0][1], ez = p[1][2]-p[0][2];
+        const fx = p[3][0]-p[0][0], fy = p[3][1]-p[0][1], fz = p[3][2]-p[0][2];
+        let nx = ey*fz - ez*fy, ny = ez*fx - ex*fz, nz = ex*fy - ey*fx;
+        const nl = Math.hypot(nx, ny, nz) || 1;
+        nx /= nl; ny /= nl; nz /= nl;
+        const base = b.vertex(p[0][0], p[0][1], p[0][2], nx, ny, nz, u0, v1);
+        b.vertex(p[1][0], p[1][1], p[1][2], nx, ny, nz, u1, v1);
+        b.vertex(p[2][0], p[2][1], p[2][2], nx, ny, nz, u1, v0);
+        b.vertex(p[3][0], p[3][1], p[3][2], nx, ny, nz, u0, v0);
+        b.i.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      }
+    }
+  }
+
   build() {
     const rand = this.rand;
     // Ground plane, tiled on the road grid and skipped over the river — one
@@ -206,20 +253,18 @@ class City {
     const lo0 = -pad, hi0 = (GRID - 1) * CELL + pad;
     const edge0 = -ROAD/2 - 0.5, edge1 = (GRID - 1) * CELL + ROAD/2 + 0.5;
     ground.style(TEX.GRASS, [0.52, 0.62, 0.42], 0);
-    const sheet = (ax0, az0, ax1, az1) =>
-      ground.quad([ax0, -0.05, az1], [ax1, -0.05, az1], [ax1, -0.05, az0], [ax0, -0.05, az0],
-                  (ax1-ax0)/16, (az1-az0)/16);
     for (let bi = 0; bi < GRID - 1; bi++) {
       for (let bj = 0; bj < GRID - 1; bj++) {
         if (this.zones.zoneAt(bi, bj) === Z.WATER) continue;
-        sheet(roadCenter(bi), roadCenter(bj), roadCenter(bi + 1), roadCenter(bj + 1));
+        this.sheet(ground, roadCenter(bi), roadCenter(bj), roadCenter(bi + 1), roadCenter(bj + 1),
+                   4, -0.05, CELL / 16, CELL / 16);
       }
     }
     // Surrounding fields, out to the horizon fog.
-    sheet(lo0, lo0, hi0, edge0);
-    sheet(lo0, edge1, hi0, hi0);
-    sheet(lo0, edge0, edge0, edge1);
-    sheet(edge1, edge0, hi0, edge1);
+    for (const [ax0, az0, ax1, az1] of [[lo0, lo0, hi0, edge0], [lo0, edge1, hi0, hi0],
+                                        [lo0, edge0, edge0, edge1], [edge1, edge0, hi0, edge1]]) {
+      this.sheet(ground, ax0, az0, ax1, az1, 6, -0.05, (ax1-ax0)/16, (az1-az0)/16);
+    }
     this.groundMesh = ground.upload(this.gl);
 
     // 3x3 blocks per chunk keeps draw calls low but culling still useful.
@@ -242,11 +287,9 @@ class City {
         const rk = this.roadRank(i, j);
         const tint = rk >= 4 ? [1, 1, 1] : rk >= 2 ? [1.06, 1.04, 1.00] : [1.14, 1.10, 1.02];
         b.style(TEX.ASPHALT, tint, 0);
-        b.quad([c-ROAD/2, 0, clamp(z1, lo, hi)], [c+ROAD/2, 0, clamp(z1, lo, hi)],
-               [c+ROAD/2, 0, clamp(z0, lo, hi)], [c-ROAD/2, 0, clamp(z0, lo, hi)], 2.4, 8);
-        // East-west road, split so it does not overlap the intersections.
-        b.quad([clamp(z0, lo, hi), 0.005, c+ROAD/2], [clamp(z1, lo, hi), 0.005, c+ROAD/2],
-               [clamp(z1, lo, hi), 0.005, c-ROAD/2], [clamp(z0, lo, hi), 0.005, c-ROAD/2], 8, 2.4);
+        this.sheet(b, c - ROAD/2, clamp(z0, lo, hi), c + ROAD/2, clamp(z1, lo, hi), 4, 0, 2.4, 8);
+        // East-west road, laid a hair higher so the two never z-fight.
+        this.sheet(b, clamp(z0, lo, hi), c - ROAD/2, clamp(z1, lo, hi), c + ROAD/2, 4, 0.005, 8, 2.4);
       }
     }
 
@@ -265,12 +308,12 @@ class City {
           if (zEnd > hi || z < lo) continue;
           const nearNode = Math.abs(((z + CELL/2) % CELL) - CELL/2) > CELL/2 - ROAD/2 - 3;
           if (nearNode) continue;
-          b.quad([c-0.22, 0.03, zEnd], [c+0.22, 0.03, zEnd], [c+0.22, 0.03, z], [c-0.22, 0.03, z], 1, 1);
+          this.sheet(b, c - 0.22, z, c + 0.22, zEnd, 1, 0.03, 1, 1);
           const x = segStart + t * (CELL/10) + 1, xEnd = x + CELL/20;
           if (xEnd > hi || x < lo) continue;
           const nearNodeX = Math.abs(((x + CELL/2) % CELL) - CELL/2) > CELL/2 - ROAD/2 - 3;
           if (nearNodeX) continue;
-          b.quad([x, 0.035, c+0.22], [xEnd, 0.035, c+0.22], [xEnd, 0.035, c-0.22], [x, 0.035, c-0.22], 1, 1);
+          this.sheet(b, x, c - 0.22, xEnd, c + 0.22, 1, 0.035, 1, 1);
         }
         // Zebra crossings: bars run along the travel direction, spanning the road.
         if (this.roadRank(i, j) < 4) continue;
@@ -283,14 +326,12 @@ class City {
             // Crossing the north-south road.
             const zEdge = cz + s * (ROAD/2 + 2.6);
             if (zEdge > lo && zEdge < hi) {
-              b.quad([c+off-BAR_W, 0.04, zEdge+BAR_L/2], [c+off+BAR_W, 0.04, zEdge+BAR_L/2],
-                     [c+off+BAR_W, 0.04, zEdge-BAR_L/2], [c+off-BAR_W, 0.04, zEdge-BAR_L/2], 1, 1);
+              this.sheet(b, c + off - BAR_W, zEdge - BAR_L/2, c + off + BAR_W, zEdge + BAR_L/2, 1, 0.04, 1, 1);
             }
             // Crossing the east-west road.
             const xEdge = c + s * (ROAD/2 + 2.6);
             if (xEdge > lo && xEdge < hi) {
-              b.quad([xEdge-BAR_L/2, 0.045, cz+off+BAR_W], [xEdge+BAR_L/2, 0.045, cz+off+BAR_W],
-                     [xEdge+BAR_L/2, 0.045, cz+off-BAR_W], [xEdge-BAR_L/2, 0.045, cz+off-BAR_W], 1, 1);
+              this.sheet(b, xEdge - BAR_L/2, cz + off - BAR_W, xEdge + BAR_L/2, cz + off + BAR_W, 1, 0.045, 1, 1);
             }
           }
         }
@@ -311,12 +352,17 @@ class City {
       for (let j = 0; j < GRID; j++) {
         const rk = this.roadRank(i, j);
         if (rk < 2) continue;
-        const b = chunkAt(i, j);
         const cx = roadCenter(i), cz = roadCenter(j);
         const corners = rk >= 4 ? [[-1,-1],[1,-1],[-1,1],[1,1]]
                       : rk === 3 ? [[-1,-1],[1,1]] : [[1,1]];
         for (const [sx, sz] of corners) {
-          this.streetLight(b, cx + sx * (ROAD/2 + 1.6), cz + sz * (ROAD/2 + 1.6), -sx, -sz);
+          // Each lamp stands on its own patch of ground.
+          const lx = cx + sx * (ROAD/2 + 1.6), lz = cz + sz * (ROAD/2 + 1.6);
+          const post = new MeshBuilder();
+          this.lift = this.groundY(lx, lz);
+          this.streetLight(post, lx, lz, -sx, -sz);
+          chunkAt(i, j).append(post, 0, this.lift, 0);
+          this.lift = 0;
         }
       }
     }
@@ -344,7 +390,11 @@ class City {
       const x = horiz ? along : across;
       const z = horiz ? across : along;
       const yaw = horiz ? (rand() < 0.5 ? Math.PI / 2 : -Math.PI / 2) : (rand() < 0.5 ? 0 : Math.PI);
-      this.ramps.emit(chunkAt(i, j), x, z, yaw, len, w, h);
+      // Built flat and dropped onto the road, which may be on a slope.
+      const wedge = new MeshBuilder();
+      const base = this.groundY(x, z);
+      this.ramps.emit(wedge, x, z, yaw, len, w, h, base);
+      chunkAt(i, j).append(wedge, 0, base, 0);
     };
     for (let n = 0; n < 8; n++) emitRamp(9.5, 6.4, 2.1);
     // A few mega ramps: steep enough to put a nitro-boosted car on a roof.
@@ -371,7 +421,10 @@ class City {
   buildBridges(chunkAt) {
     const isWet = (bi, bj) => this.zones.zoneAt(bi, bj) === Z.WATER &&
                               bi >= 0 && bj >= 0 && bi < GRID - 1 && bj < GRID - 1;
-    const span = (b, ax, az, bx, bz, nx, nz) => {
+    const span = (chunk, ax, az, bx, bz, nx, nz) => {
+      // The deck follows the road, which round here is at the river's level.
+      const b = new MeshBuilder();
+      const lift = this.groundY((ax + bx) / 2, (az + bz) / 2);
       const cx = (ax + bx) / 2, cz = (az + bz) / 2;
       const hx = Math.abs(bx - ax) / 2, hz = Math.abs(bz - az) / 2;
       // Parapets down both edges of the deck.
@@ -391,6 +444,7 @@ class City {
       b.box(cx, -0.35, cz, hx + (nx ? 0 : 0.2), 0.35, hz + (nz ? 0 : 0.2),
             { perUnit: 0.3, bottom: true, skipTop: true });
       this.bridges.push({ x0: cx - hx, z0: cz - hz, x1: cx + hx, z1: cz + hz });
+      chunk.append(b, 0, lift, 0);
     };
 
     for (let j = 0; j < GRID; j++) {
@@ -421,7 +475,18 @@ class City {
   }
 
   // A block: its ground surface, its kerbs, and whatever its zone puts on it.
-  buildBlock(b, bi, bj) {
+  // Everything is generated flat about y=0 and then lifted onto the block's
+  // plateau in one go, so no zone builder has to know about the terrain.
+  buildBlock(chunk, bi, bj) {
+    const b = new MeshBuilder();
+    const lift = this.terrain.blockLift(bi, bj);
+    this.lift = lift;
+    this.buildBlockLocal(b, bi, bj);
+    this.lift = 0;
+    if (!b.empty) chunk.append(b, 0, lift, 0);
+  }
+
+  buildBlockLocal(b, bi, bj) {
     const zones = this.zones;
     const zone = zones.zoneAt(bi, bj);
     const info = ZONES[zone];
@@ -454,6 +519,21 @@ class City {
         b.box((x0+x1)/2, SIDEWALK_H/2, z1 - PW/2, (x1-x0)/2, SIDEWALK_H/2, PW/2, { perUnit: 0.22 });
         b.box(x0 + PW/2, SIDEWALK_H/2, (z0+z1)/2, PW/2, SIDEWALK_H/2, (z1-z0)/2 - PW, { perUnit: 0.22 });
         b.box(x1 - PW/2, SIDEWALK_H/2, (z0+z1)/2, PW/2, SIDEWALK_H/2, (z1-z0)/2 - PW, { perUnit: 0.22 });
+      }
+    }
+
+    // Retaining edge. The plateau sits at the block's highest corner, so on a
+    // slope the ground falls away beneath it — without this the block floats.
+    if (zone !== Z.WATER) {
+      let low = Infinity;
+      for (const [px, pz] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1]]) {
+        low = Math.min(low, this.terrain.at(px, pz));
+      }
+      const drop = this.lift - low + 1.2;
+      if (drop > 0.2) {
+        b.style(TEX.CONCRETE, [0.74, 0.72, 0.68], 0);
+        b.box((x0+x1)/2, -drop/2, (z0+z1)/2, (x1-x0)/2, drop/2, (z1-z0)/2,
+              { skipTop: true, perUnit: 0.22 });
       }
     }
 
@@ -681,7 +761,7 @@ class City {
           Math.abs(dirX) * 0.8 + 0.12, 0.12, Math.abs(dirZ) * 0.8 + 0.12, { perUnit: 1 });
     b.style(TEX.PLAIN, [1.0, 0.93, 0.75], 0.9);
     b.chamferBox(ax, SIDEWALK_H + h - 0.22, az, 0.42, 0.16, 0.42, 0.12, { perUnit: 1 });
-    this.lights.push({ x: ax, y: SIDEWALK_H + h - 0.4, z: az });
+    this.lights.push({ x: ax, y: SIDEWALK_H + h - 0.4 + this.lift, z: az });
   }
 
   parkedCar(b, x, z, yaw) {

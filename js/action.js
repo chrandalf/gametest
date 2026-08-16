@@ -10,13 +10,15 @@ class RampSet {
     this.ramps = [];
   }
 
-  add(x, z, yaw, length, width, height) {
-    this.ramps.push({ x, z, yaw, length, width, height });
+  add(x, z, yaw, length, width, height, base) {
+    this.ramps.push({ x, z, yaw, length, width, height, base: base || 0 });
   }
 
-  // Build the visible wedges into a chunk mesh and register the triggers.
-  emit(b, x, z, yaw, length, width, height) {
-    this.add(x, z, yaw, length, width, height);
+  // Build the visible wedges into a chunk mesh and register the triggers. The
+  // wedge is built about y=0; `base` is the height of the road under it, and
+  // is reported back through heightAt so the car rides the right one.
+  emit(b, x, z, yaw, length, width, height, base) {
+    this.add(x, z, yaw, length, width, height, base);
     const c = Math.cos(yaw), s = Math.sin(yaw);
     const P = (lx, ly, lz) => [x + lx * c + lz * s, ly, z - lx * s + lz * c];
     const hw = width / 2, hl = length / 2;
@@ -43,7 +45,8 @@ class RampSet {
       const lz = dx * s + dz * c;
       if (Math.abs(lx) > r.width / 2 || Math.abs(lz) > r.length / 2) continue;
       const t = clamp((lz + r.length / 2) / r.length, 0, 1);
-      return { y: t * r.height, exiting: t > 0.92, slope: r.height / r.length, ramp: r };
+      return { y: r.base + t * r.height, base: r.base, exiting: t > 0.92,
+               slope: r.height / r.length, ramp: r };
     }
     return null;
   }

@@ -223,13 +223,13 @@ class SkidMarks {
   }
 
   // Emit a strip segment between where a wheel was and where it is now.
-  add(x0, z0, x1, z1, width, strength) {
+  add(x0, z0, x1, z1, width, strength, groundY) {
     let dx = x1 - x0, dz = z1 - z0;
     const d = Math.hypot(dx, dz);
     if (d < 0.05 || d > 6) return;
     dx /= d; dz /= d;
     const sx = -dz * width * 0.5, sz = dx * width * 0.5;
-    const y = 0.045;
+    const y = (groundY || 0) + 0.045;
     this.quads[this.next] = [
       x0 - sx, y, z0 - sz, x0 + sx, y, z0 + sz,
       x1 + sx, y, z1 + sz, x1 - sx, y, z1 - sz,
@@ -271,7 +271,7 @@ class SkidMarks {
       const px = car.x + wx * c + wz * s;
       const pz = car.z - wx * s + wz * c;
       const last = this.lastPos[i];
-      if (laying && last) this.add(last[0], last[1], px, pz, 0.34, strength);
+      if (laying && last) this.add(last[0], last[1], px, pz, 0.34, strength, car.y);
       this.lastPos[i] = laying ? [px, pz] : null;
     }
     this.rebuild();

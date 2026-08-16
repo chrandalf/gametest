@@ -385,8 +385,12 @@ function update(dt) {
     const sunk = 1 - game.drown / 1.5;
     car.vx *= Math.exp(-dt * 4.5);
     car.vz *= Math.exp(-dt * 4.5);
-    car.y = lerp(0, WATER_Y - 1.2, smoothstep(0, 1, sunk));
-    if (game.drown === 0) { resetCar(); car.y = 0; }
+    const surface = game.city.groundY(car.x, car.z);
+    car.y = lerp(surface, surface - 2.8, smoothstep(0, 1, sunk));
+    if (game.drown === 0) {
+      resetCar();
+      car.y = game.city.topAt(car.x, car.z);
+    }
   }
 
   if (car.crashImpulse > 0.05) {
@@ -422,24 +426,24 @@ function updateCamera(dt) {
       // Bonnet cam.
       const f = 0.6;
       cam.pos[0] = car.x + Math.sin(car.yaw) * f;
-      cam.pos[1] = 1.55;
+      cam.pos[1] = car.y + 1.55;
       cam.pos[2] = car.z + Math.cos(car.yaw) * f;
       cam.target[0] = car.x + Math.sin(yaw) * 14;
-      cam.target[1] = 1.5 + mouse.pitch * 8;
+      cam.target[1] = car.y + 1.5 + mouse.pitch * 8;
       cam.target[2] = car.z + Math.cos(yaw) * 14;
       cam.fov = 66 + sp * 0.22;
       return applyShake(cam);
     }
     dist = game.camMode === 1 ? 15 : 9.2 + sp * 0.08;
     height = game.camMode === 1 ? 7.5 : 3.5 + sp * 0.02;
-    tx = car.x; ty = 1.1; tz = car.z;
+    tx = car.x; ty = car.y + 1.1; tz = car.z;
     look = 6 + sp * 0.16;
   } else {
     const w = p.walker;
     game.walkCamYaw = mouse.yaw;
     yaw = mouse.yaw;
     dist = 5.2; height = 2.4;
-    tx = w.x; ty = 1.1; tz = w.z;
+    tx = w.x; ty = (w.y || 0) + 1.1; tz = w.z;
     look = 4;
   }
 
@@ -462,7 +466,9 @@ function updateCamera(dt) {
     break;
   }
   cam.pos[0] = cp.x; cam.pos[2] = cp.z;
-  cam.pos[1] = Math.max(cam.pos[1], 1.2);
+  // Keep the camera above the ground, which is no longer at y = 0.
+  const floor = game.city.groundY ? game.city.groundY(cam.pos[0], cam.pos[2]) : 0;
+  cam.pos[1] = Math.max(cam.pos[1], floor + 1.2);
 
   cam.target[0] = lerp(cam.target[0], tx + Math.sin(yaw) * look, k);
   cam.target[1] = lerp(cam.target[1], ty + 0.8 + pitchLift * 0.7, k);

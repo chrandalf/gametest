@@ -344,19 +344,19 @@ class Vehicle {
     if (deck && !this.airborne) {
       this.y = deck.y;
       this.onRamp = deck;
-      this.surfaceY = 0;
+      this.surfaceY = deck.base || 0;
     } else if (!this.airborne && this.onRamp) {
       // Left the ramp footprint: launch from wherever it was on the wedge. This
       // triggers on exit rather than inside a narrow window at the lip, which a
       // fast car can skip over entirely in one frame.
       const launched = this.onRamp;
       this.onRamp = null;
-      if (this.y > 0.25 && vf > 6) {
+      if (this.y > (launched.base || 0) + 0.25 && vf > 6) {
         this.airborne = true;
         this.vy = Math.abs(vf) * launched.slope * 1.35;   // m/s straight up
         this.spinPitchRate = 0; this.spinRollRate = 0;
       } else {
-        this.y = 0;
+        this.y = launched.base || 0;
       }
     } else if (this.airborne) {
       this.vy -= GRAVITY * dt;
@@ -528,6 +528,8 @@ class Pedestrian {
   }
 
   update(dt, world) {
+    // The pavement has a height now, so "the floor" is wherever they stand.
+    const floor = world.city && world.city.groundY ? world.city.groundY(this.x, this.z) : 0;
     if (this.knocked > 0) {
       this.knocked -= dt;
       this.y += this.vy * dt;
@@ -535,10 +537,11 @@ class Pedestrian {
       this.x += this.vx * dt;
       this.z += this.vz * dt;
       this.vx *= 0.97; this.vz *= 0.97;
-      if (this.y <= 0) { this.y = 0; this.vy = 0; this.vx *= 0.6; this.vz *= 0.6; }
-      if (this.knocked <= 0) { this.y = 0; this.vy = 0; }
+      if (this.y <= floor) { this.y = floor; this.vy = 0; this.vx *= 0.6; this.vz *= 0.6; }
+      if (this.knocked <= 0) { this.y = floor; this.vy = 0; }
       return;
     }
+    this.y = floor;
 
     this.turnTimer -= dt;
     if (this.turnTimer <= 0) {
@@ -604,6 +607,7 @@ class Walker {
     const p = { x: this.x, z: this.z };
     city.resolveCircle(p, 0.42);
     this.x = p.x; this.z = p.z;
+    this.y = city.topAt ? city.topAt(this.x, this.z) : 0;
     this.phase += dt * (2 + this.speed * 2.6);
   }
 }
