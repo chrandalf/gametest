@@ -41,9 +41,6 @@ function start() {
   game.renderer = renderer;
   const gl = renderer.gl;
 
-  const t0 = performance.now();
-  game.city = new City(gl, 20260814);
-  game.ramps = game.city.ramps;
   game.carMeshes = buildCarMeshes(gl);
   game.vanMeshes = buildVanMeshes(gl);
   game.cube = buildCubeMesh(gl);
@@ -55,53 +52,11 @@ function start() {
   game.skids = new SkidMarks(gl, 460);
   game.stunts = new StuntTracker();
   game.markerBeam = buildMarkerMesh(gl, 1.5, 1.35, 70);
-  console.log(`city built in ${(performance.now() - t0) | 0} ms, ` +
-              `${game.city.chunks.length} chunks, ${game.city.buildings.length} buildings`);
 
-  const rand = makeRandom(99);
-  game.rand = rand;
-
-  // Player starts on the road just south of downtown.
-  const startI = Math.floor(GRID / 2), startJ = 1;
-  const st = laneTarget(startI, startJ, 0, 1);
-  game.car = new Vehicle(st.x, st.z, 0, [0.85, 0.12, 0.14]);
+  game.rand = makeRandom(99);
+  game.car = new Vehicle(0, 0, 0, [0.85, 0.12, 0.14]);
   game.player = { inCar: true, walker: null };
-
-  game.traffic = [];
-  for (let n = 0; n < 26; n++) {
-    const horiz = rand() < 0.5;
-    const i = (rand() * GRID) | 0, j = (rand() * GRID) | 0;
-    const d = horiz ? [rand() < 0.5 ? 1 : -1, 0] : [0, rand() < 0.5 ? 1 : -1];
-    const car = new TrafficCar(i, j, d[0], d[1],
-      CAR_COLORS[(rand() * CAR_COLORS.length) | 0], rand);
-    if (Math.hypot(car.x - game.car.x, car.z - game.car.z) < 18) continue;
-    game.traffic.push(car);
-  }
-  // One NPC is the van, in white with the novelty prop on the front.
-  if (game.traffic.length) {
-    const van = game.traffic[(rand() * game.traffic.length) | 0];
-    van.van = true;
-    van.color = [0.95, 0.95, 0.97];
-    van.maxSpeed = Math.min(van.maxSpeed, 15);
-    game.van = van;
-  }
-  game.abandoned = [];
-
-  game.peds = [];
-  for (let n = 0; n < 90; n++) {
-    const bi = (rand() * (GRID - 1)) | 0, bj = (rand() * (GRID - 1)) | 0;
-    const x = roadCenter(bi) + ROAD/2 + 2 + rand() * (BLOCK - 4);
-    const z = roadCenter(bj) + ROAD/2 + 2 + rand() * (BLOCK - 4);
-    if (onRoad(x, z)) continue;
-    const ped = new Pedestrian(x, z, rand() * 6.28, rand);
-    const p = { x, z };
-    if (game.city.resolveCircle(p, 0.6)) continue;   // spawned inside a wall
-    game.peds.push(ped);
-  }
-
-  game.snipers = new Snipers(gl, game.city, rand);
-
-  nextDrop();
+  buildWorld(DEFAULT_SEED);
 
   game.cam = {
     pos: [game.car.x, 6, game.car.z - 12],
@@ -155,9 +110,9 @@ function bindInput() {
     if (e.code === 'KeyV') game.recorder.toggle();
     if (e.code === 'KeyU') game.hudVisible = !game.hudVisible;
     if (e.code === 'KeyG') toggleTimeTrial();
-    if (e.code === 'KeyM' && typeof SAMPLE_VILLAGE !== 'undefined') loadMapWorld(SAMPLE_VILLAGE, 'Sample Village');
+    if (e.code === 'KeyM') buildWorld((Math.random() * 0xffffffff) >>> 0);
     if (e.code === 'KeyN') document.getElementById('mapfile').click();
-    if (e.code === 'KeyK') loadTableWorld();
+    if (e.code === 'KeyK') startRace();
     if (e.code === 'KeyB' && game.isMap) location.reload();
     if (e.code === 'BracketRight') game.recorder.adjustExposure(0.06);
     if (e.code === 'BracketLeft') game.recorder.adjustExposure(-0.06);
@@ -423,26 +378,6 @@ function update(dt) {
   }
   game.shake *= Math.exp(-dt * 3.4);
 
-  if (game.isTable && game.city.pocketAt && p.inCar) {
-    const pk = game.city.pocketAt(car.x, car.z);
-    if (pk && !car.potted) {
-      car.potted = 1.1;
-      game.stats.potted = (game.stats.potted || 0) + 1;
-      say('POTTED');
-      playThud(0.5);
-    }
-  }
-  if (car.potted) {
-    car.potted -= dt;
-    car.y -= 26 * dt;                       // drop into the pocket
-    if (car.potted <= 0) {
-      car.potted = 0;
-      car.x = game.city.spawn.x; car.z = game.city.spawn.z;
-      car.y = 0; car.vx = 0; car.vz = 0; car.yaw = 0;
-      car.airborne = false;
-    }
-  }
-
   if (game.race) {
     game.race.update(dt, { city: game.city }, car);
     if (game.race.state === 'countdown') { car.vx = 0; car.vz = 0; }
@@ -477,14 +412,8 @@ function updateCamera(dt) {
       cam.fov = 66 + sp * 0.22;
       return applyShake(cam);
     }
-    if (game.isTable) {
-      // Pulled back and looking down, so the car reads as a toy.
-      dist = game.camMode === 1 ? 46 : 26 + sp * 0.35;
-      height = game.camMode === 1 ? 40 : 20 + sp * 0.2;
-    } else {
-      dist = game.camMode === 1 ? 15 : 9.2 + sp * 0.08;
-      height = game.camMode === 1 ? 7.5 : 3.5 + sp * 0.02;
-    }
+    dist = game.camMode === 1 ? 15 : 9.2 + sp * 0.08;
+    height = game.camMode === 1 ? 7.5 : 3.5 + sp * 0.02;
     tx = car.x; ty = 1.1; tz = car.z;
     look = 6 + sp * 0.16;
   } else {
@@ -580,42 +509,94 @@ function loadMapWorld(json, label) {
   return true;
 }
 
-// Micro Machines mode.
-function loadTableWorld() {
+// --------------------------------------------------------- world building --
+
+// Generate a whole world from one seed and repopulate everything that lives in
+// it. Also used by the "new map" key, so a fresh seed is a keypress away.
+function buildWorld(seed) {
   const gl = game.renderer.gl;
-  const world = new TableWorld(gl, game.rand);
-  game.city = world;
-  game.ramps = world.ramps;
-  game.isMap = true;
-  game.isTable = true;
+  const t0 = performance.now();
+  const city = new City(gl, seed);
+  game.city = city;
+  game.seed = city.seed;
+  game.ramps = city.ramps;
+  game.isMap = false;
   game.race = null;
+  const rand = game.rand;
+
+  // Traffic only bothers with streets that have something on them.
+  const urbanCells = [];
+  for (let i = 0; i < GRID; i++) {
+    for (let j = 0; j < GRID; j++) if (city.roadRank(i, j) >= 3) urbanCells.push([i, j]);
+  }
   game.traffic = [];
-  game.peds = [];
+  const wanted = clamp(Math.round(urbanCells.length * 0.55), 8, 40);
+  for (let n = 0; n < wanted && urbanCells.length; n++) {
+    const [i, j] = urbanCells[(rand() * urbanCells.length) | 0];
+    const horiz = rand() < 0.5;
+    const d = horiz ? [rand() < 0.5 ? 1 : -1, 0] : [0, rand() < 0.5 ? 1 : -1];
+    const car = new TrafficCar(i, j, d[0], d[1],
+      CAR_COLORS[(rand() * CAR_COLORS.length) | 0], rand);
+    if (Math.hypot(car.x - city.spawn.x, car.z - city.spawn.z) < 18) continue;
+    game.traffic.push(car);
+  }
+  // One NPC is the van, in white with the novelty prop on the front.
+  if (game.traffic.length) {
+    const van = game.traffic[(rand() * game.traffic.length) | 0];
+    van.van = true;
+    van.color = [0.95, 0.95, 0.97];
+    van.maxSpeed = Math.min(van.maxSpeed, 15);
+    game.van = van;
+  }
   game.abandoned = [];
-  game.snipers = { list: [], mesh: { count: 0 }, hitFlash: 0, update() {} };
+
+  // Pedestrians go where there are pavements and front doors.
+  game.peds = [];
+  for (let n = 0; n < 220 && game.peds.length < 110; n++) {
+    const bi = (rand() * (GRID - 1)) | 0, bj = (rand() * (GRID - 1)) | 0;
+    if (city.zones.rankAt(bi, bj) < 2) continue;
+    const x = roadCenter(bi) + ROAD/2 + 2 + rand() * (BLOCK - 4);
+    const z = roadCenter(bj) + ROAD/2 + 2 + rand() * (BLOCK - 4);
+    if (onRoad(x, z)) continue;
+    const p = { x, z };
+    if (city.resolveCircle(p, 0.6)) continue;   // spawned inside a wall
+    game.peds.push(new Pedestrian(x, z, rand() * 6.28, rand));
+  }
+
+  game.snipers = new Snipers(gl, city, rand);
   game.skids = new SkidMarks(gl, 460);
+
   const car = game.car;
-  car.x = world.spawn.x; car.z = world.spawn.z; car.y = 0;
-  car.yaw = 0; car.vx = 0; car.vz = 0; car.airborne = false;
+  car.x = city.spawn.x; car.z = city.spawn.z; car.y = 0;
+  car.yaw = city.spawn.yaw; car.vx = 0; car.vz = 0; car.airborne = false;
+  car.roll = 0; car.pitch = 0;
   if (!game.player.inCar) { game.player.inCar = true; game.player.walker = null; }
   game.streamer.reset(car);
   game.trial.active = false; game.trial.phase = 'idle';
-  game.camMode = 0;
   nextDrop();
-  startRace(world);
-  return true;
+
+  const v = city.zones.violations().length;
+  console.log(`world ${city.seed} built in ${(performance.now() - t0) | 0} ms: ` +
+              `${city.chunks.length} chunks, ${city.buildings.length} buildings, ` +
+              `${city.zones.repairs} zone repairs, ${v} rule violations`);
+  console.log('zones:', city.zones.summary());
+  return city;
 }
 
-// Line up a race on the table's circuit.
-function startRace(world) {
-  if (!world.circuit) return;
+// Line up a race on the world's street circuit.
+function startRace() {
+  const world = game.city;
+  if (!world.circuit) { say('No circuit on this map'); return; }
+  if (game.race) { game.race = null; say('Race abandoned'); return; }
   game.race = new Race(game.renderer.gl, world, game.rand, 3);
   const car = game.car;
   car.x = game.race.playerGrid.x;
   car.z = game.race.playerGrid.z;
   car.yaw = game.race.playerGrid.yaw;
   car.vx = 0; car.vz = 0; car.y = 0; car.airborne = false;
-  game.race.say('MICRO MACHINES — 3 laps', 3);
+  if (!game.player.inCar) { game.player.inCar = true; game.player.walker = null; }
+  game.streamer.reset(car);
+  game.race.say('STREET RACE — 3 laps', 3);
 }
 
 function loadMapFromFile(file) {
@@ -1166,6 +1147,19 @@ function drawHud() {
   c.scale(scale, -scale);
   c.translate(-px, -pz);
 
+  // Zone wash, so the minimap shows which way the country is.
+  if (game.city.zones) {
+    const zm = game.city.zones;
+    const bi0 = Math.max(0, Math.floor((px - 170) / CELL)), bi1 = Math.min(GRID - 2, Math.ceil((px + 170) / CELL));
+    const bj0 = Math.max(0, Math.floor((pz - 170) / CELL)), bj1 = Math.min(GRID - 2, Math.ceil((pz + 170) / CELL));
+    for (let bi = bi0; bi <= bi1; bi++) {
+      for (let bj = bj0; bj <= bj1; bj++) {
+        c.fillStyle = ZONES[zm.zoneAt(bi, bj)].map;
+        c.fillRect(roadCenter(bi) + ROAD/2, roadCenter(bj) + ROAD/2, BLOCK, BLOCK);
+      }
+    }
+  }
+
   c.fillStyle = 'rgba(120,132,150,0.30)';
   for (const b of game.city.buildings) {
     if (Math.abs(b.x0 - px) > 150 || Math.abs(b.z0 - pz) > 150) continue;
@@ -1248,14 +1242,24 @@ function drawHud() {
   const mm = Math.floor((game.clock % 1) * 60);
   c.textAlign = 'left';
   c.fillStyle = 'rgba(0,0,0,0.42)';
-  roundRect(c, 22, 22, 208, 74, 10); c.fill();
+  roundRect(c, 22, 22, 208, 92, 10); c.fill();
   c.fillStyle = '#fff';
   c.font = '700 20px system-ui, sans-serif';
   c.fillText(`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`, 38, 34);
+  if (game.city.zoneAtWorld) {
+    const zi = ZONES[game.city.zoneAtWorld(px, pz)];
+    c.textAlign = 'right';
+    c.font = '700 13px system-ui, sans-serif';
+    c.fillStyle = zi.map;
+    c.fillText(zi.name.toUpperCase(), 214, 40);
+    c.textAlign = 'left';
+  }
   c.font = '500 12px system-ui, sans-serif';
   c.fillStyle = 'rgba(255,255,255,0.72)';
   c.fillText(`${game.fps.toFixed(0)} fps · ${inCar ? 'driving' : 'on foot'}`, 38, 60);
   c.fillText(`top ${game.stats.topSpeed.toFixed(0)} km/h · ${game.stats.hits} prangs`, 38, 76);
+  c.fillStyle = 'rgba(255,255,255,0.45)';
+  c.fillText(`seed ${game.seed}`, 38, 93);
 
   // --- time trial panel ---
   const tr = game.trial;
@@ -1389,7 +1393,7 @@ function drawHud() {
     roundRect(c, W/2 - 150, 8, 300, 50, 10); c.fill();
     c.fillStyle = '#ffd34d';
     c.font = '700 11px system-ui, sans-serif';
-    c.fillText('MICRO MACHINES', W/2, 13);
+    c.fillText('STREET RACE', W/2, 13);
     c.fillStyle = '#fff';
     c.font = '700 22px system-ui, sans-serif';
     if (R.state === 'countdown') {
@@ -1460,7 +1464,7 @@ function drawHud() {
       'Shift — NITRO (refills, and stunts top it up)   F — in / out of car',
       'C — camera   R — respawn   T — skip time   P — pause',
       'V — record video   U — hide HUD   [ ] — clip brightness',
-      'G — time trial   M — village   K — MICRO MACHINES   N — map file   B — back',
+      'G — time trial   K — street race   M — new map (new seed)   N — map file',
       'Click the window for mouse look. H hides this.',
     ];
     const bw = 340, bh = lines.length * 19 + 26;

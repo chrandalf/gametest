@@ -13,7 +13,10 @@ class Racer extends Vehicle {
     this.finishTime = 0;
     // A little spread in ability so the pack does not drive as one block.
     this.skill = 0.86 + rand() * 0.2;
-    this.wander = (rand() - 0.5) * 5;
+    // Kept inside the lane: wide enough and they clip the parked cars.
+    this.wander = (rand() - 0.5) * 3;
+    this.stuck = 0;
+    this.stuckSteer = rand() < 0.5 ? -1 : 1;
   }
 
   target() {
@@ -21,32 +24,61 @@ class Racer extends Vehicle {
     return c[this.wp % c.length];
   }
 
-  // Aim a little beyond the next gate, which stops the AI sawing at the wheel.
-  aimPoint() {
+  // How sharply the circuit turns at the gate being approached.
+  cornerAngle() {
     const c = this.circuit;
     const a = c[this.wp % c.length];
     const b = c[(this.wp + 1) % c.length];
-    return { x: lerp(a.x, b.x, 0.35) + this.wander, z: lerp(a.z, b.z, 0.35) + this.wander };
+    const inAng = Math.atan2(a.x - this.x, a.z - this.z);
+    const outAng = Math.atan2(b.x - a.x, b.z - a.z);
+    return Math.abs(angDelta(inAng, outAng));
+  }
+
+  // Aim a little beyond the next gate, which stops the AI sawing at the wheel.
+  // Into a corner it aims at the gate itself: looking through the turn early
+  // is what sent them wide into the buildings on the outside of every bend.
+  aimPoint(turn) {
+    const c = this.circuit;
+    const a = c[this.wp % c.length];
+    const b = c[(this.wp + 1) % c.length];
+    const t = turn > 0.6 ? 0.03 : 0.35;
+    return { x: lerp(a.x, b.x, t) + this.wander, z: lerp(a.z, b.z, t) + this.wander };
   }
 
   update(dt, world) {
     if (this.finished) { this.drive(dt, 0, 0, false, world.city); return; }
+
+    // Wedged on something — a kerb, a lamp post, another racer. Back off and
+    // try again, or one bad corner parks a car there for the whole race.
+    this.stuck = this.speed < 1.5 ? this.stuck + dt : 0;
+    if (this.stuck > 0.8) {
+      this.drive(dt, -0.85, this.stuckSteer, false, world.city);
+      if (this.stuck > 1.9) { this.stuck = 0; this.stuckSteer *= -1; }
+      return;
+    }
+
     const t = this.target();
-    if (Math.hypot(t.x - this.x, t.z - this.z) < 26) {
+    const gate = Math.hypot(t.x - this.x, t.z - this.z);
+    if (gate < 26) {
       this.wp++;
       if (this.wp % this.circuit.length === 0) this.lap++;
     }
-    const aim = this.aimPoint();
+    const turn = this.cornerAngle();
+    const aim = this.aimPoint(turn);
     const desired = Math.atan2(aim.x - this.x, aim.z - this.z);
     const err = angDelta(this.yaw, desired);
     // Positive steer increases yaw — the AI convention that drive() expects.
     // Negating it here (the player's mapping) sent every racer into the cushion.
     const steer = clamp(err * 2.2, -1, 1);
 
-    // Ease off through the tighter corners, and use the nitro on the straights.
+    // Brake for a corner before reaching it, from a braking distance that
+    // scales with speed. Waiting for the heading error to grow is too late —
+    // by then the car is already committed and ends up in the outside wall.
+    const brakeZone = turn > 0.6 && gate < 12 + this.speed * this.speed * 0.045;
     const straight = 1 - Math.min(1, Math.abs(err) * 1.4);
-    const throttle = Math.abs(err) > 1.5 ? 0.45 : 1;
-    const boost = straight > 0.75 && this.speed < 40 * this.skill;
+    const throttle = brakeZone ? (this.speed > 18 ? -0.6 : 0.25)
+                   : Math.abs(err) > 1.5 ? 0.45 : 1;
+    const boost = !brakeZone && straight > 0.75 && this.speed < 40 * this.skill;
     this.drive(dt, throttle * this.skill, steer, false, world.city, boost);
   }
 }
@@ -82,7 +114,9 @@ class Race {
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
     for (let i = 0; i < 4; i++) {
       const back = 14 + Math.floor(i / 2) * 16;
-      const side = (i % 2 ? 1 : -1) * 11;
+      // Half a lane either side of the racing line: any wider and the outside
+      // of the grid starts inside the kerb.
+      const side = (i % 2 ? 1 : -1) * 4.2;
       this.racers.push(new Racer(
         a.x - Math.sin(yaw) * back + rx * side,
         a.z - Math.cos(yaw) * back + rz * side,

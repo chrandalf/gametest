@@ -424,8 +424,10 @@ const TEX = {
   GLASS: 5, OFFICE: 6, BRICK: 7, MODERN: 8, TOWER: 9,
   SHOP: 10, METAL: 11, CONCRETE: 12, LEAVES: 13, BARK: 14, MARK: 15,
   PLATE: 16,
+  // Rural and light-industrial set, added for zoned worlds.
+  FIELD: 17, DIRT: 18, TILE: 19, COTTAGE: 20, SIDING: 21, HOUSE: 22,
 };
-const TEX_COUNT = 17;
+const TEX_COUNT = 23;
 const PLATE_TEXT = 'E901 GBL';
 const TEX_SIZE = 256;
 
@@ -726,6 +728,131 @@ function makeTextureArray(gl) {
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + (rand()-0.5)*20, S); ctx.stroke();
     }
     noise(14);
+  };
+
+  // Crop rows. Tinted per field so neighbouring fields never match.
+  painters[TEX.FIELD] = () => {
+    fill('#7d7a44');
+    const rows = 26, rh = S / rows;
+    for (let r = 0; r < rows; r++) {
+      const g = 96 + rand() * 44;
+      ctx.fillStyle = `rgba(${g|0},${(g*0.95)|0},${(g*0.5)|0},0.45)`;
+      ctx.fillRect(0, r * rh, S, rh * 0.55);
+    }
+    for (let i = 0; i < 1400; i++) {
+      const g = 110 + rand() * 60;
+      ctx.fillStyle = `rgba(${g|0},${(g*0.93)|0},${(g*0.48)|0},0.30)`;
+      ctx.fillRect(rand()*S, rand()*S, 1 + rand()*3, 1 + rand()*6);
+    }
+    noise(12);
+  };
+
+  // Dry mud: farm tracks, yards and lay-bys.
+  painters[TEX.DIRT] = () => {
+    fill('#6b5a44');
+    for (let i = 0; i < 400; i++) {
+      ctx.fillStyle = `rgba(${80+rand()*40|0},${66+rand()*32|0},${48+rand()*26|0},0.4)`;
+      ctx.beginPath();
+      ctx.ellipse(rand()*S, rand()*S, 6+rand()*26, 5+rand()*20, rand()*3, 0, 6.3);
+      ctx.fill();
+    }
+    // Ruts.
+    for (let i = 0; i < 6; i++) {
+      ctx.strokeStyle = 'rgba(70,58,42,0.5)';
+      ctx.lineWidth = 3 + rand()*5;
+      const y = rand()*S;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(S, y + (rand()-0.5)*30); ctx.stroke();
+    }
+    noise(16);
+  };
+
+  // Pitched-roof clay tiles: overlapping courses, shaded along the bottom edge.
+  painters[TEX.TILE] = () => {
+    fill('#8a4b34');
+    const rows = 12, rh = S / rows;
+    for (let r = 0; r < rows; r++) {
+      const y = r * rh;
+      const cols = 10, cw = S / cols;
+      const off = (r % 2) * cw * 0.5;
+      for (let cI = -1; cI < cols; cI++) {
+        const x = cI * cw + off;
+        const g = 0.82 + rand() * 0.36;
+        ctx.fillStyle = `rgb(${(150*g)|0},${(80*g)|0},${(58*g)|0})`;
+        ctx.beginPath();
+        ctx.moveTo(x, y + rh);
+        ctx.lineTo(x, y + rh * 0.35);
+        ctx.quadraticCurveTo(x + cw/2, y - rh * 0.1, x + cw, y + rh * 0.35);
+        ctx.lineTo(x + cw, y + rh);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(50,24,16,0.45)';
+      ctx.fillRect(0, y + rh - 2.5, S, 2.5);
+    }
+    noise(10);
+  };
+
+  // Whitewashed render with small cottage windows and a timber sill line.
+  painters[TEX.COTTAGE] = () => {
+    fill('#ddd6c4');
+    for (let i = 0; i < 500; i++) {
+      const g = 200 + rand()*45 | 0;
+      ctx.fillStyle = `rgba(${g},${g-6},${g-22},0.35)`;
+      ctx.fillRect(rand()*S, rand()*S, 6+rand()*22, 6+rand()*22);
+    }
+    windows(3, 2, {
+      glass: (sh, lit) => lit
+        ? `rgb(${232*sh|0},${196*sh|0},${132*sh|0})`
+        : `rgb(${54*sh|0},${58*sh|0},${58*sh|0})`,
+      frame: 'rgba(72,58,44,0.95)', litChance: 0.45, wIn: 0.30, hIn: 0.28,
+    });
+    noise(14);
+  };
+
+  // Corrugated industrial cladding with a strip of high-level glazing.
+  painters[TEX.SIDING] = () => {
+    fill('#9aa0a4');
+    for (let x = 0; x < S; x += 8) {
+      ctx.fillStyle = 'rgba(120,128,134,0.55)';
+      ctx.fillRect(x, 0, 3, S);
+      ctx.fillStyle = 'rgba(206,212,216,0.35)';
+      ctx.fillRect(x + 4, 0, 2, S);
+    }
+    // Glazing band near the eaves, and a rust streak or two below it.
+    const by = S * 0.12, bh = S * 0.14;
+    for (let x = 6; x < S - 6; x += 26) {
+      const lit = rand() < 0.35;
+      ctx.fillStyle = lit ? '#cbd6cf' : '#4a5459';
+      ctx.fillRect(x, by, 20, bh);
+      if (lit) { mctx.fillStyle = 'rgb(150,150,150)'; mctx.fillRect(x, by, 20, bh); }
+    }
+    for (let i = 0; i < 9; i++) {
+      ctx.fillStyle = `rgba(${120+rand()*40|0},${72+rand()*24|0},${44+rand()*18|0},0.28)`;
+      ctx.fillRect(rand()*S, by + bh, 3 + rand()*5, 20 + rand()*90);
+    }
+    noise(12);
+  };
+
+  // Domestic brickwork. The office facades put windows on most of the wall,
+  // which at house scale reads as a black box — here the brick has to win.
+  painters[TEX.HOUSE] = () => {
+    fill('#9c6a52');
+    const rows = 26, bh = S / rows;
+    for (let r = 0; r < rows; r++) {
+      const off = (r % 2) * (S / 26);
+      for (let x = -1; x < 13; x++) {
+        const g = 0.86 + rand() * 0.28;
+        ctx.fillStyle = `rgb(${(158*g)|0},${(104*g)|0},${(80*g)|0})`;
+        ctx.fillRect(x * (S/13) + off + 1, r * bh + 1, S/13 - 2, bh - 2);
+      }
+    }
+    windows(2, 2, {
+      glass: (sh, lit) => lit
+        ? `rgb(${236*sh|0},${204*sh|0},${142*sh|0})`
+        : `rgb(${62*sh|0},${70*sh|0},${74*sh|0})`,
+      frame: 'rgba(244,244,238,0.95)', litChance: 0.4, wIn: 0.34, hIn: 0.32,
+    });
+    noise(12);
   };
 
   const rgba = new Uint8Array(S * S * 4);

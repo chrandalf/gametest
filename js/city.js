@@ -1,14 +1,16 @@
-// Procedural city generation: roads, blocks, buildings, props and colliders.
+// Procedural world generation: a road grid whose blocks are zoned from open
+// country up to downtown, built from a seed.
 'use strict';
 
 const CELL = 88;          // distance between road centre lines
 const ROAD = 26;          // road width
 const BLOCK = CELL - ROAD;
-const GRID = 9;           // blocks per axis
+const GRID = 13;          // road lines per axis; blocks per axis is one less
 const WORLD = GRID * CELL;
 const LANE = 6.5;         // lane offset from the road centre line
 const SIDEWALK_H = 0.22;
 const FLOOR_H = 3.4;
+const DEFAULT_SEED = 20260814;
 
 // facade layer -> how many window columns/rows one texture repeat contains
 const FACADES = [
@@ -65,7 +67,9 @@ function closestOnPoly(x, z, poly) {
 class City {
   constructor(gl, seed) {
     this.gl = gl;
-    this.rand = makeRandom(seed);
+    this.seed = (seed === undefined ? DEFAULT_SEED : seed) >>> 0;
+    this.rand = makeRandom(this.seed);
+    this.zones = new ZoneMap(this.seed, GRID - 1);
     this.colliders = [];      // { x0, z0, x1, z1, top }
     this.buildings = [];      // minimap footprints
     this.parks = [];
@@ -93,6 +97,12 @@ class City {
       }
     }
     return c;
+  }
+
+  // A solid you can also land on: collides, and shows on the minimap.
+  addBuilding(x0, z0, x1, z1, top, downtown) {
+    this.addCollider(x0, z0, x1, z1, top);
+    this.buildings.push({ x0, z0, x1, z1, h: top, downtown: downtown || 0 });
   }
 
   query(x, z, r) {
@@ -169,15 +179,29 @@ class City {
     return hit;
   }
 
+  // ------------------------------------------------------------- zoning ----
+
+  // How built-up the streets around a junction are: the highest rank of the
+  // blocks that touch it. Kerbs, markings and lamp posts follow this, so the
+  // road itself changes character as you drive out of town.
+  roadRank(i, j) {
+    let r = 0;
+    for (const [bi, bj] of [[i-1, j-1], [i, j-1], [i-1, j], [i, j]]) {
+      if (bi < 0 || bj < 0 || bi >= GRID - 1 || bj >= GRID - 1) continue;
+      r = Math.max(r, this.zones.rankAt(bi, bj));
+    }
+    return r;
+  }
+
   // ---------------------------------------------------------- generation ---
 
   build() {
     const rand = this.rand;
     const ground = new MeshBuilder();
     const pad = ROAD * 0.5 + 40;
-    ground.style(TEX.GRASS, [0.62, 0.72, 0.55], 0);
+    ground.style(TEX.GRASS, [0.52, 0.62, 0.42], 0);
     ground.quad([-pad, -0.05, WORLD - CELL + pad], [WORLD - CELL + pad, -0.05, WORLD - CELL + pad],
-                [WORLD - CELL + pad, -0.05, -pad], [-pad, -0.05, -pad], 90, 90);
+                [WORLD - CELL + pad, -0.05, -pad], [-pad, -0.05, -pad], 140, 140);
     this.groundMesh = ground.upload(this.gl);
 
     // 3x3 blocks per chunk keeps draw calls low but culling still useful.
@@ -196,7 +220,10 @@ class City {
       for (let j = 0; j < GRID; j++) {
         const b = chunkAt(i, j);
         const z0 = j * CELL - CELL/2, z1 = z0 + CELL;
-        b.style(TEX.ASPHALT, [1, 1, 1], 0);
+        // Country lanes are paler and more worn than city asphalt.
+        const rk = this.roadRank(i, j);
+        const tint = rk >= 4 ? [1, 1, 1] : rk >= 2 ? [1.06, 1.04, 1.00] : [1.14, 1.10, 1.02];
+        b.style(TEX.ASPHALT, tint, 0);
         b.quad([c-ROAD/2, 0, clamp(z1, lo, hi)], [c+ROAD/2, 0, clamp(z1, lo, hi)],
                [c+ROAD/2, 0, clamp(z0, lo, hi)], [c-ROAD/2, 0, clamp(z0, lo, hi)], 2.4, 8);
         // East-west road, split so it does not overlap the intersections.
@@ -205,10 +232,11 @@ class City {
       }
     }
 
-    // --- lane markings ---
+    // --- lane markings, on built-up streets only ---
     for (let i = 0; i < GRID; i++) {
       const c = roadCenter(i);
       for (let j = 0; j < GRID; j++) {
+        if (this.roadRank(i, j) < 3) continue;
         const b = chunkAt(i, j);
         const segStart = j * CELL - CELL/2;
         b.style(TEX.MARK, [1.0, 0.85, 0.15], 0);
@@ -227,6 +255,7 @@ class City {
           b.quad([x, 0.035, c+0.22], [xEnd, 0.035, c+0.22], [xEnd, 0.035, c-0.22], [x, 0.035, c-0.22], 1, 1);
         }
         // Zebra crossings: bars run along the travel direction, spanning the road.
+        if (this.roadRank(i, j) < 4) continue;
         b.style(TEX.MARK, [0.95, 0.95, 0.92], 0);
         const cz = roadCenter(j);
         const BAR_W = 0.62, BAR_L = 3.2, STEP = (ROAD - 3) / 8;
@@ -253,48 +282,53 @@ class City {
     // --- blocks ---
     for (let bi = 0; bi < GRID - 1; bi++) {
       for (let bj = 0; bj < GRID - 1; bj++) {
-        const b = chunkAt(bi, bj);
-        const x0 = roadCenter(bi) + ROAD/2, x1 = roadCenter(bi + 1) - ROAD/2;
-        const z0 = roadCenter(bj) + ROAD/2, z1 = roadCenter(bj + 1) - ROAD/2;
-        this.buildBlock(b, bi, bj, x0, z0, x1, z1);
+        this.buildBlock(chunkAt(bi, bj), bi, bj);
       }
     }
 
-    // --- street furniture at every intersection ---
+    // --- street furniture, thinning out as the streets get quieter ---
     for (let i = 0; i < GRID; i++) {
       for (let j = 0; j < GRID; j++) {
+        const rk = this.roadRank(i, j);
+        if (rk < 2) continue;
         const b = chunkAt(i, j);
         const cx = roadCenter(i), cz = roadCenter(j);
-        for (const sx of [-1, 1]) {
-          for (const sz of [-1, 1]) {
-            this.streetLight(b, cx + sx * (ROAD/2 + 1.6), cz + sz * (ROAD/2 + 1.6), -sx, -sz);
-          }
+        const corners = rk >= 4 ? [[-1,-1],[1,-1],[-1,1],[1,1]]
+                      : rk === 3 ? [[-1,-1],[1,1]] : [[1,1]];
+        for (const [sx, sz] of corners) {
+          this.streetLight(b, cx + sx * (ROAD/2 + 1.6), cz + sz * (ROAD/2 + 1.6), -sx, -sz);
         }
       }
     }
 
-    // Stunt ramps: a handful on straight stretches, facing along the road.
-    for (let n = 0; n < 7; n++) {
+    this.buildCircuit();
+
+    // Stunt ramps: on built-up straights, where there is something to jump —
+    // but never on the race circuit, where they are just a wall to hit.
+    const box = this.circuitBox;
+    const onCircuit = (i, j) => box &&
+      ((i >= box.i0 && i <= box.i1 && (j === box.j0 || j === box.j1)) ||
+       (j >= box.j0 && j <= box.j1 && (i === box.i0 || i === box.i1)));
+    const rampCells = [];
+    for (let i = 1; i < GRID - 1; i++) {
+      for (let j = 1; j < GRID - 1; j++) {
+        if (this.roadRank(i, j) >= 3 && !onCircuit(i, j)) rampCells.push([i, j]);
+      }
+    }
+    const emitRamp = (len, w, h) => {
+      if (!rampCells.length) return;
+      const [i, j] = rampCells[(rand() * rampCells.length) | 0];
       const horiz = rand() < 0.5;
-      const i = 1 + ((rand() * (GRID - 2)) | 0), j = 1 + ((rand() * (GRID - 2)) | 0);
       const along = roadCenter(horiz ? j : i) + (rand() - 0.5) * (CELL * 0.4);
       const across = roadCenter(horiz ? i : j) - LANE;
       const x = horiz ? along : across;
       const z = horiz ? across : along;
       const yaw = horiz ? (rand() < 0.5 ? Math.PI / 2 : -Math.PI / 2) : (rand() < 0.5 ? 0 : Math.PI);
-      this.ramps.emit(chunkAt(i, j), x, z, yaw, 9.5, 6.4, 2.1);
-    }
+      this.ramps.emit(chunkAt(i, j), x, z, yaw, len, w, h);
+    };
+    for (let n = 0; n < 8; n++) emitRamp(9.5, 6.4, 2.1);
     // A few mega ramps: steep enough to put a nitro-boosted car on a roof.
-    for (let n = 0; n < 4; n++) {
-      const horiz = rand() < 0.5;
-      const i = 1 + ((rand() * (GRID - 2)) | 0), j = 1 + ((rand() * (GRID - 2)) | 0);
-      const along = roadCenter(horiz ? j : i) + (rand() - 0.5) * (CELL * 0.3);
-      const across = roadCenter(horiz ? i : j) - LANE;
-      const x = horiz ? along : across;
-      const z = horiz ? across : along;
-      const yaw = horiz ? (rand() < 0.5 ? Math.PI / 2 : -Math.PI / 2) : (rand() < 0.5 ? 0 : Math.PI);
-      this.ramps.emit(chunkAt(i, j), x, z, yaw, 15.0, 7.2, 5.4);
-    }
+    for (let n = 0; n < 5; n++) emitRamp(15.0, 7.2, 5.4);
 
     for (const bld of builders) {
       if (bld.empty) continue;
@@ -307,80 +341,56 @@ class City {
     this.addCollider(lo - w, hi, hi + w, hi + w, 30);
     this.addCollider(lo - w, lo - w, lo, hi + w, 30);
     this.addCollider(hi, lo - w, hi + w, hi + w, 30);
+
+    this.spawn = this.pickSpawn();
   }
 
-  buildBlock(b, bi, bj, x0, z0, x1, z1) {
-    const rand = this.rand;
-    // Distance from downtown drives density and height.
-    const mid = (GRID - 1) / 2;
-    const dc = Math.hypot(bi - mid + 0.5, bj - mid + 0.5) / mid;
-    const downtown = clamp(1 - dc, 0, 1);
+  // A block: its ground surface, its kerbs, and whatever its zone puts on it.
+  buildBlock(b, bi, bj) {
+    const zones = this.zones;
+    const zone = zones.zoneAt(bi, bj);
+    const info = ZONES[zone];
+    const x0 = roadCenter(bi) + ROAD/2, x1 = roadCenter(bi + 1) - ROAD/2;
+    const z0 = roadCenter(bj) + ROAD/2, z1 = roadCenter(bj + 1) - ROAD/2;
+    const rank = zones.rankAt(bi, bj);
 
-    // Sidewalk slab for the whole block.
-    b.style(TEX.SIDEWALK, [1, 1, 1], 0);
-    b.chamferBox((x0+x1)/2, SIDEWALK_H/2, (z0+z1)/2, (x1-x0)/2, SIDEWALK_H/2, (z1-z0)/2, 0.09,
-          { top: TEX.SIDEWALK, perUnit: 0.22 });
+    // Pavement: a full slab in town, a kerbside band in the suburbs, nothing
+    // in the country. This is most of what sells the transition on foot.
+    const slab = rank >= 4 || zone === Z.PARK || zone === Z.INDUSTRIAL ? 'full'
+               : rank === 3 ? 'band' : 'none';
+    const baseY = slab === 'full' ? SIDEWALK_H : 0;
 
-    if (rand() < 0.12 + (1 - downtown) * 0.16) {
-      this.buildPark(b, x0, z0, x1, z1);
-      return;
-    }
-
-    // Split the block into lots. Downtown gets fewer, bigger footprints.
-    const inset = 3.0;
-    const ax0 = x0 + inset, az0 = z0 + inset, ax1 = x1 - inset, az1 = z1 - inset;
-    const lots = [];
-    const splitCount = downtown > 0.6 ? (rand() < 0.5 ? 1 : 2) : (rand() < 0.45 ? 2 : 3);
-    const vertical = rand() < 0.5;
-    const cuts = [0];
-    for (let i = 1; i < splitCount; i++) cuts.push(i / splitCount + (rand() - 0.5) * 0.18);
-    cuts.push(1);
-    for (let i = 0; i < splitCount; i++) {
-      const a = cuts[i], c = cuts[i + 1];
-      if (vertical) {
-        lots.push([lerp(ax0, ax1, a), az0, lerp(ax0, ax1, c) - 2.5, az1]);
-      } else {
-        lots.push([ax0, lerp(az0, az1, a), ax1, lerp(az0, az1, c) - 2.5]);
+    if (slab === 'full') {
+      b.style(TEX.SIDEWALK, info.ground.tint, 0);
+      b.chamferBox((x0+x1)/2, SIDEWALK_H/2, (z0+z1)/2, (x1-x0)/2, SIDEWALK_H/2, (z1-z0)/2, 0.09,
+                   { top: TEX.SIDEWALK, perUnit: 0.22 });
+    } else {
+      const g = info.ground;
+      b.style(g.layer, g.tint, 0);
+      b.quad([x0, 0.02, z1], [x1, 0.02, z1], [x1, 0.02, z0], [x0, 0.02, z0],
+             (x1-x0)/g.scale/6, (z1-z0)/g.scale/6);
+      if (slab === 'band') {
+        b.style(TEX.SIDEWALK, [1, 1, 1], 0);
+        const PW = 3.2;
+        b.box((x0+x1)/2, SIDEWALK_H/2, z0 + PW/2, (x1-x0)/2, SIDEWALK_H/2, PW/2, { perUnit: 0.22 });
+        b.box((x0+x1)/2, SIDEWALK_H/2, z1 - PW/2, (x1-x0)/2, SIDEWALK_H/2, PW/2, { perUnit: 0.22 });
+        b.box(x0 + PW/2, SIDEWALK_H/2, (z0+z1)/2, PW/2, SIDEWALK_H/2, (z1-z0)/2 - PW, { perUnit: 0.22 });
+        b.box(x1 - PW/2, SIDEWALK_H/2, (z0+z1)/2, PW/2, SIDEWALK_H/2, (z1-z0)/2 - PW, { perUnit: 0.22 });
       }
     }
-    // Occasionally cut each lot again on the other axis for a denser look.
-    const finalLots = [];
-    for (const l of lots) {
-      if (rand() < (downtown > 0.55 ? 0.15 : 0.5) && Math.min(l[2]-l[0], l[3]-l[1]) > 24) {
-        const t = 0.4 + rand() * 0.2;
-        if (vertical) {
-          finalLots.push([l[0], l[1], l[2], lerp(l[1], l[3], t) - 2.5]);
-          finalLots.push([l[0], lerp(l[1], l[3], t), l[2], l[3]]);
-        } else {
-          finalLots.push([l[0], l[1], lerp(l[0], l[2], t) - 2.5, l[3]]);
-          finalLots.push([lerp(l[0], l[2], t), l[1], l[2], l[3]]);
-        }
-      } else finalLots.push(l);
-    }
 
-    for (const [lx0, lz0, lx1, lz1] of finalLots) {
-      if (lx1 - lx0 < 9 || lz1 - lz0 < 9) continue;
-      const base = 12 + rand() * 16;
-      const h = base + downtown * downtown * (30 + rand() * 110) + rand() * 10;
-      this.buildBuilding(b, lx0, lz0, lx1, lz1, Math.max(9, h), downtown);
-    }
-
-    // A few parked cars along the kerb.
-    for (let k = 0; k < 3; k++) {
-      if (rand() > 0.55) continue;
-      const side = (rand() * 4) | 0;
-      const t = 0.2 + rand() * 0.6;
-      let px, pz, yaw;
-      if (side === 0) { px = lerp(x0, x1, t); pz = z0 - 3.4; yaw = 0; }
-      else if (side === 1) { px = lerp(x0, x1, t); pz = z1 + 3.4; yaw = Math.PI; }
-      else if (side === 2) { px = x0 - 3.4; pz = lerp(z0, z1, t); yaw = Math.PI/2; }
-      else { px = x1 + 3.4; pz = lerp(z0, z1, t); yaw = -Math.PI/2; }
-      this.parkedCar(b, px, pz, yaw);
-    }
+    const ctx = {
+      bi, bj, x0, z0, x1, z1, zone, rank, baseY,
+      u: zones.urbanityAt(bi, bj),
+      rand: zones.randFor(bi, bj, 1),
+    };
+    const builder = ZONE_BUILDERS[zone];
+    if (builder) builder(this, b, ctx);
   }
 
-  buildBuilding(b, x0, z0, x1, z1, height, downtown) {
-    const rand = this.rand;
+  buildBuilding(b, x0, z0, x1, z1, height, downtown, ctx) {
+    const rand = (ctx && ctx.rand) || this.rand;
+    const base = (ctx && ctx.baseY) || 0;
     const w = x1 - x0, d = z1 - z0;
     const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
     const tint = BUILDING_TINTS[(rand() * BUILDING_TINTS.length) | 0];
@@ -395,10 +405,10 @@ class City {
 
     if (shopH > 0) {
       b.style(TEX.SHOP, [1, 1, 1], 0);
-      b.chamferBox(cx, shopH/2, cz, w/2 + 0.35, shopH/2, d/2 + 0.35, 0.3,
+      b.chamferBox(cx, base + shopH/2, cz, w/2 + 0.35, shopH/2, d/2 + 0.35, 0.3,
             { skipTop: true, uvU: Math.max(1, Math.round(w / 9)), uvV: 1 });
       b.style(TEX.CONCRETE, [0.9, 0.9, 0.88], 0);
-      b.box(cx, shopH + 0.18, cz, w/2 + 0.6, 0.18, d/2 + 0.6,
+      b.box(cx, base + shopH + 0.18, cz, w/2 + 0.6, 0.18, d/2 + 0.6,
             { side: TEX.CONCRETE, top: TEX.CONCRETE, perUnit: 0.3 });
     }
 
@@ -412,15 +422,15 @@ class City {
     const roundTower = downtown > 0.5 && height > 45 && Math.abs(w - d) < Math.min(w, d) * 0.45 && rand() < 0.34;
     if (roundTower) {
       const rad = Math.min(w, d) / 2;
-      b.cylinder(cx, shopH + bodyH/2, cz, rad, bodyH, 24,
+      b.cylinder(cx, base + shopH + bodyH/2, cz, rad, bodyH, 24,
                  { uRepeat: Math.max(2, Math.round(2 * Math.PI * rad / (fac.cols * FLOOR_H) * fac.cols / 2)),
                    vRepeat: uvV });
       b.style(TEX.ROOF, [1, 1, 1], 0);
-      b.cylinder(cx, totalH + 0.12, cz, rad * 1.02, 0.24, 24, { uRepeat: 6, vRepeat: 1 });
+      b.cylinder(cx, base + totalH + 0.12, cz, rad * 1.02, 0.24, 24, { uRepeat: 6, vRepeat: 1 });
       b.style(fac.layer, tint, 0);
     } else {
       const corner = clamp(Math.min(w, d) * 0.07, 0.35, 1.4);
-      b.chamferBox(cx, shopH + bodyH/2, cz, w/2, bodyH/2, d/2, corner,
+      b.chamferBox(cx, base + shopH + bodyH/2, cz, w/2, bodyH/2, d/2, corner,
                    { top: TEX.ROOF, topTint: [1, 1, 1], uvU, uvV });
     }
 
@@ -431,29 +441,29 @@ class City {
       const bandGap = FLOOR_H * (height > 70 ? 6 : 4);
       b.style(TEX.CONCRETE, tint, 0);
       for (let y = shopH + bandGap; y < totalH - 1.2; y += bandGap) {
-        b.chamferBox(cx, y, cz, w/2 + 0.22, 0.17, d/2 + 0.22, 0.1,
+        b.chamferBox(cx, base + y, cz, w/2 + 0.22, 0.17, d/2 + 0.22, 0.1,
                      { perUnit: 0.5, skipTop: true });
       }
       // Pilasters up the corners, slightly proud of the wall.
       const pil = Math.min(0.85, Math.min(w, d) * 0.09);
       for (const sx of [-1, 1]) {
         for (const sz of [-1, 1]) {
-          b.chamferBox(cx + sx * (w/2 - pil * 0.35), shopH + bodyH/2, cz + sz * (d/2 - pil * 0.35),
+          b.chamferBox(cx + sx * (w/2 - pil * 0.35), base + shopH + bodyH/2, cz + sz * (d/2 - pil * 0.35),
                        pil, bodyH/2, pil, pil * 0.35, { perUnit: 0.45, skipTop: true });
         }
       }
       // A cornice under the parapet reads as a real roofline.
-      b.chamferBox(cx, totalH - 0.35, cz, w/2 + 0.42, 0.35, d/2 + 0.42, 0.18, { perUnit: 0.5 });
+      b.chamferBox(cx, base + totalH - 0.35, cz, w/2 + 0.42, 0.35, d/2 + 0.42, 0.18, { perUnit: 0.5 });
     }
 
     // Parapet wall around the roof.
     b.style(TEX.CONCRETE, tint, 0);
     if (!roundTower) {
-    const pw = 0.5, ph = 1.0;
-    b.box(cx, totalH + ph/2, z0 + pw/2, w/2, ph/2, pw/2, { perUnit: 0.4 });
-    b.box(cx, totalH + ph/2, z1 - pw/2, w/2, ph/2, pw/2, { perUnit: 0.4 });
-    b.box(x0 + pw/2, totalH + ph/2, cz, pw/2, ph/2, d/2, { perUnit: 0.4 });
-    b.box(x1 - pw/2, totalH + ph/2, cz, pw/2, ph/2, d/2, { perUnit: 0.4 });
+      const pw = 0.5, ph = 1.0;
+      b.box(cx, base + totalH + ph/2, z0 + pw/2, w/2, ph/2, pw/2, { perUnit: 0.4 });
+      b.box(cx, base + totalH + ph/2, z1 - pw/2, w/2, ph/2, pw/2, { perUnit: 0.4 });
+      b.box(x0 + pw/2, base + totalH + ph/2, cz, pw/2, ph/2, d/2, { perUnit: 0.4 });
+      b.box(x1 - pw/2, base + totalH + ph/2, cz, pw/2, ph/2, d/2, { perUnit: 0.4 });
     }
 
     // Setback tower on tall buildings.
@@ -461,15 +471,15 @@ class City {
       const sw = w * (0.45 + rand() * 0.2), sd = d * (0.45 + rand() * 0.2);
       const sh = 8 + rand() * 26;
       b.style(fac.layer, tint, 0);
-      b.chamferBox(cx, totalH + sh/2, cz, sw/2, sh/2, sd/2, clamp(Math.min(sw, sd) * 0.09, 0.3, 1.6),
+      b.chamferBox(cx, base + totalH + sh/2, cz, sw/2, sh/2, sd/2, clamp(Math.min(sw, sd) * 0.09, 0.3, 1.6),
             { top: TEX.ROOF,
               uvU: Math.max(1, Math.round(sw / (fac.cols * FLOOR_H))),
               uvV: Math.max(1, Math.round(sh / (fac.rows * FLOOR_H))) });
       // Aircraft warning light.
       b.style(TEX.PLAIN, [1.0, 0.15, 0.12], 1.0);
-      b.box(cx, totalH + sh + 0.6, cz, 0.35, 0.6, 0.35, { perUnit: 1, emis: 1 });
+      b.box(cx, base + totalH + sh + 0.6, cz, 0.35, 0.6, 0.35, { perUnit: 1, emis: 1 });
       b.style(TEX.METAL, [0.7, 0.7, 0.72], 0);
-      b.cylinder(cx, totalH + sh + 4, cz, 0.18, 8, 6);
+      b.cylinder(cx, base + totalH + sh + 4, cz, 0.18, 8, 6);
     }
 
     // Rooftop clutter.
@@ -479,57 +489,109 @@ class City {
       const ux = lerp(x0 + uw + 1, x1 - uw - 1, rand());
       const uz = lerp(z0 + ud + 1, z1 - ud - 1, rand());
       b.style(TEX.METAL, [0.62, 0.64, 0.66], 0);
-      b.chamferBox(ux, totalH + uh/2, uz, uw/2, uh/2, ud/2, 0.28, { perUnit: 0.5 });
+      b.chamferBox(ux, base + totalH + uh/2, uz, uw/2, uh/2, ud/2, 0.28, { perUnit: 0.5 });
     }
     if (rand() < 0.25 && w > 16) {
       // Water tower.
       const ux = lerp(x0 + 6, x1 - 6, rand()), uz = lerp(z0 + 6, z1 - 6, rand());
       b.style(TEX.BARK, [0.75, 0.6, 0.45], 0);
-      b.cylinder(ux, totalH + 5.2, uz, 2.2, 4.4, 10, { uRepeat: 4, vRepeat: 2 });
+      b.cylinder(ux, base + totalH + 5.2, uz, 2.2, 4.4, 10, { uRepeat: 4, vRepeat: 2 });
       b.style(TEX.METAL, [0.5, 0.5, 0.52], 0);
       for (const [ox, oz] of [[-1.4,-1.4],[1.4,-1.4],[-1.4,1.4],[1.4,1.4]]) {
-        b.cylinder(ux + ox, totalH + 1.5, uz + oz, 0.16, 3, 5);
+        b.cylinder(ux + ox, base + totalH + 1.5, uz + oz, 0.16, 3, 5);
       }
     }
 
-    this.addCollider(x0, z0, x1, z1, totalH);
-    this.buildings.push({ x0, z0, x1, z1, h: totalH, downtown });
+    this.addBuilding(x0, z0, x1, z1, base + totalH, downtown);
+  }
+
+  // A parish church: nave, porch, tower and spire. One per village or two.
+  church(b, ctx) {
+    const rand = ctx.rand;
+    const cx = (ctx.x0 + ctx.x1) / 2, cz = (ctx.z0 + ctx.z1) / 2;
+    const alongX = rand() < 0.5;
+    const nw = alongX ? 19 : 8, nd = alongX ? 8 : 19;
+    b.style(TEX.CONCRETE, [0.80, 0.78, 0.70], 0);
+    b.chamferBox(cx, 5.0, cz, nw/2, 5.0, nd/2, 0.2, { skipTop: true, perUnit: 0.28 });
+    b.style(TEX.TILE, [0.48, 0.46, 0.44], 0);
+    pitchedRoof(b, cx, 10.0, cz, nw/2, nd/2, 3.4, alongX, 0.5);
+
+    const tx = cx + (alongX ? -nw/2 - 3.2 : 0), tz = cz + (alongX ? 0 : -nd/2 - 3.2);
+    b.style(TEX.CONCRETE, [0.76, 0.74, 0.66], 0);
+    b.chamferBox(tx, 9.5, tz, 3.4, 9.5, 3.4, 0.25, { skipTop: true, perUnit: 0.3 });
+    // Louvred belfry openings.
+    b.style(TEX.BARK, [0.30, 0.24, 0.20], 0);
+    for (const [ox, oz] of [[3.45,0],[-3.45,0],[0,3.45],[0,-3.45]]) {
+      b.box(tx + ox, 16.5, tz + oz, ox ? 0.08 : 1.0, 1.4, oz ? 0.08 : 1.0, { perUnit: 1 });
+    }
+    // Spire.
+    b.style(TEX.TILE, [0.42, 0.44, 0.46], 0);
+    const sy = 19.0, sh = 9.0;
+    for (let k = 0; k < 4; k++) {
+      const a0 = k / 4 * Math.PI * 2 + Math.PI/4, a1 = (k + 1) / 4 * Math.PI * 2 + Math.PI/4;
+      const r = 3.5;
+      // a1 before a0: the other order winds the spire inside out.
+      b.quad([tx + Math.cos(a1)*r, sy, tz + Math.sin(a1)*r],
+             [tx + Math.cos(a0)*r, sy, tz + Math.sin(a0)*r],
+             [tx, sy + sh, tz], [tx, sy + sh, tz], 1, 1);
+    }
+    b.style(TEX.METAL, [0.85, 0.80, 0.45], 0);
+    b.cylinder(tx, sy + sh + 0.9, tz, 0.09, 1.8, 5);
+
+    this.addBuilding(cx - nw/2, cz - nd/2, cx + nw/2, cz + nd/2, 13.4);
+    this.addBuilding(tx - 3.4, tz - 3.4, tx + 3.4, tz + 3.4, 19.0);
+
+    // Churchyard: wall, yews, headstones.
+    const { x0, z0, x1, z1 } = ctx;
+    hedge(this, b, x0 + 6, z0 + 6, x1 - 6, z0 + 7, 1.1);
+    hedge(this, b, x0 + 6, z1 - 7, x1 - 6, z1 - 6, 1.1);
+    for (let i = 0; i < 5; i++) {
+      if (rand() < 0.4) continue;
+      this.tree(b, lerp(x0 + 9, x1 - 9, rand()), lerp(z0 + 9, z1 - 9, rand()), 1.0 + rand() * 0.5, 0);
+    }
+    b.style(TEX.CONCRETE, [0.68, 0.68, 0.64], 0);
+    for (let i = 0; i < 14; i++) {
+      const gx = lerp(x0 + 8, x1 - 8, rand()), gz = lerp(z0 + 8, z1 - 8, rand());
+      if (Math.abs(gx - cx) < nw/2 + 2 && Math.abs(gz - cz) < nd/2 + 2) continue;
+      b.box(gx, 0.45, gz, 0.35, 0.45, 0.09, { perUnit: 1 });
+    }
   }
 
   buildPark(b, x0, z0, x1, z1) {
-    const rand = this.rand;
-    b.style(TEX.GRASS, [1, 1, 1], 0);
-    b.quad([x0+2, SIDEWALK_H + 0.02, z1-2], [x1-2, SIDEWALK_H + 0.02, z1-2],
-           [x1-2, SIDEWALK_H + 0.02, z0+2], [x0+2, SIDEWALK_H + 0.02, z0+2],
-           (x1-x0)/8, (z1-z0)/8);
-    const n = 5 + ((rand() * 7) | 0);
-    for (let i = 0; i < n; i++) {
-      const tx = lerp(x0 + 5, x1 - 5, rand()), tz = lerp(z0 + 5, z1 - 5, rand());
-      this.tree(b, tx, tz, 0.8 + rand() * 0.7);
-    }
-    for (let i = 0; i < 3; i++) {
-      if (rand() < 0.5) continue;
-      const bx = lerp(x0 + 6, x1 - 6, rand()), bz = lerp(z0 + 6, z1 - 6, rand());
-      b.style(TEX.BARK, [0.8, 0.65, 0.5], 0);
-      b.chamferBox(bx, SIDEWALK_H + 0.55, bz, 1.4, 0.08, 0.35, 0.06, { perUnit: 1 });
-      b.chamferBox(bx, SIDEWALK_H + 0.85, bz - 0.32, 1.4, 0.35, 0.06, 0.05, { perUnit: 1 });
-      b.style(TEX.METAL, [0.3, 0.32, 0.34], 0);
-      b.box(bx - 1.2, SIDEWALK_H + 0.28, bz, 0.08, 0.28, 0.32, { perUnit: 1 });
-      b.box(bx + 1.2, SIDEWALK_H + 0.28, bz, 0.08, 0.28, 0.32, { perUnit: 1 });
-    }
-    this.parks.push({ x0, z0, x1, z1 });
+    ZONE_BUILDERS[Z.PARK](this, b, {
+      x0, z0, x1, z1, baseY: SIDEWALK_H, rand: this.rand,
+    });
   }
 
-  tree(b, x, z, scale) {
+  tree(b, x, z, scale, baseY) {
     const rand = this.rand;
+    const y0 = baseY === undefined ? SIDEWALK_H : baseY;
     const h = (4 + rand() * 3) * scale;
     b.style(TEX.BARK, [1, 1, 1], 0);
-    b.cylinder(x, SIDEWALK_H + h/2, z, 0.34 * scale, h, 7, { uRepeat: 2, vRepeat: 2 });
+    b.cylinder(x, y0 + h/2, z, 0.34 * scale, h, 7, { uRepeat: 2, vRepeat: 2 });
     b.style(TEX.LEAVES, [0.85 + rand()*0.3, 0.95 + rand()*0.2, 0.85], 0);
     const r = (2.2 + rand() * 1.2) * scale;
-    b.sphere(x, SIDEWALK_H + h + r * 0.45, z, r, 9, 6, 0.85);
-    b.sphere(x + (rand()-0.5)*r, SIDEWALK_H + h + r * 0.1, z + (rand()-0.5)*r, r*0.7, 8, 5, 0.9);
+    b.sphere(x, y0 + h + r * 0.45, z, r, 9, 6, 0.85);
+    b.sphere(x + (rand()-0.5)*r, y0 + h + r * 0.1, z + (rand()-0.5)*r, r*0.7, 8, 5, 0.9);
     this.addCollider(x - 0.5, z - 0.5, x + 0.5, z + 0.5, h);
+  }
+
+  bush(b, x, z, scale) {
+    const rand = this.rand;
+    const r = 1.1 * scale;
+    b.style(TEX.LEAVES, [0.72 + rand()*0.3, 0.92 + rand()*0.2, 0.68], 0);
+    b.sphere(x, r * 0.7, z, r, 7, 4, 0.8);
+    b.sphere(x + (rand()-0.5)*r, r * 0.55, z + (rand()-0.5)*r, r*0.75, 6, 4, 0.85);
+  }
+
+  bench(b, x, z, baseY) {
+    const y = baseY === undefined ? SIDEWALK_H : baseY;
+    b.style(TEX.BARK, [0.8, 0.65, 0.5], 0);
+    b.chamferBox(x, y + 0.55, z, 1.4, 0.08, 0.35, 0.06, { perUnit: 1 });
+    b.chamferBox(x, y + 0.85, z - 0.32, 1.4, 0.35, 0.06, 0.05, { perUnit: 1 });
+    b.style(TEX.METAL, [0.3, 0.32, 0.34], 0);
+    b.box(x - 1.2, y + 0.28, z, 0.08, 0.28, 0.32, { perUnit: 1 });
+    b.box(x + 1.2, y + 0.28, z, 0.08, 0.28, 0.32, { perUnit: 1 });
   }
 
   streetLight(b, x, z, dirX, dirZ) {
@@ -575,6 +637,66 @@ class City {
                      Math.min(...[T(-1,-2.3)[1], T(1,-2.3)[1], T(-1,2.3)[1], T(1,2.3)[1]]),
                      Math.max(...[T(-1,-2.3)[0], T(1,-2.3)[0], T(-1,2.3)[0], T(1,2.3)[0]]),
                      Math.max(...[T(-1,-2.3)[1], T(1,-2.3)[1], T(-1,2.3)[1], T(1,2.3)[1]]), 1.6);
+  }
+
+  // ------------------------------------------------------------- routing ---
+
+  // A street circuit for racing: a rectangular loop of roads through the most
+  // built-up part of the map, sampled into gates on the correct side of the
+  // road so the AI can follow it.
+  buildCircuit() {
+    const zones = this.zones;
+    let best = null;
+    for (let i0 = 0; i0 < GRID - 3; i0++) {
+      for (let j0 = 0; j0 < GRID - 3; j0++) {
+        for (const size of [3, 4]) {
+          const i1 = i0 + size, j1 = j0 + size;
+          if (i1 >= GRID || j1 >= GRID) continue;
+          let score = 0;
+          for (let i = i0; i <= i1; i++) {
+            score += this.roadRank(i, j0) + this.roadRank(i, j1);
+          }
+          for (let j = j0; j <= j1; j++) {
+            score += this.roadRank(i0, j) + this.roadRank(i1, j);
+          }
+          if (!best || score > best.score) best = { i0, j0, i1, j1, score };
+        }
+      }
+    }
+    if (!best) return;
+    this.circuitBox = best;
+    const { i0, j0, i1, j1 } = best;
+    const pts = [];
+    const push = (x, z) => pts.push({ x, z });
+    // Clockwise in (x, z): east along j0, north up i1, west along j1, south down i0.
+    // Each corner gets its own gate inside the junction box. Without it the AI
+    // aims straight from the last gate of one side to the first of the next,
+    // which cuts the corner diagonally through the buildings.
+    for (let i = i0; i < i1; i++) push(roadCenter(i) + CELL/2, roadCenter(j0) - LANE);
+    push(roadCenter(i1) + LANE, roadCenter(j0) - LANE);
+    for (let j = j0; j < j1; j++) push(roadCenter(i1) + LANE, roadCenter(j) + CELL/2);
+    push(roadCenter(i1) + LANE, roadCenter(j1) + LANE);
+    for (let i = i1; i > i0; i--) push(roadCenter(i) - CELL/2, roadCenter(j1) + LANE);
+    push(roadCenter(i0) - LANE, roadCenter(j1) + LANE);
+    for (let j = j1; j > j0; j--) push(roadCenter(i0) - LANE, roadCenter(j) - CELL/2);
+    push(roadCenter(i0) - LANE, roadCenter(j0) - LANE);
+    this.circuit = pts;
+  }
+
+  // Somewhere sensible to start: on a road in the middle of the suburbs, so
+  // the city is one way and the countryside the other.
+  pickSpawn() {
+    const blk = this.zones.findBlock([Z.SUBURB, Z.TOWN], this.rand) ||
+                this.zones.findBlock([Z.VILLAGE], this.rand) || { bi: 1, bj: 1 };
+    return { x: roadCenter(blk.bi) + CELL/2, z: roadCenter(blk.bj) - LANE,
+             yaw: Math.PI / 2, bi: blk.bi, bj: blk.bj };
+  }
+
+  // Which zone a world position falls in.
+  zoneAtWorld(x, z) {
+    const bi = clamp(Math.floor((x + ROAD/2) / CELL), 0, GRID - 2);
+    const bj = clamp(Math.floor((z + ROAD/2) / CELL), 0, GRID - 2);
+    return this.zones.zoneAt(bi, bj);
   }
 }
 

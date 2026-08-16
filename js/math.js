@@ -169,3 +169,36 @@ function makeRandom(seed) {
     return s / 4294967296;
   };
 }
+
+// --- value noise -------------------------------------------------------------
+// Smooth, seeded, and stateless: the same (x, z, seed) always gives the same
+// number, which is what lets the zone layout be a pure function of the seed.
+
+function hash2(ix, iz, seed) {
+  let h = (ix | 0) * 374761393 + (iz | 0) * 668265263 + (seed | 0) * 1442695041;
+  h = (h ^ (h >>> 13)) >>> 0;
+  h = Math.imul(h, 1274126177) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+// Bilinear value noise with a smoothstep fade, so the field has no creases.
+function valueNoise(x, z, seed) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const fx = x - ix, fz = z - iz;
+  const ux = fx * fx * (3 - 2 * fx), uz = fz * fz * (3 - 2 * fz);
+  const a = hash2(ix, iz, seed),     b = hash2(ix + 1, iz, seed);
+  const c = hash2(ix, iz + 1, seed), d = hash2(ix + 1, iz + 1, seed);
+  return lerp(lerp(a, b, ux), lerp(c, d, ux), uz);
+}
+
+// Fractal sum. Octaves add detail; each is half the amplitude and twice the
+// frequency of the one before, so the result stays in roughly [0, 1].
+function fbm(x, z, seed, octaves) {
+  let sum = 0, amp = 1, norm = 0, f = 1;
+  for (let o = 0; o < (octaves || 4); o++) {
+    sum += valueNoise(x * f, z * f, seed + o * 7919) * amp;
+    norm += amp;
+    amp *= 0.5; f *= 2;
+  }
+  return sum / norm;
+}

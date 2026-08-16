@@ -1,0 +1,513 @@
+// What actually gets built on a block, once the zone map has decided what kind
+// of place it is. One builder per zone, plus the small vocabulary of parts
+// (houses, roofs, hedges, sheds) they share.
+'use strict';
+
+// --- shared parts ------------------------------------------------------------
+
+// cols/rows: how many windows one repeat of the texture contains. Without
+// this the repeat count is guesswork and a two-storey house ends up with four
+// rows of windows, which is what makes it read as a block of flats.
+const HOUSE_WALLS = [
+  { layer: TEX.HOUSE,   tint: [1.00, 0.96, 0.92], cols: 2, rows: 2 },
+  { layer: TEX.HOUSE,   tint: [0.82, 0.86, 0.90], cols: 2, rows: 2 },
+  { layer: TEX.COTTAGE, tint: [1.00, 0.98, 0.92], cols: 3, rows: 2 },
+  { layer: TEX.COTTAGE, tint: [0.92, 0.90, 0.82], cols: 3, rows: 2 },
+];
+const WINDOW_SPACING = 3.4;      // metres between window centres, both axes
+const ROOF_TINTS = [
+  [0.92, 0.62, 0.50], [0.72, 0.46, 0.38], [0.60, 0.56, 0.54], [0.46, 0.42, 0.44],
+];
+
+// A pitched roof: two slopes and two gable ends. `alongX` puts the ridge on
+// the X axis. Overhanging eaves are what stop a house reading as a box with a
+// lid — they throw a shadow line right across the wall below.
+function pitchedRoof(b, cx, y, cz, hw, hd, rise, alongX, over) {
+  const o = over === undefined ? 0.35 : over;
+  const ex = hw + o, ez = hd + o;
+  if (alongX) {
+    const ry = y + rise;
+    // Slopes.
+    b.quad([cx-ex, y, cz+ez], [cx+ex, y, cz+ez], [cx+ex, ry, cz], [cx-ex, ry, cz], ex*0.7, ez*0.7);
+    b.quad([cx+ex, y, cz-ez], [cx-ex, y, cz-ez], [cx-ex, ry, cz], [cx+ex, ry, cz], ex*0.7, ez*0.7);
+    // Gables (a quad with its last two corners collapsed is a triangle).
+    b.quad([cx+ex, y, cz+ez], [cx+ex, y, cz-ez], [cx+ex, ry, cz], [cx+ex, ry, cz], 1, 1);
+    b.quad([cx-ex, y, cz-ez], [cx-ex, y, cz+ez], [cx-ex, ry, cz], [cx-ex, ry, cz], 1, 1);
+  } else {
+    const ry = y + rise;
+    // Wound so both slopes face up and outward; reversing either one turns the
+    // roof inside out and it renders black.
+    b.quad([cx+ex, y, cz+ez], [cx+ex, y, cz-ez], [cx, ry, cz-ez], [cx, ry, cz+ez], ez*0.7, ex*0.7);
+    b.quad([cx-ex, y, cz-ez], [cx-ex, y, cz+ez], [cx, ry, cz+ez], [cx, ry, cz-ez], ez*0.7, ex*0.7);
+    b.quad([cx-ex, y, cz+ez], [cx+ex, y, cz+ez], [cx, ry, cz+ez], [cx, ry, cz+ez], 1, 1);
+    b.quad([cx+ex, y, cz-ez], [cx-ex, y, cz-ez], [cx, ry, cz-ez], [cx, ry, cz-ez], 1, 1);
+  }
+}
+
+// A house: walls, pitched roof, a door on the street side and a chimney.
+// `faceX`/`faceZ` point at the road, which is where the door goes.
+function house(city, b, opt) {
+  const rand = opt.rand;
+  const w = opt.w, d = opt.d, h = opt.h;
+  const cx = opt.x, cz = opt.z;
+  const base = opt.baseY || 0;
+  const wall = opt.wall || HOUSE_WALLS[(rand() * HOUSE_WALLS.length) | 0];
+  const roofTint = opt.roofTint || ROOF_TINTS[(rand() * ROOF_TINTS.length) | 0];
+  const uvU = Math.max(1, Math.round(w / (wall.cols * WINDOW_SPACING)));
+  const uvV = Math.max(1, Math.round(h / (wall.rows * WINDOW_SPACING)));
+
+  b.style(wall.layer, wall.tint, 0);
+  b.chamferBox(cx, base + h/2, cz, w/2, h/2, d/2, 0.16, { skipTop: true, uvU, uvV });
+
+  b.style(TEX.TILE, roofTint, 0);
+  pitchedRoof(b, cx, base + h, cz, w/2, d/2, opt.rise === undefined ? Math.min(w, d) * 0.32 : opt.rise,
+              opt.ridgeAlongX !== undefined ? opt.ridgeAlongX : w >= d, opt.eaves);
+
+  // Door and a porch canopy on the street elevation.
+  const fx = opt.faceX || 0, fz = opt.faceZ || 0;
+  const dw = 0.55, dh = 2.05;
+  const px = cx + fx * (w/2 + 0.06) + fz * (rand() - 0.5) * (w * 0.3);
+  const pz = cz + fz * (d/2 + 0.06) + fx * (rand() - 0.5) * (d * 0.3);
+  b.style(TEX.BARK, [0.42, 0.30, 0.22], 0);
+  b.box(px, base + dh/2, pz, fz ? dw : 0.08, dh/2, fx ? dw : 0.08, { perUnit: 1 });
+  b.style(TEX.CONCRETE, [0.88, 0.86, 0.82], 0);
+  b.box(px + fx * 0.35, base + dh + 0.12, pz + fz * 0.35,
+        (fz ? dw + 0.35 : 0.42), 0.08, (fx ? dw + 0.35 : 0.42), { perUnit: 0.6 });
+
+  if (rand() < 0.75) {
+    const chx = cx + (rand() - 0.5) * w * 0.5, chz = cz + (rand() - 0.5) * d * 0.4;
+    b.style(TEX.BRICK, [0.62, 0.44, 0.38], 0);
+    b.box(chx, base + h + 1.5, chz, 0.42, 1.5, 0.42, { perUnit: 0.8 });
+  }
+  city.addBuilding(cx - w/2, cz - d/2, cx + w/2, cz + d/2, base + h);
+}
+
+// A run of hedge. Solid to drive through, but you can see it coming.
+function hedge(city, b, x0, z0, x1, z1, h, solid) {
+  const hh = h || 1.25;
+  b.style(TEX.LEAVES, [0.62, 0.78, 0.55], 0);
+  b.chamferBox((x0+x1)/2, hh/2, (z0+z1)/2, Math.abs(x1-x0)/2, hh/2, Math.abs(z1-z0)/2,
+               Math.min(0.4, hh * 0.3), { perUnit: 0.7 });
+  if (solid !== false) city.addCollider(Math.min(x0,x1), Math.min(z0,z1), Math.max(x0,x1), Math.max(z0,z1), hh);
+}
+
+// Post-and-rail fencing. Visual only — it is knee height, so blocking on it
+// would feel like an invisible wall.
+function fence(b, x0, z0, x1, z1, rand) {
+  const len = Math.hypot(x1 - x0, z1 - z0);
+  const n = Math.max(2, Math.round(len / 2.4));
+  b.style(TEX.BARK, [0.58, 0.46, 0.34], 0);
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    b.box(lerp(x0, x1, t), 0.55, lerp(z0, z1, t), 0.07, 0.55, 0.07, { perUnit: 1 });
+  }
+  const dx = (x1 - x0) / len, dz = (z1 - z0) / len;
+  for (const y of [0.5, 0.95]) {
+    b.box((x0+x1)/2, y, (z0+z1)/2,
+          Math.abs(dx) * len/2 + 0.04, 0.05, Math.abs(dz) * len/2 + 0.04, { perUnit: 0.5 });
+  }
+}
+
+// Walk the four street-facing edges of a block, handing out plots. Everything
+// residential is laid out this way, so houses always address the road.
+// The corners are left empty: each run stops a plot depth short of the ends,
+// so perpendicular runs cannot grow into each other. The gap reads as a side
+// alley, which is a better outcome than two roofs intersecting.
+function frontage(ctx, edges, plotW, depth, cb, insetFactor) {
+  const { x0, z0, x1, z1, rand } = ctx;
+  const inset = depth * (insetFactor === undefined ? 0.75 : insetFactor);
+  for (const e of edges) {
+    const horiz = e === 0 || e === 1;
+    const runStart = (horiz ? x0 : z0) + inset;
+    const runEnd = (horiz ? x1 : z1) - inset;
+    const span = runEnd - runStart;
+    if (span < plotW * 0.6) continue;
+    const n = Math.max(1, Math.floor(span / plotW));
+    const w = span / n;
+    for (let k = 0; k < n; k++) {
+      const mid = runStart + k * w + w / 2;
+      let cx, cz, faceX = 0, faceZ = 0;
+      if (e === 0)      { cx = mid; cz = z0 + depth/2; faceZ = -1; }
+      else if (e === 1) { cx = mid; cz = z1 - depth/2; faceZ = 1; }
+      else if (e === 2) { cx = x0 + depth/2; cz = mid; faceX = -1; }
+      else              { cx = x1 - depth/2; cz = mid; faceX = 1; }
+      cb({ cx, cz, w, depth, faceX, faceZ, edge: e, horiz, rand });
+    }
+  }
+}
+
+// --- zone builders -----------------------------------------------------------
+// Each takes (city, b, ctx) where ctx carries the block bounds, its zone, the
+// smoothed urbanity at that block and a block-local PRNG.
+
+const ZONE_BUILDERS = {};
+
+// Open country: woodland, rough grass, boulders and the odd track.
+ZONE_BUILDERS[Z.WILD] = (city, b, ctx) => {
+  const { x0, z0, x1, z1, rand } = ctx;
+  const n = 14 + ((rand() * 12) | 0);
+  for (let i = 0; i < n; i++) {
+    const x = lerp(x0 + 3, x1 - 3, rand()), z = lerp(z0 + 3, z1 - 3, rand());
+    if (rand() < 0.22) city.bush(b, x, z, 0.7 + rand() * 0.8);
+    else city.tree(b, x, z, 0.9 + rand() * 0.9, 0);
+  }
+  for (let i = 0; i < 3; i++) {
+    if (rand() > 0.5) continue;
+    const x = lerp(x0 + 4, x1 - 4, rand()), z = lerp(z0 + 4, z1 - 4, rand());
+    const r = 0.8 + rand() * 1.6;
+    b.style(TEX.CONCRETE, [0.55, 0.54, 0.50], 0);
+    b.sphere(x, r * 0.35, z, r, 7, 4, 0.5);
+    city.addCollider(x - r*0.7, z - r*0.7, x + r*0.7, z + r*0.7, r * 0.7);
+  }
+};
+
+// Fields divided by hedgerows, with a farmstead on some blocks.
+ZONE_BUILDERS[Z.FARM] = (city, b, ctx) => {
+  const { x0, z0, x1, z1, rand } = ctx;
+  const strips = 2 + ((rand() * 2) | 0);
+  const vertical = rand() < 0.5;
+  for (let k = 0; k < strips; k++) {
+    const a = k / strips, c = (k + 1) / strips;
+    const fx0 = vertical ? lerp(x0, x1, a) : x0;
+    const fx1 = vertical ? lerp(x0, x1, c) : x1;
+    const fz0 = vertical ? z0 : lerp(z0, z1, a);
+    const fz1 = vertical ? z1 : lerp(z0, z1, c);
+    const crop = rand();
+    const tint = crop < 0.32 ? [0.78, 0.72, 0.38]          // ripe cereal
+               : crop < 0.6  ? [0.52, 0.62, 0.32]          // young green
+               : crop < 0.8  ? [0.46, 0.36, 0.28]          // ploughed
+                             : [0.62, 0.70, 0.40];         // pasture
+    b.style(crop < 0.8 ? TEX.FIELD : TEX.GRASS, tint, 0);
+    const rot = vertical !== (rand() < 0.5);
+    b.quad([fx0+1, 0.03, fz1-1], [fx1-1, 0.03, fz1-1], [fx1-1, 0.03, fz0+1], [fx0+1, 0.03, fz0+1],
+           rot ? (fx1-fx0)/6 : (fx1-fx0)/22, rot ? (fz1-fz0)/22 : (fz1-fz0)/6);
+    // Hedgerow between strips.
+    if (k < strips - 1) {
+      if (vertical) hedge(city, b, fx1 - 0.7, fz0 + 1, fx1 + 0.7, fz1 - 1, 1.5);
+      else hedge(city, b, fx0 + 1, fz1 - 0.7, fx1 - 1, fz1 + 0.7, 1.5);
+    }
+  }
+
+  // Farmstead: house, barn, a couple of bales.
+  if (rand() < 0.45) {
+    const e = (rand() * 4) | 0;
+    const horiz = e < 2;
+    const fx = horiz ? lerp(x0 + 16, x1 - 16, rand()) : (e === 2 ? x0 + 13 : x1 - 13);
+    const fz = horiz ? (e === 0 ? z0 + 13 : z1 - 13) : lerp(z0 + 16, z1 - 16, rand());
+    house(city, b, { x: fx, z: fz, w: 11, d: 9, h: 5.4, rand,
+                     faceX: horiz ? 0 : (e === 2 ? -1 : 1), faceZ: horiz ? (e === 0 ? -1 : 1) : 0,
+                     wall: HOUSE_WALLS[2] });
+    // Barn: creosoted timber under a dark corrugated roof.
+    const bx = fx + (rand() < 0.5 ? -16 : 16), bz = fz + (rand() < 0.5 ? -13 : 13);
+    b.style(TEX.BARK, [0.66, 0.48, 0.36], 0);
+    b.box(bx, 3.1, bz, 8, 3.1, 6, { perUnit: 0.35, skipTop: true });
+    b.style(TEX.SIDING, [0.34, 0.35, 0.33], 0);
+    pitchedRoof(b, bx, 6.2, bz, 8, 6, 2.4, true, 0.6);
+    city.addBuilding(bx - 8, bz - 6, bx + 8, bz + 6, 6.2);
+    b.style(TEX.FIELD, [0.86, 0.80, 0.48], 0);
+    for (let i = 0; i < 4; i++) {
+      if (rand() < 0.4) continue;
+      const hx = bx + (rand() - 0.5) * 22, hz = bz + (rand() - 0.5) * 18;
+      b.cylinder(hx, 1.2, hz, 1.2, 2.4, 9, { uRepeat: 3, vRepeat: 1 });
+      city.addCollider(hx - 1.2, hz - 1.2, hx + 1.2, hz + 1.2, 2.4);
+    }
+  }
+  // A tree or two in the hedge line.
+  for (let i = 0; i < 3; i++) {
+    if (rand() < 0.45) continue;
+    city.tree(b, lerp(x0 + 4, x1 - 4, rand()), lerp(z0 + 4, z1 - 4, rand()), 1.0 + rand() * 0.5, 0);
+  }
+};
+
+// Cottages around a green, with a church on a few blocks.
+ZONE_BUILDERS[Z.VILLAGE] = (city, b, ctx) => {
+  const { x0, z0, x1, z1, rand } = ctx;
+  const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+
+  if (rand() < 0.18) return city.church(b, ctx);
+
+  // Village green in the middle of the block.
+  b.style(TEX.GRASS, [0.58, 0.76, 0.46], 0);
+  b.quad([x0+14, 0.04, z1-14], [x1-14, 0.04, z1-14], [x1-14, 0.04, z0+14], [x0+14, 0.04, z0+14],
+         (x1-x0)/9, (z1-z0)/9);
+  for (let i = 0; i < 3; i++) {
+    if (rand() < 0.35) continue;
+    city.tree(b, cx + (rand()-0.5) * 26, cz + (rand()-0.5) * 26, 1.1 + rand() * 0.6, 0);
+  }
+  city.bench(b, cx + (rand()-0.5) * 20, cz + (rand()-0.5) * 20, 0);
+
+  const edges = [0, 1, 2, 3].filter(() => rand() < 0.78);
+  frontage(ctx, edges.length ? edges : [0], 15, 13, (p) => {
+    if (p.rand() < 0.22) return;                       // gaps: a lane, a paddock
+    const w = Math.min(p.w - 3.5, 8 + p.rand() * 4);
+    const d = 7 + p.rand() * 2.5;
+    const along = p.horiz ? w : d, across = p.horiz ? d : w;
+    house(city, b, {
+      x: p.cx + (p.horiz ? 0 : (p.rand()-0.5) * 1.5),
+      z: p.cz + (p.horiz ? (p.rand()-0.5) * 1.5 : 0),
+      w: p.horiz ? along : across, d: p.horiz ? across : along,
+      h: p.rand() < 0.3 ? 5.6 : 3.6, rand: p.rand,
+      faceX: p.faceX, faceZ: p.faceZ,
+      wall: HOUSE_WALLS[2 + ((p.rand() * 2) | 0)],
+      ridgeAlongX: p.horiz,
+    });
+    // Front garden wall.
+    const gx = p.cx + p.faceX * 5.5, gz = p.cz + p.faceZ * 5.5;
+    if (p.rand() < 0.7) {
+      if (p.horiz) hedge(city, b, gx - p.w/2 + 1.5, gz - 0.5, gx + p.w/2 - 1.5, gz + 0.5, 1.0);
+      else hedge(city, b, gx - 0.5, gz - p.w/2 + 1.5, gx + 0.5, gz + p.w/2 - 1.5, 1.0);
+    }
+  });
+};
+
+// Detached houses, gardens, driveways.
+ZONE_BUILDERS[Z.SUBURB] = (city, b, ctx) => {
+  const { rand } = ctx;
+  frontage(ctx, [0, 1, 2, 3], 17, 16, (p) => {
+    if (p.rand() < 0.08) return;
+    const w = Math.min(p.w - 4, 10 + p.rand() * 3);
+    const d = 8.5 + p.rand() * 2;
+    const floors = p.rand() < 0.72 ? 2 : 1;
+    const h = floors * 3.0;
+    const along = w, across = d;
+    const cx = p.cx - p.faceX * 1.5, cz = p.cz - p.faceZ * 1.5;
+    house(city, b, {
+      x: cx, z: cz,
+      w: p.horiz ? along : across, d: p.horiz ? across : along,
+      h, rand: p.rand, faceX: p.faceX, faceZ: p.faceZ,
+      wall: HOUSE_WALLS[(p.rand() * 3) | 0], ridgeAlongX: p.horiz,
+      baseY: ctx.baseY,
+    });
+    // Garage and driveway down the side of the plot.
+    const off = (p.rand() < 0.5 ? -1 : 1) * p.w * 0.32;
+    const dx = p.horiz ? cx + off : cx, dz = p.horiz ? cz : cz + off;
+    b.style(TEX.CONCRETE, [0.78, 0.78, 0.76], 0);
+    b.quad([dx - (p.horiz ? 2.2 : 6), ctx.baseY + 0.02, dz + (p.horiz ? 6 : 2.2)],
+           [dx + (p.horiz ? 2.2 : 6), ctx.baseY + 0.02, dz + (p.horiz ? 6 : 2.2)],
+           [dx + (p.horiz ? 2.2 : 6), ctx.baseY + 0.02, dz - (p.horiz ? 6 : 2.2)],
+           [dx - (p.horiz ? 2.2 : 6), ctx.baseY + 0.02, dz - (p.horiz ? 6 : 2.2)], 2, 4);
+    if (p.rand() < 0.45) {
+      city.parkedCar(b, dx + p.faceX * 2.5, dz + p.faceZ * 2.5, p.horiz ? 0 : Math.PI/2);
+    }
+    if (p.rand() < 0.55) {
+      city.tree(b, cx - p.faceX * 6.5 + (p.horiz ? off * 0.6 : 0),
+                   cz - p.faceZ * 6.5 + (p.horiz ? 0 : off * 0.6), 0.8 + p.rand() * 0.5, ctx.baseY);
+    }
+  });
+};
+
+// Terraces and small offices: the first zone that builds a continuous street
+// wall, which is what makes it read as town rather than village.
+ZONE_BUILDERS[Z.TOWN] = (city, b, ctx) => {
+  const { rand, u } = ctx;
+  frontage(ctx, [0, 1, 2, 3], 34, 15, (p) => {
+    const depth = 11 + p.rand() * 2;
+    const runW = p.w - 2;
+    const cx = p.cx - p.faceX * 1.2, cz = p.cz - p.faceZ * 1.2;
+    if (p.rand() < 0.24) {
+      // A small block of flats or an office breaks up the terrace.
+      const h = 9 + u * 12 + p.rand() * 5;
+      city.buildBuilding(b, cx - (p.horiz ? runW/2 : depth/2), cz - (p.horiz ? depth/2 : runW/2),
+                            cx + (p.horiz ? runW/2 : depth/2), cz + (p.horiz ? depth/2 : runW/2),
+                            h, 0.25, ctx);
+      return;
+    }
+    // Terrace: one roof, several front doors, a party wall every few metres.
+    const units = Math.max(2, Math.round(runW / 6.5));
+    const uw = runW / units;
+    const h = p.rand() < 0.5 ? 6.4 : 9.2;
+    const wall = HOUSE_WALLS[(p.rand() * 2) | 0];
+    for (let k = 0; k < units; k++) {
+      const t = (k + 0.5) / units - 0.5;
+      const hx = cx + (p.horiz ? t * runW : 0), hz = cz + (p.horiz ? 0 : t * runW);
+      b.style(wall.layer, wall.tint, 0);
+      b.chamferBox(hx, ctx.baseY + h/2, hz,
+                   (p.horiz ? uw/2 : depth/2), h/2, (p.horiz ? depth/2 : uw/2), 0.1,
+                   { skipTop: true, uvU: Math.max(1, Math.round(uw / 5.5)), uvV: Math.max(2, Math.round(h / 3.4)) });
+      b.style(TEX.BARK, [0.35, 0.26, 0.22], 0);
+      b.box(hx + p.faceX * (p.horiz ? 0 : depth/2 + 0.05) + (p.horiz ? uw * 0.28 : 0),
+            ctx.baseY + 1.0,
+            hz + p.faceZ * (p.horiz ? depth/2 + 0.05 : 0) + (p.horiz ? 0 : uw * 0.28),
+            p.horiz ? 0.55 : 0.07, 1.0, p.horiz ? 0.07 : 0.55, { perUnit: 1 });
+    }
+    b.style(TEX.TILE, ROOF_TINTS[(p.rand() * ROOF_TINTS.length) | 0], 0);
+    pitchedRoof(b, cx, ctx.baseY + h, cz,
+                p.horiz ? runW/2 : depth/2, p.horiz ? depth/2 : runW/2,
+                2.2, p.horiz, 0.4);
+    city.addBuilding(cx - (p.horiz ? runW/2 : depth/2), cz - (p.horiz ? depth/2 : runW/2),
+                     cx + (p.horiz ? runW/2 : depth/2), cz + (p.horiz ? depth/2 : runW/2),
+                     ctx.baseY + h + 2.2);
+  }, 1.0);
+};
+
+// High street: shops at ground level, flats above, no gaps.
+ZONE_BUILDERS[Z.HIGHST] = (city, b, ctx) => {
+  const { x0, z0, x1, z1, rand, u } = ctx;
+  const inset = 3.0;
+  const lots = splitLots(x0 + inset, z0 + inset, x1 - inset, z1 - inset, rand, 2 + ((rand() * 2) | 0), 1.2);
+  for (const [lx0, lz0, lx1, lz1] of lots) {
+    if (lx1 - lx0 < 9 || lz1 - lz0 < 9) continue;
+    const h = 13 + u * 22 + rand() * 8;
+    city.buildBuilding(b, lx0, lz0, lx1, lz1, h, 0.45, ctx);
+  }
+  for (let k = 0; k < 4; k++) {
+    if (rand() > 0.5) continue;
+    const side = (rand() * 4) | 0, t = 0.2 + rand() * 0.6;
+    // Tight to the kerb: any further out and they overlap the running lane.
+    const px = side < 2 ? lerp(x0, x1, t) : (side === 2 ? x0 - 2.1 : x1 + 2.1);
+    const pz = side < 2 ? (side === 0 ? z0 - 2.1 : z1 + 2.1) : lerp(z0, z1, t);
+    city.parkedCar(b, px, pz, side < 2 ? (side === 0 ? 0 : Math.PI) : (side === 2 ? Math.PI/2 : -Math.PI/2));
+  }
+};
+
+// Towers.
+ZONE_BUILDERS[Z.DOWNTOWN] = (city, b, ctx) => {
+  const { x0, z0, x1, z1, rand, u } = ctx;
+  const inset = 3.0;
+  const lots = splitLots(x0 + inset, z0 + inset, x1 - inset, z1 - inset, rand,
+                         rand() < 0.5 ? 1 : 2, 2.5);
+  for (const [lx0, lz0, lx1, lz1] of lots) {
+    if (lx1 - lx0 < 9 || lz1 - lz0 < 9) continue;
+    const h = 34 + u * u * (40 + rand() * 90) + rand() * 16;
+    city.buildBuilding(b, lx0, lz0, lx1, lz1, h, 0.95, ctx);
+  }
+};
+
+// Parks: grass, paths, trees, a bandstand now and then.
+ZONE_BUILDERS[Z.PARK] = (city, b, ctx) => {
+  const { x0, z0, x1, z1, rand } = ctx;
+  const y = ctx.baseY;
+  b.style(TEX.GRASS, [0.66, 0.82, 0.52], 0);
+  b.quad([x0+2, y + 0.02, z1-2], [x1-2, y + 0.02, z1-2], [x1-2, y + 0.02, z0+2], [x0+2, y + 0.02, z0+2],
+         (x1-x0)/8, (z1-z0)/8);
+  // Crossing paths.
+  const cx = (x0+x1)/2, cz = (z0+z1)/2;
+  b.style(TEX.DIRT, [1.15, 1.12, 1.05], 0);
+  b.quad([cx-2.2, y + 0.04, z1-2], [cx+2.2, y + 0.04, z1-2], [cx+2.2, y + 0.04, z0+2], [cx-2.2, y + 0.04, z0+2], 1, (z1-z0)/10);
+  b.quad([x0+2, y + 0.05, cz+2.2], [x1-2, y + 0.05, cz+2.2], [x1-2, y + 0.05, cz-2.2], [x0+2, y + 0.05, cz-2.2], (x1-x0)/10, 1);
+
+  const n = 8 + ((rand() * 8) | 0);
+  for (let i = 0; i < n; i++) {
+    const tx = lerp(x0 + 5, x1 - 5, rand()), tz = lerp(z0 + 5, z1 - 5, rand());
+    if (Math.abs(tx - cx) < 4 || Math.abs(tz - cz) < 4) continue;
+    if (rand() < 0.2) city.bush(b, tx, tz, 0.7 + rand() * 0.6);
+    else city.tree(b, tx, tz, 0.9 + rand() * 0.8, y);
+  }
+  for (let i = 0; i < 4; i++) {
+    if (rand() < 0.45) continue;
+    city.bench(b, lerp(x0 + 8, x1 - 8, rand()), lerp(z0 + 8, z1 - 8, rand()), y);
+  }
+  if (rand() < 0.35) {
+    // Bandstand.
+    b.style(TEX.CONCRETE, [0.90, 0.88, 0.84], 0);
+    b.cylinder(cx, y + 0.35, cz, 4.4, 0.7, 14, { uRepeat: 8, vRepeat: 1 });
+    b.style(TEX.METAL, [0.35, 0.40, 0.38], 0);
+    for (let k = 0; k < 8; k++) {
+      const a = k / 8 * Math.PI * 2;
+      b.cylinder(cx + Math.cos(a) * 3.8, y + 2.2, cz + Math.sin(a) * 3.8, 0.13, 3.0, 6);
+    }
+    b.style(TEX.TILE, [0.55, 0.52, 0.56], 0);
+    b.cylinder(cx, y + 4.2, cz, 4.8, 0.5, 14, { uRepeat: 10, vRepeat: 1 });
+    city.addCollider(cx - 4.4, cz - 4.4, cx + 4.4, cz + 4.4, y + 0.7);
+  }
+  city.parks.push({ x0, z0, x1, z1 });
+};
+
+// Industrial estate: big sheds, yards, containers, a silo.
+ZONE_BUILDERS[Z.INDUSTRIAL] = (city, b, ctx) => {
+  const { x0, z0, x1, z1, rand } = ctx;
+  const y = ctx.baseY;
+  b.style(TEX.CONCRETE, [0.80, 0.80, 0.78], 0);
+  b.quad([x0+2, y + 0.02, z1-2], [x1-2, y + 0.02, z1-2], [x1-2, y + 0.02, z0+2], [x0+2, y + 0.02, z0+2],
+         (x1-x0)/7, (z1-z0)/7);
+
+  // Sheds take one end of the block; the rest is yard, which is where the
+  // containers and the silo have to go or they end up inside a building.
+  const yard = 0.30 + rand() * 0.10;
+  const vertical = rand() < 0.5;
+  const yx0 = vertical ? x0 : lerp(x0, x1, 1 - yard);
+  const yz0 = vertical ? lerp(z0, z1, 1 - yard) : z0;
+  const bx1 = vertical ? x1 : lerp(x0, x1, 1 - yard);
+  const bz1 = vertical ? lerp(z0, z1, 1 - yard) : z1;
+
+  const sheds = 1 + ((rand() * 2) | 0);
+  for (let k = 0; k < sheds; k++) {
+    const a = k / sheds, c = (k + 1) / sheds;
+    const sx0 = (vertical ? lerp(x0, bx1, a) : x0) + 5;
+    const sx1 = (vertical ? lerp(x0, bx1, c) : bx1) - 5;
+    const sz0 = (vertical ? z0 : lerp(z0, bz1, a)) + 5;
+    const sz1 = (vertical ? bz1 : lerp(z0, bz1, c)) - 5;
+    const w = sx1 - sx0, d = sz1 - sz0;
+    if (w < 12 || d < 12) continue;
+    const cx = (sx0+sx1)/2, cz = (sz0+sz1)/2;
+    const h = 8 + rand() * 5;
+    b.style(TEX.SIDING, [0.86, 0.88, 0.88], 0);
+    b.box(cx, y + h/2, cz, w/2, h/2, d/2,
+          { skipTop: true, uvU: Math.max(2, Math.round(w / 8)), uvV: 1 });
+    b.style(TEX.METAL, [0.52, 0.55, 0.56], 0);
+    pitchedRoof(b, cx, y + h, cz, w/2, d/2, Math.min(w, d) * 0.10, w >= d, 0.5);
+    // Roller shutter doors on the long side.
+    b.style(TEX.METAL, [0.40, 0.42, 0.44], 0);
+    const doors = Math.max(1, Math.floor((w >= d ? w : d) / 14));
+    for (let q = 0; q < doors; q++) {
+      const t = (q + 0.5) / doors - 0.5;
+      if (w >= d) b.box(cx + t * w * 0.8, y + 2.2, cz - d/2 - 0.06, 2.6, 2.2, 0.1, { perUnit: 0.5 });
+      else b.box(cx - w/2 - 0.06, y + 2.2, cz + t * d * 0.8, 0.1, 2.2, 2.6, { perUnit: 0.5 });
+    }
+    city.addBuilding(sx0, sz0, sx1, sz1, y + h + Math.min(w, d) * 0.10);
+  }
+
+  // Container stacks in the yard.
+  const COLOURS = [[0.72,0.28,0.20],[0.20,0.42,0.62],[0.68,0.60,0.22],[0.28,0.50,0.34]];
+  for (let k = 0; k < 7; k++) {
+    if (rand() < 0.25) continue;
+    const cx = lerp(yx0 + 8, x1 - 8, rand()), cz = lerp(yz0 + 8, z1 - 8, rand());
+    const stack = 1 + ((rand() * 2) | 0);
+    const alongX = rand() < 0.5;
+    for (let s = 0; s < stack; s++) {
+      b.style(TEX.SIDING, COLOURS[(rand() * COLOURS.length) | 0], 0);
+      b.box(cx, y + 1.3 + s * 2.6, cz, alongX ? 6 : 1.2, 1.3, alongX ? 1.2 : 6,
+            { perUnit: 0.35 });
+    }
+    city.addCollider(cx - (alongX ? 6 : 1.2), cz - (alongX ? 1.2 : 6),
+                     cx + (alongX ? 6 : 1.2), cz + (alongX ? 1.2 : 6), y + stack * 2.6);
+  }
+  if (rand() < 0.5) {
+    const sx = lerp(yx0 + 10, x1 - 10, rand()), sz = lerp(yz0 + 10, z1 - 10, rand());
+    b.style(TEX.METAL, [0.78, 0.78, 0.76], 0);
+    b.cylinder(sx, y + 9, sz, 3.2, 18, 14, { uRepeat: 6, vRepeat: 4 });
+    b.style(TEX.METAL, [0.55, 0.56, 0.58], 0);
+    b.cylinder(sx, y + 18.4, sz, 3.3, 0.8, 14, { uRepeat: 6, vRepeat: 1 });
+    city.addCollider(sx - 3.2, sz - 3.2, sx + 3.2, sz + 3.2, y + 18.4);
+  }
+};
+
+// Split a rectangle into lots, cutting on one axis then optionally the other.
+// Shared by the high street and downtown, which differ only in how coarse the
+// split is and how tall the result gets.
+function splitLots(x0, z0, x1, z1, rand, count, gap) {
+  const vertical = rand() < 0.5;
+  const cuts = [0];
+  for (let i = 1; i < count; i++) cuts.push(i / count + (rand() - 0.5) * 0.18);
+  cuts.push(1);
+  const lots = [];
+  for (let i = 0; i < count; i++) {
+    const a = cuts[i], c = cuts[i + 1];
+    if (vertical) lots.push([lerp(x0, x1, a), z0, lerp(x0, x1, c) - gap, z1]);
+    else lots.push([x0, lerp(z0, z1, a), x1, lerp(z0, z1, c) - gap]);
+  }
+  const out = [];
+  for (const l of lots) {
+    if (rand() < 0.4 && Math.min(l[2]-l[0], l[3]-l[1]) > 24) {
+      const t = 0.4 + rand() * 0.2;
+      if (vertical) {
+        out.push([l[0], l[1], l[2], lerp(l[1], l[3], t) - gap]);
+        out.push([l[0], lerp(l[1], l[3], t), l[2], l[3]]);
+      } else {
+        out.push([l[0], l[1], lerp(l[0], l[2], t) - gap, l[3]]);
+        out.push([lerp(l[0], l[2], t), l[1], l[2], l[3]]);
+      }
+    } else out.push(l);
+  }
+  return out;
+}
