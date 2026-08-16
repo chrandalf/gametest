@@ -964,6 +964,39 @@ const _m = M4.create(), _m2 = M4.create(), _m3 = M4.create();
 
 function drawActors(r, env, shadowPass) {
   const cam = game.cam;
+
+  // Signal heads. Three lenses on a post at each corner of a signalled
+  // junction, lit for the phase the traffic on that axis is being given.
+  if (!shadowPass && game.lights) {
+    for (const node of game.lights.nodes) {
+      const d = Math.hypot(node.x - cam.pos[0], node.z - cam.pos[2]);
+      if (d > 170) continue;
+      const base = game.city.groundY(node.x, node.z);
+      for (const [sx, sz, alongX] of [[-1, -1, true], [1, 1, true], [-1, 1, false], [1, -1, false]]) {
+        const phase = game.lights.phaseFor(node, alongX);
+        const hx = node.x + sx * (ROAD / 2 + 1.1), hz = node.z + sz * (ROAD / 2 + 1.1);
+        // Post.
+        r.setMaterial([0.16, 0.17, 0.18], 0, 0);
+        M4.compose(_m, hx, base + 1.6, hz, 0, 0, 0, 0.09, 1.6, 0.09);
+        r.draw(game.cube, _m);
+        // Lenses, top to bottom: red, amber, green.
+        const lens = [['red', [1.0, 0.10, 0.08]], ['amber', [1.0, 0.62, 0.10]],
+                      ['green', [0.20, 1.0, 0.35]]];
+        for (let k = 0; k < 3; k++) {
+          const lit = lens[k][0] === phase;
+          r.setMaterial(lens[k][1], lit ? 3.4 : 0.04, 0, 0.9);
+          M4.compose(_m, hx, base + 3.62 - k * 0.42, hz, 0, 0, 0, 0.17, 0.17, 0.17);
+          r.draw(game.cube, _m);
+        }
+        // Housing behind the lenses.
+        r.setMaterial([0.10, 0.11, 0.12], 0, 0);
+        M4.compose(_m, hx, base + 3.2, hz, 0, 0, 0, 0.24, 0.72, 0.14);
+        r.draw(game.cube, _m);
+      }
+    }
+    r.setMaterial([1, 1, 1], 0, 0);
+  }
+
   const cars = [game.car, ...game.traffic, ...game.abandoned];
   if (game.race) for (const r of game.race.racers) cars.push(r);
   const headlightsOn = env.night > 0.25;
