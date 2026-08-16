@@ -57,11 +57,30 @@ function house(city, b, opt) {
   const uvV = Math.max(1, Math.round(h / (wall.rows * WINDOW_SPACING)));
 
   b.style(wall.layer, wall.tint, 0);
-  b.chamferBox(cx, base + h/2, cz, w/2, h/2, d/2, 0.16, { skipTop: true, uvU, uvV });
+  b.chamferBox(cx, base + h/2, cz, w/2, h/2, d/2, 0.38, { skipTop: true, uvU, uvV });
 
+  const alongX = opt.ridgeAlongX !== undefined ? opt.ridgeAlongX : w >= d;
+  const rise = opt.rise === undefined ? Math.min(w, d) * 0.32 : opt.rise;
   b.style(TEX.TILE, roofTint, 0);
-  pitchedRoof(b, cx, base + h, cz, w/2, d/2, opt.rise === undefined ? Math.min(w, d) * 0.32 : opt.rise,
-              opt.ridgeAlongX !== undefined ? opt.ridgeAlongX : w >= d, opt.eaves);
+  pitchedRoof(b, cx, base + h, cz, w/2, d/2, rise, alongX, opt.eaves);
+
+  // Fascia and gutter along the eaves, and a ridge tile along the apex. Small
+  // pieces, but they are the difference between a house and a box with a lid:
+  // they break the silhouette and catch a line of light along every edge.
+  const eave = opt.eaves === undefined ? 0.35 : opt.eaves;
+  b.style(TEX.PLAIN, [0.92, 0.90, 0.86], 0);
+  for (const s of [-1, 1]) {
+    if (alongX) {
+      b.chamferBox(cx, base + h - 0.06, cz + s * (d/2 + eave), w/2 + eave, 0.15, 0.10, 0.06,
+                   { perUnit: 0.8 });
+    } else {
+      b.chamferBox(cx + s * (w/2 + eave), base + h - 0.06, cz, 0.10, 0.15, d/2 + eave, 0.06,
+                   { perUnit: 0.8 });
+    }
+  }
+  b.style(TEX.TILE, [roofTint[0] * 0.86, roofTint[1] * 0.86, roofTint[2] * 0.86], 0);
+  if (alongX) b.chamferBox(cx, base + h + rise + 0.06, cz, w/2 + eave, 0.11, 0.16, 0.10, { perUnit: 1.2 });
+  else b.chamferBox(cx, base + h + rise + 0.06, cz, 0.16, 0.11, d/2 + eave, 0.10, { perUnit: 1.2 });
 
   // Door and a porch canopy on the street elevation.
   const fx = opt.faceX || 0, fz = opt.faceZ || 0;
@@ -76,8 +95,13 @@ function house(city, b, opt) {
 
   if (rand() < 0.75) {
     const chx = cx + (rand() - 0.5) * w * 0.5, chz = cz + (rand() - 0.5) * d * 0.4;
-    b.style(TEX.BRICK, [0.62, 0.44, 0.38], 0);
-    b.box(chx, base + h + 1.5, chz, 0.42, 1.5, 0.42, { perUnit: 0.8 });
+    b.style(TEX.HOUSE, [0.86, 0.72, 0.66], 0);
+    b.chamferBox(chx, base + h + 1.5, chz, 0.42, 1.5, 0.42, 0.08, { perUnit: 0.8, skipTop: true });
+    // Capping and a round pot: the one bit of curve on the whole roofline.
+    b.style(TEX.CONCRETE, [0.86, 0.84, 0.80], 0);
+    b.chamferBox(chx, base + h + 3.06, chz, 0.50, 0.09, 0.50, 0.06, { perUnit: 1 });
+    b.style(TEX.TILE, [0.72, 0.50, 0.40], 0);
+    b.cylinder(chx, base + h + 3.42, chz, 0.19, 0.62, 10, { uRepeat: 3, vRepeat: 1 });
   }
   city.addBuilding(cx - w/2, cz - d/2, cx + w/2, cz + d/2, base + h);
 }
@@ -106,6 +130,16 @@ function fence(b, x0, z0, x1, z1, rand) {
     b.box((x0+x1)/2, y, (z0+z1)/2,
           Math.abs(dx) * len/2 + 0.04, 0.05, Math.abs(dz) * len/2 + 0.04, { perUnit: 0.5 });
   }
+}
+
+// Clamp a footprint so the whole of it — eaves included — stays inside the
+// block. Anything placed by hand rather than through frontage() has to go
+// through here, or it ends up overhanging the road as a slab of black roof.
+function fitIn(ctx, cx, cz, hw, hd, margin) {
+  const m = margin === undefined ? 1.0 : margin;
+  const x = clamp(cx, ctx.x0 + hw + m, ctx.x1 - hw - m);
+  const z = clamp(cz, ctx.z0 + hd + m, ctx.z1 - hd - m);
+  return { x, z, fits: (ctx.x1 - ctx.x0) > (hw + m) * 2 && (ctx.z1 - ctx.z0) > (hd + m) * 2 };
 }
 
 // Walk the four street-facing edges of a block, handing out plots. Everything
@@ -197,19 +231,24 @@ ZONE_BUILDERS[Z.FARM] = (city, b, ctx) => {
     house(city, b, { x: fx, z: fz, w: 11, d: 9, h: 5.4, rand,
                      faceX: horiz ? 0 : (e === 2 ? -1 : 1), faceZ: horiz ? (e === 0 ? -1 : 1) : 0,
                      wall: HOUSE_WALLS[2] });
-    // Barn: creosoted timber under a dark corrugated roof.
-    const bx = fx + (rand() < 0.5 ? -16 : 16), bz = fz + (rand() < 0.5 ? -13 : 13);
-    b.style(TEX.BARK, [0.66, 0.48, 0.36], 0);
-    b.box(bx, 3.1, bz, 8, 3.1, 6, { perUnit: 0.35, skipTop: true });
-    b.style(TEX.SIDING, [0.34, 0.35, 0.33], 0);
-    pitchedRoof(b, bx, 6.2, bz, 8, 6, 2.4, true, 0.6);
-    city.addBuilding(bx - 8, bz - 6, bx + 8, bz + 6, 6.2);
-    b.style(TEX.FIELD, [0.86, 0.80, 0.48], 0);
-    for (let i = 0; i < 4; i++) {
-      if (rand() < 0.4) continue;
-      const hx = bx + (rand() - 0.5) * 22, hz = bz + (rand() - 0.5) * 18;
-      b.cylinder(hx, 1.2, hz, 1.2, 2.4, 9, { uRepeat: 3, vRepeat: 1 });
-      city.addCollider(hx - 1.2, hz - 1.2, hx + 1.2, hz + 1.2, 2.4);
+    // Barn: creosoted timber under a dark corrugated roof. Its 0.6 m eaves are
+    // part of the footprint as far as fitting inside the block goes.
+    const barn = fitIn(ctx, fx + (rand() < 0.5 ? -16 : 16), fz + (rand() < 0.5 ? -13 : 13),
+                       8.6, 6.6);
+    if (barn.fits) {
+      const bx = barn.x, bz = barn.z;
+      b.style(TEX.BARK, [0.66, 0.48, 0.36], 0);
+      b.box(bx, 3.1, bz, 8, 3.1, 6, { perUnit: 0.35, skipTop: true });
+      b.style(TEX.SIDING, [0.34, 0.35, 0.33], 0);
+      pitchedRoof(b, bx, 6.2, bz, 8, 6, 2.4, true, 0.6);
+      city.addBuilding(bx - 8, bz - 6, bx + 8, bz + 6, 6.2);
+      b.style(TEX.FIELD, [0.86, 0.80, 0.48], 0);
+      for (let i = 0; i < 4; i++) {
+        if (rand() < 0.4) continue;
+        const bale = fitIn(ctx, bx + (rand() - 0.5) * 22, bz + (rand() - 0.5) * 18, 1.2, 1.2);
+        b.cylinder(bale.x, 1.2, bale.z, 1.2, 2.4, 9, { uRepeat: 3, vRepeat: 1 });
+        city.addCollider(bale.x - 1.2, bale.z - 1.2, bale.x + 1.2, bale.z + 1.2, 2.4);
+      }
     }
   }
   // A tree or two in the hedge line.

@@ -610,9 +610,11 @@ function buildWorld(seed) {
   nextDrop();
 
   const v = city.zones.violations().length;
+  const stray = city.strayBuildings().length;
   console.log(`world ${city.seed} built in ${(performance.now() - t0) | 0} ms: ` +
               `${city.chunks.length} chunks, ${city.buildings.length} buildings, ` +
-              `${city.zones.repairs} zone repairs, ${v} rule violations`);
+              `${city.zones.repairs} zone repairs, ${v} rule violations, ` +
+              `${stray} overhanging the road`);
   console.log('zones:', city.zones.summary());
   return city;
 }
@@ -837,11 +839,11 @@ function environment() {
   let sunColor = mix3([1.38, 1.30, 1.15], [1.45, 0.66, 0.30], dusk);
   sunColor = mix3(sunColor, [0.10, 0.13, 0.24], night);
   let skyColor = mix3([0.42, 0.62, 0.95], [0.62, 0.42, 0.42], dusk);
-  skyColor = mix3(skyColor, [0.035, 0.05, 0.11], night);
+  skyColor = mix3(skyColor, [0.075, 0.10, 0.19], night);
   let fogColor = mix3([0.70, 0.80, 0.94], [0.86, 0.55, 0.38], dusk);
-  fogColor = mix3(fogColor, [0.045, 0.06, 0.115], night);
-  let ambColor = mix3([0.34, 0.38, 0.48], [0.34, 0.30, 0.34], dusk);
-  ambColor = mix3(ambColor, [0.17, 0.20, 0.32], night);
+  fogColor = mix3(fogColor, [0.085, 0.105, 0.175], night);
+  let ambColor = mix3([0.38, 0.39, 0.44], [0.34, 0.30, 0.34], dusk);
+  ambColor = mix3(ambColor, [0.36, 0.40, 0.55], night);
 
   void day;
   return {
@@ -863,15 +865,17 @@ function collectLights(night) {
   const nearby = [];
   for (const L of game.city.lights) {
     const d = (L.x - cam[0]) ** 2 + (L.z - cam[2]) ** 2;
-    if (d > 105 * 105) continue;
+    if (d > 150 * 150) continue;
     nearby.push({ d, L });
   }
   nearby.sort((a, b) => a.d - b.d);
-  for (let i = 0; i < Math.min(10, nearby.length); i++) {
+  // Sodium orange, and enough of them at once that the pools overlap into a
+  // lit street instead of a line of isolated puddles.
+  for (let i = 0; i < Math.min(22, nearby.length); i++) {
     const L = nearby[i].L;
     out.push({
-      pos: [L.x, L.y, L.z], radius: 26,
-      color: [0.95 * intensity, 0.80 * intensity, 0.52 * intensity], dir: null,
+      pos: [L.x, L.y, L.z], radius: 34,
+      color: [1.12 * intensity, 0.86 * intensity, 0.52 * intensity], dir: null,
     });
   }
 
@@ -883,22 +887,35 @@ function collectLights(night) {
     });
   }
 
-  const cars = [game.car, ...game.traffic];
+  // Headlights. The player's own beam is what you actually see by out in the
+  // country, where there is not a lamp post for half a mile, so it goes in
+  // first and is thrown much further than the traffic's.
   const beams = [];
-  for (const car of cars) {
+  for (const car of game.traffic) {
     const d = (car.x - cam[0]) ** 2 + (car.z - cam[2]) ** 2;
-    if (d > 120 * 120) continue;
+    if (d > 140 * 140) continue;
     beams.push({ d, car });
   }
   beams.sort((a, b) => a.d - b.d);
-  for (let i = 0; i < Math.min(3, beams.length); i++) {
-    const car = beams[i].car;
+  const lit = [{ car: game.car, main: true }];
+  for (let i = 0; i < Math.min(4, beams.length); i++) lit.push({ car: beams[i].car });
+  for (const { car, main } of lit) {
+    if (!car) continue;
     const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
-    out.push({
-      pos: [car.x + fx * 4.5, 1.0, car.z + fz * 4.5], radius: 30,
-      color: [1.0 * intensity, 0.94 * intensity, 0.80 * intensity],
-      dir: [fx, -0.30, fz],
-    });
+    const y = (car.y || 0) + 1.0;
+    if (main) {
+      // Near pool and a longer throw, so the road ahead reads at speed.
+      out.push({ pos: [car.x + fx * 6, y, car.z + fz * 6], radius: 30,
+                 color: [1.5 * intensity, 1.42 * intensity, 1.22 * intensity],
+                 dir: [fx, -0.34, fz] });
+      out.push({ pos: [car.x + fx * 24, y + 0.4, car.z + fz * 24], radius: 46,
+                 color: [1.15 * intensity, 1.10 * intensity, 0.95 * intensity],
+                 dir: [fx, -0.16, fz] });
+    } else {
+      out.push({ pos: [car.x + fx * 4.5, y, car.z + fz * 4.5], radius: 30,
+                 color: [1.0 * intensity, 0.94 * intensity, 0.80 * intensity],
+                 dir: [fx, -0.30, fz] });
+    }
   }
   return out;
 }

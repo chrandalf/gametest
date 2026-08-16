@@ -367,14 +367,27 @@ class City {
         const cx = roadCenter(i), cz = roadCenter(j);
         const corners = rk >= 4 ? [[-1,-1],[1,-1],[-1,1],[1,1]]
                       : rk === 3 ? [[-1,-1],[1,1]] : [[1,1]];
-        for (const [sx, sz] of corners) {
+        const place = (lx, lz, dx, dz) => {
           // Each lamp stands on its own patch of ground.
-          const lx = cx + sx * (ROAD/2 + 1.6), lz = cz + sz * (ROAD/2 + 1.6);
           const post = new MeshBuilder();
           this.lift = this.groundY(lx, lz);
-          this.streetLight(post, lx, lz, -sx, -sz);
+          this.streetLight(post, lx, lz, dx, dz);
           chunkAt(i, j).append(post, 0, this.lift, 0);
           this.lift = 0;
+        };
+        for (const [sx, sz] of corners) {
+          place(cx + sx * (ROAD/2 + 1.6), cz + sz * (ROAD/2 + 1.6), -sx, -sz);
+        }
+        // Lamps down the length of the street as well as at its junctions:
+        // one at each junction leaves long unlit gaps between them, which is
+        // most of why the city went pitch black between corners.
+        if (rk >= 2) {
+          const spacing = rk >= 4 ? CELL / 4 : rk === 3 ? CELL / 3 : CELL / 2;
+          for (let t = spacing; t < CELL - 1; t += spacing) {
+            const side = ((t / spacing) | 0) % 2 ? 1 : -1;
+            if (i < GRID - 1) place(cx + side * (ROAD/2 + 1.6), cz + t, -side, 0);
+            if (j < GRID - 1) place(cx + t, cz + side * (ROAD/2 + 1.6), 0, -side);
+          }
         }
       }
     }
@@ -473,6 +486,23 @@ class City {
              roadCenter(i), roadCenter(bj + 1) - ROAD/2, 1, 0);
       }
     }
+  }
+
+  // Buildings that stick out past the block they belong to. Should be empty:
+  // anything here is hanging over the road, and reads as a slab of unlit roof
+  // floating above the traffic.
+  strayBuildings(margin) {
+    const m = margin === undefined ? 0.6 : margin;
+    const out = [];
+    for (const b of this.buildings) {
+      const bi = Math.floor((b.x0 + b.x1) / 2 / CELL), bj = Math.floor((b.z0 + b.z1) / 2 / CELL);
+      const x0 = roadCenter(bi) + ROAD/2, x1 = roadCenter(bi + 1) - ROAD/2;
+      const z0 = roadCenter(bj) + ROAD/2, z1 = roadCenter(bj + 1) - ROAD/2;
+      if (b.x0 < x0 - m || b.x1 > x1 + m || b.z0 < z0 - m || b.z1 > z1 + m) {
+        out.push({ bi, bj, b });
+      }
+    }
+    return out;
   }
 
   // Is this spot open water? Bridges count as dry land.

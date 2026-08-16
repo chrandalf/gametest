@@ -794,19 +794,23 @@ function makeTextureArray(gl) {
 
   // Whitewashed render with small cottage windows and a timber sill line.
   painters[TEX.COTTAGE] = () => {
-    fill('#ddd6c4');
-    for (let i = 0; i < 500; i++) {
-      const g = 200 + rand()*45 | 0;
-      ctx.fillStyle = `rgba(${g},${g-6},${g-22},0.35)`;
-      ctx.fillRect(rand()*S, rand()*S, 6+rand()*22, 6+rand()*22);
+    fill('#e3dcca');
+    // Uneven lime render: broad soft patches rather than flat colour.
+    for (let i = 0; i < 260; i++) {
+      const g = 206 + rand()*44 | 0;
+      ctx.fillStyle = `rgba(${g},${g-5},${g-20},0.30)`;
+      ctx.beginPath();
+      ctx.ellipse(rand()*S, rand()*S, 8+rand()*30, 6+rand()*22, rand()*3, 0, 6.3);
+      ctx.fill();
     }
-    windows(3, 2, {
-      glass: (sh, lit) => lit
-        ? `rgb(${232*sh|0},${196*sh|0},${132*sh|0})`
-        : `rgb(${54*sh|0},${58*sh|0},${58*sh|0})`,
-      frame: 'rgba(72,58,44,0.95)', litChance: 0.45, wIn: 0.30, hIn: 0.28,
-    });
-    noise(14);
+    for (let r = 0; r < 2; r++) {
+      for (let cI = 0; cI < 3; cI++) {
+        const cw = S / 3, ch = S / 2;
+        sashWindow(cI * cw + cw * 0.28, r * ch + ch * 0.28, cw * 0.44, ch * 0.40,
+                   { lit: rand() < 0.45, frame: '#4c3a2a' });
+      }
+    }
+    noise(10);
   };
 
   // Corrugated industrial cladding with a strip of high-level glazing.
@@ -835,49 +839,92 @@ function makeTextureArray(gl) {
 
   // Domestic brickwork. The office facades put windows on most of the wall,
   // which at house scale reads as a black box — here the brick has to win.
-  painters[TEX.HOUSE] = () => {
-    fill('#9c6a52');
-    const rows = 26, bh = S / rows;
-    for (let r = 0; r < rows; r++) {
-      const off = (r % 2) * (S / 26);
-      for (let x = -1; x < 13; x++) {
-        const g = 0.86 + rand() * 0.28;
-        ctx.fillStyle = `rgb(${(158*g)|0},${(104*g)|0},${(80*g)|0})`;
-        ctx.fillRect(x * (S/13) + off + 1, r * bh + 1, S/13 - 2, bh - 2);
-      }
+  // A sash window drawn with the depth a flat rectangle never has: a recess
+  // shadow, a white surround, glazing bars, a reflected sky gradient in the
+  // glass and a sill that catches the light. Windows are most of what a house
+  // reads as, and a plain dark square is what made them look like holes.
+  const sashWindow = (x, y, w, h, opt) => {
+    const lit = opt.lit;
+    // Recess: a soft shadow up the left and along the head.
+    ctx.fillStyle = 'rgba(0,0,0,0.30)';
+    ctx.fillRect(x - w * 0.06, y - h * 0.05, w * 1.12, h * 1.12);
+    // Surround.
+    ctx.fillStyle = opt.frame || '#f2efe6';
+    ctx.fillRect(x, y, w, h);
+    // Glass, with the sky reflected down it.
+    const g = ctx.createLinearGradient(x, y, x + w * 0.35, y + h);
+    if (lit) {
+      g.addColorStop(0, '#ffe6ac'); g.addColorStop(0.55, '#f6cf86'); g.addColorStop(1, '#d9a95f');
+    } else {
+      g.addColorStop(0, '#c3d5e2'); g.addColorStop(0.42, '#8a9fb1'); g.addColorStop(1, '#54677a');
     }
-    windows(2, 2, {
-      glass: (sh, lit) => lit
-        ? `rgb(${236*sh|0},${204*sh|0},${142*sh|0})`
-        : `rgb(${62*sh|0},${70*sh|0},${74*sh|0})`,
-      frame: 'rgba(244,244,238,0.95)', litChance: 0.4, wIn: 0.34, hIn: 0.32,
-    });
-    noise(12);
+    const gx = x + w * 0.10, gy = y + h * 0.10, gw = w * 0.80, gh = h * 0.80;
+    ctx.fillStyle = g;
+    ctx.fillRect(gx, gy, gw, gh);
+    // A slash of reflection across the top pane.
+    ctx.fillStyle = lit ? 'rgba(255,244,214,0.30)' : 'rgba(214,232,246,0.26)';
+    ctx.beginPath();
+    ctx.moveTo(gx, gy + gh * 0.42);
+    ctx.lineTo(gx + gw, gy);
+    ctx.lineTo(gx + gw, gy + gh * 0.16);
+    ctx.lineTo(gx, gy + gh * 0.58);
+    ctx.closePath();
+    ctx.fill();
+    // Glazing bars.
+    ctx.fillStyle = opt.frame || '#f2efe6';
+    ctx.fillRect(gx + gw * 0.5 - w * 0.022, gy, w * 0.044, gh);
+    ctx.fillRect(gx, gy + gh * 0.5 - h * 0.022, gw, h * 0.044);
+    // Sill, lit from above.
+    ctx.fillStyle = '#fbf8ef';
+    ctx.fillRect(x - w * 0.08, y + h, w * 1.16, h * 0.09);
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    ctx.fillRect(x - w * 0.08, y + h + h * 0.09, w * 1.16, h * 0.05);
+    if (lit) {
+      const m = 150 + rand() * 90 | 0;
+      mctx.fillStyle = `rgb(${m},${m},${m})`;
+      mctx.fillRect(gx, gy, gw, gh);
+    }
   };
 
-  // River water. Kept dark and low-contrast: the surface gets its life from
-  // the Fresnel sky reflection in the shader, not from the texture.
-  painters[TEX.WATER] = () => {
-    fill('#16303c');
-    for (let i = 0; i < 160; i++) {
-      ctx.fillStyle = `rgba(${18+rand()*20|0},${44+rand()*24|0},${56+rand()*26|0},0.30)`;
-      ctx.beginPath();
-      ctx.ellipse(rand()*S, rand()*S, 20+rand()*60, 8+rand()*22, rand()*3, 0, 6.3);
-      ctx.fill();
+  // Brick courses with rounded ends and mortar between, rather than a flat
+  // grid of rectangles.
+  const brickwork = (base, cols, rows) => {
+    fill(base);
+    const bw = S / cols, bh = S / rows;
+    for (let r = 0; r < rows; r++) {
+      const off = (r % 2) * bw * 0.5;
+      for (let cI = -1; cI < cols; cI++) {
+        const x = cI * bw + off + 1.2, y = r * bh + 1.2;
+        const w = bw - 2.4, h = bh - 2.4;
+        const g = 0.84 + rand() * 0.32;
+        ctx.fillStyle = `rgb(${(158*g)|0},${(104*g)|0},${(80*g)|0})`;
+        const rad = Math.min(h * 0.45, 2.2);
+        ctx.beginPath();
+        ctx.moveTo(x + rad, y);
+        ctx.arcTo(x + w, y, x + w, y + h, rad);
+        ctx.arcTo(x + w, y + h, x, y + h, rad);
+        ctx.arcTo(x, y + h, x, y, rad);
+        ctx.arcTo(x, y, x + w, y, rad);
+        ctx.closePath();
+        ctx.fill();
+        // A highlight along the top edge of each brick.
+        ctx.fillStyle = `rgba(255,235,215,${0.05 + rand() * 0.06})`;
+        ctx.fillRect(x + rad * 0.5, y, w - rad, Math.max(1, h * 0.14));
+      }
     }
-    // Ripple lines, roughly parallel, with a few brighter crests. Kept faint:
-    // the surface should get its brightness from the sky, not from paint.
-    for (let i = 0; i < 130; i++) {
-      const y = rand()*S;
-      ctx.strokeStyle = `rgba(${90+rand()*70|0},${130+rand()*60|0},${150+rand()*50|0},${0.03+rand()*0.07})`;
-      ctx.lineWidth = 0.7 + rand()*1.8;
-      ctx.beginPath();
-      let x = rand()*S - 40;
-      ctx.moveTo(x, y);
-      for (let k = 0; k < 5; k++) { x += 12 + rand()*22; ctx.lineTo(x, y + (rand()-0.5)*4); }
-      ctx.stroke();
+  };
+
+  painters[TEX.HOUSE] = () => {
+    brickwork('#7d5341', 13, 26);
+    const cols = 2, rows = 2;
+    for (let r = 0; r < rows; r++) {
+      for (let cI = 0; cI < cols; cI++) {
+        const cw = S / cols, ch = S / rows;
+        sashWindow(cI * cw + cw * 0.30, r * ch + ch * 0.26, cw * 0.40, ch * 0.42,
+                   { lit: rand() < 0.4 });
+      }
     }
-    noise(6);
+    noise(9);
   };
 
   const rgba = new Uint8Array(S * S * 4);

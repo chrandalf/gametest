@@ -2,7 +2,8 @@
 'use strict';
 
 const SHADOW_SIZE = 2048;
-const MAX_LIGHTS = 16;
+// Raised from 16: a lit street needs a run of lamps, not the nearest few.
+const MAX_LIGHTS = 28;
 
 const SCENE_VS = `#version 300 es
 precision highp float;
@@ -112,7 +113,15 @@ void main() {
   vec3 fogLin = toLinear(uFogColor);
   vec3 sunLin = toLinear(uSunColor) * 2.1;
   vec3 ground = fogLin * 0.45;
-  vec3 ambient = mix(ground, skyLin, N.y * 0.35 + 0.65) * toLinear(uAmbColor) * 1.45;
+  vec3 amb = toLinear(uAmbColor);
+  // The hemisphere term is a product of the sky colour and the ambient
+  // colour, so after dark both factors are tiny and it collapses to nothing —
+  // which is why an unlit night street used to be pure black. A moonlight
+  // floor is added instead, faded in by the sun going down, so shapes stay
+  // readable between the lamps without washing out the day.
+  float nightAmt = 1.0 - smoothstep(-0.08, 0.12, uSunDir.y);
+  vec3 ambient = mix(ground, skyLin, N.y * 0.35 + 0.65) * amb * 1.45
+               + amb * nightAmt * (1.5 + 1.1 * (N.y * 0.5 + 0.5));
 
   vec3 color = albedo * (ambient + sunLin * ndl * shadow);
 
