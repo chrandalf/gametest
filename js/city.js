@@ -35,6 +35,11 @@ const CAR_COLORS = [
 
 const roadCenter = (i) => i * CELL;
 
+// Speed limit by road rank, in metres per second. Country roads are quick and
+// empty; the high street is 20 mph because it is full of people.
+// wild  farm  village suburb town  highst downtown
+const SPEED_LIMITS = [24.6, 24.6, 13.4, 13.4, 11.2, 8.9, 13.4];
+
 // --- polygon collision -------------------------------------------------------
 // A rotated or L-shaped footprint is nothing like its bounding box, and the
 // difference is felt as invisible walls sticking out past the corners.
@@ -211,6 +216,13 @@ class City {
       r = Math.max(r, this.zones.rankAt(bi, bj));
     }
     return r;
+  }
+
+  // Posted speed limit for the road at a point, in metres per second. Quiet
+  // country lanes are national-speed-limit fast; a high street is a crawl.
+  speedLimitAt(x, z) {
+    const i = Math.round(x / CELL), j = Math.round(z / CELL);
+    return SPEED_LIMITS[clamp(this.roadRank(i, j), 0, RANK_MAX)];
   }
 
   // ---------------------------------------------------------- generation ---

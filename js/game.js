@@ -319,13 +319,19 @@ function update(dt) {
   const blockers = game.traffic.slice();
   blockers.push(car);
   for (const c of game.abandoned) blockers.push(c);
-  const world = { city: game.city, blockers };
+  const world = { city: game.city, blockers, lights: game.lights };
+  if (game.lights) game.lights.update(dt);
 
   const px = p.inCar ? car.x : p.walker.x;
   const pz = p.inCar ? car.z : p.walker.z;
 
+  // Rush hour: the number of cars on the road tracks the clock.
+  if (game.population) game.population.update(dt, game.clock, game.traffic, { x: px, z: pz });
+
+  // Cars beyond the fog are not simulated: with a rush-hour fleet the
+  // look-ahead scan is the most expensive thing in the frame.
   for (const t of game.traffic) {
-    // Cars far from the player still drive, but skip the expensive checks.
+    if (Math.hypot(t.x - px, t.z - pz) > 300) continue;
     t.update(dt, world);
   }
 
@@ -591,6 +597,8 @@ function buildWorld(seed) {
 
   game.snipers = new Snipers(gl, city, rand);
   game.skids = new SkidMarks(gl, 460);
+  game.lights = new TrafficLights(city);
+  game.population = new TrafficPopulation(city, rand, clamp(urbanCells.length, 24, 90));
 
   const car = game.car;
   car.x = city.spawn.x; car.z = city.spawn.z; car.y = 0;

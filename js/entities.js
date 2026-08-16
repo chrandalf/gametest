@@ -459,6 +459,11 @@ class TrafficCar extends Vehicle {
     this.maxSpeed = 16 + rand() * 9;
     this.rand = rand;
     this.stopTimer = 0;
+    // Some drivers sit on the limit, some drift over it.
+    this.lawAbiding = 0.88 + rand() * 0.3;
+    this.status = 'go';
+    this.jam = 0;
+    this.jamSteer = rand() < 0.5 ? -0.6 : 0.6;
   }
 
   pickNext() {
@@ -482,6 +487,28 @@ class TrafficCar extends Vehicle {
     this.target = laneTarget(this.node.i, this.node.j, this.dir.x, this.dir.z);
   }
 
+  // A car that might be turning at the junction it is approaching slows down
+  // before it gets there, rather than scrubbing speed off mid-corner.
+  approaching(dist) { return dist < 26; }
+
+  // A fan of look-ahead probes rather than one straight test: a single ray
+  // down the nose misses the car drifting across the junction in front.
+  scan(world) {
+    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+    let nearest = null, nearestDist = Infinity;
+    for (const other of world.blockers) {
+      if (other === this) continue;
+      const ox = other.x - this.x, oz = other.z - this.z;
+      const ahead = ox * fx + oz * fz;
+      if (ahead <= 0 || ahead > 26) continue;
+      // The fan widens with distance, so it covers the lane, not a line.
+      const side = Math.abs(ox * fz - oz * fx);
+      if (side > 2.2 + ahead * 0.12) continue;
+      if (ahead < nearestDist) { nearestDist = ahead; nearest = other; }
+    }
+    return nearest ? { car: nearest, dist: nearestDist } : null;
+  }
+
   update(dt, world) {
     const dx = this.target.x - this.x, dz = this.target.z - this.z;
     const dist = Math.hypot(dx, dz);
@@ -489,28 +516,65 @@ class TrafficCar extends Vehicle {
 
     const desired = Math.atan2(dx, dz);
     const steerErr = angDelta(this.yaw, desired);
-    const steerIn = clamp(steerErr * 1.9, -1, 1);
+    let steerIn = clamp(steerErr * 1.9, -1, 1);
 
-    // Slow for whatever is directly ahead: traffic, the player, or a tight turn.
-    let limit = this.maxSpeed * (1 - Math.min(0.55, Math.abs(steerErr) * 0.9));
-    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
-    for (const other of world.blockers) {
-      if (other === this) continue;
-      const ox = other.x - this.x, oz = other.z - this.z;
-      const ahead = ox * fx + oz * fz;
-      const side = Math.abs(ox * fz - oz * fx);
-      if (ahead > 0 && ahead < 16 && side < 3.2) {
-        limit = Math.min(limit, Math.max(0, (ahead - 6) * 2.2));
+    // Posted limit for the road being driven, and the driver's own habits.
+    const posted = world.city.speedLimitAt ? world.city.speedLimitAt(this.x, this.z)
+                                           : this.maxSpeed;
+    let limit = Math.min(this.maxSpeed, posted * this.lawAbiding);
+    this.status = 'go';
+
+    // Ease off for the corner that is coming, not the one already begun.
+    if (Math.abs(steerErr) > 0.25 || this.approaching(dist)) {
+      limit = Math.min(limit, Math.abs(steerErr) > 0.25 ? 7.5 : 10.5);
+      this.status = 'slow';
+    }
+
+    // Signals. Amber is treated as red unless the car is too close to stop.
+    if (world.lights) {
+      const stop = world.lights.stopLineFor(this.node.i, this.node.j, this.dir.x, this.dir.z);
+      if (stop) {
+        const toLine = (stop.x - this.x) * Math.sin(this.yaw) +
+                       (stop.z - this.z) * Math.cos(this.yaw);
+        const stopping = this.speed * this.speed / 11;
+        if (toLine > 0 && toLine < 34 && !(stop.amber && toLine < stopping)) {
+          limit = Math.min(limit, Math.max(0, (toLine - 2.4) * 1.7));
+          this.status = toLine < 6 ? 'stop' : 'slow';
+        }
       }
     }
 
+    // Follow the vehicle in front instead of driving into it: match its speed
+    // at a headway, brake hard inside it, and nudge out of a nose-to-nose.
+    const seen = this.scan(world);
+    if (seen) {
+      const other = seen.car;
+      const heading = Math.sin(this.yaw) * Math.sin(other.yaw) +
+                      Math.cos(this.yaw) * Math.cos(other.yaw);
+      const gap = seen.dist - 5.4;
+      if (heading > 0.6) {
+        limit = Math.min(limit, Math.max(0, other.forwardSpeed + gap * 0.85));
+        if (gap < 1.6) this.status = 'stop';
+        else if (gap < 6) this.status = 'slow';
+      } else if (seen.dist < 7) {
+        // Facing each other. Back off and pull to one side to break the lock.
+        this.jam = 1.1;
+      } else {
+        limit = Math.min(limit, Math.max(0, gap * 1.4));
+      }
+    }
+
+    if (this.jam > 0) {
+      this.jam -= dt;
+      this.drive(dt, -0.55, this.jamSteer, false, world.city);
+      return;
+    }
+
     const vf = this.forwardSpeed;
-    const throttle = vf < limit ? 1 : (vf > limit + 2 ? -1 : 0);
-    this.drive(dt, throttle, steerIn, false, world.city);
+    const throttle = vf < limit - 0.4 ? 1 : (vf > limit + 1.2 ? -1 : 0);
+    this.drive(dt, throttle, steerIn, this.status === 'stop' && vf > 6, world.city);
   }
 }
-
-// ---------------------------------------------------------- pedestrians -----
 
 class Pedestrian {
   constructor(x, z, yaw, rand) {
