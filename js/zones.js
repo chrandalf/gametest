@@ -59,7 +59,7 @@ const BANK_W = 4.0;
 // the edge of town is ordinary; one at the end of a village lane is not.
 const OVERLAY_RULES = {
   [Z.PARK]:       { host: [1, 2, 3, 4, 5, 6], forbidNeighbourRank: [] },
-  [Z.INDUSTRIAL]: { host: [3, 4, 5],          forbidNeighbourRank: [0, 1, 2] },
+  [Z.INDUSTRIAL]: { host: [3, 4],             forbidNeighbourRank: [0, 1, 2] },
 };
 
 const zoneInfo = (key) => ZONES[key];
@@ -104,25 +104,31 @@ class ZoneMap {
     const n = this.n, seed = this.seed;
     const rand = makeRandom(seed ^ 0x5bf03635);
 
-    // One city centre, plus a satellite settlement or two that peak lower —
-    // that is what puts a village and a city on the same map.
-    const margin = 0.30;
-    this.centres = [{
-      bi: lerp(n * margin, n * (1 - margin), rand()),
-      bj: lerp(n * margin, n * (1 - margin), rand()),
-      peak: 1.0,
-      reach: n * (0.46 + rand() * 0.12),
-    }];
+    // Two cities, at opposite ends of one line across the map, with open
+    // country between them. Sharing a line is what lets a single motorway
+    // corridor join them up rather than wander diagonally through the fields.
+    const alongX = rand() < 0.5;
+    const line = Math.round(lerp(n * 0.26, n * 0.74, rand()));
+    const aPos = n * (0.15 + rand() * 0.04);
+    const bPos = n * (0.85 - rand() * 0.04);
+    const city = (pos, peak, reach) => ({
+      bi: alongX ? pos : line, bj: alongX ? line : pos, peak, reach: n * reach,
+    });
+    this.centres = [city(aPos, 1.00, 0.40 + rand() * 0.04),
+                    city(bPos, 0.86, 0.34 + rand() * 0.04)];
+    this.corridor = { alongX, line };
+
+    // A village or two off the corridor, so the countryside is not empty.
     const satellites = 1 + ((rand() * 2) | 0);
     for (let s = 0; s < satellites; s++) {
       const a = rand() * Math.PI * 2;
-      const d = n * (0.34 + rand() * 0.16);
-      const c = this.centres[0];
+      const d = n * (0.18 + rand() * 0.12);
+      const c = this.centres[s % 2];
       this.centres.push({
         bi: clamp(c.bi + Math.cos(a) * d, 1, n - 2),
         bj: clamp(c.bj + Math.sin(a) * d, 1, n - 2),
-        peak: 0.42 + rand() * 0.14,       // a settlement, not a second city
-        reach: n * (0.13 + rand() * 0.07),
+        peak: 0.40 + rand() * 0.12,       // a settlement, not a third city
+        reach: n * (0.11 + rand() * 0.06),
       });
     }
 

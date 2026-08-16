@@ -842,7 +842,7 @@ function environment() {
   skyColor = mix3(skyColor, [0.075, 0.10, 0.19], night);
   let fogColor = mix3([0.70, 0.80, 0.94], [0.86, 0.55, 0.38], dusk);
   fogColor = mix3(fogColor, [0.085, 0.105, 0.175], night);
-  let ambColor = mix3([0.38, 0.39, 0.44], [0.34, 0.30, 0.34], dusk);
+  let ambColor = mix3([0.46, 0.47, 0.52], [0.36, 0.32, 0.36], dusk);
   ambColor = mix3(ambColor, [0.36, 0.40, 0.55], night);
 
   void day;

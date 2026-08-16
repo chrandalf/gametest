@@ -21,6 +21,7 @@ class TrafficLights {
     for (let i = 0; i < GRID; i++) {
       for (let j = 0; j < GRID; j++) {
         if (city.roadRank(i, j) < 5) continue;
+        if (city.isMotorway(i, j)) continue;   // a motorway has no red lights
         // Offset phases so the whole city does not change together.
         this.nodes.push({ i, j, x: roadCenter(i), z: roadCenter(j),
                           offset: ((i * 7 + j * 5) % 10) / 10 * LIGHT_CYCLE });

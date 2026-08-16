@@ -456,7 +456,9 @@ class TrafficCar extends Vehicle {
     this.node = { i, j };
     this.dir = { x: dx, z: dz };
     this.target = t;
-    this.maxSpeed = 16 + rand() * 9;
+    // Spread wide enough that a driver can actually make use of a 70 limit;
+    // in town the posted limit governs instead.
+    this.maxSpeed = 19 + rand() * 15;
     this.rand = rand;
     this.stopTimer = 0;
     // Some drivers sit on the limit, some drift over it.
@@ -474,7 +476,12 @@ class TrafficCar extends Vehicle {
       const ni = this.node.i + dx, nj = this.node.j + dz;
       if (ni < 0 || nj < 0 || ni >= GRID || nj >= GRID) continue;
       const straight = (dx === this.dir.x && dz === this.dir.z);
-      options.push({ dx, dz, w: straight ? 5 : 1 });
+      // Traffic already on the motorway stays on it: the whole point of the
+      // corridor is that it carries through-traffic between the two cities.
+      const onMway = this.world && this.world.city.isMotorway &&
+                     this.world.city.isMotorway(this.node.i, this.node.j) &&
+                     this.world.city.onMotorway(this.x, this.z);
+      options.push({ dx, dz, w: straight ? (onMway ? 60 : 5) : 1 });
     }
     if (!options.length) { this.dir.x *= -1; this.dir.z *= -1; return; }
     let total = 0;
@@ -510,6 +517,7 @@ class TrafficCar extends Vehicle {
   }
 
   update(dt, world) {
+    this.world = world;
     const dx = this.target.x - this.x, dz = this.target.z - this.z;
     const dist = Math.hypot(dx, dz);
     if (dist < 7) this.pickNext();

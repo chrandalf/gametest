@@ -5,7 +5,7 @@
 const CELL = 88;          // distance between road centre lines
 const ROAD = 26;          // road width
 const BLOCK = CELL - ROAD;
-const GRID = 13;          // road lines per axis; blocks per axis is one less
+const GRID = 17;          // road lines per axis; blocks per axis is one less
 const WORLD = GRID * CELL;
 const LANE = 6.5;         // lane offset from the road centre line
 const SIDEWALK_H = 0.22;
@@ -39,6 +39,8 @@ const roadCenter = (i) => i * CELL;
 // empty; the high street is 20 mph because it is full of people.
 // wild  farm  village suburb town  highst downtown
 const SPEED_LIMITS = [24.6, 24.6, 13.4, 13.4, 11.2, 8.9, 13.4];
+const MOTORWAY_LIMIT = 31.3;   // 70 mph
+const CENTRAL_RES = 1.3;       // half-width of the central reservation
 
 // --- polygon collision -------------------------------------------------------
 // A rotated or L-shaped footprint is nothing like its bounding box, and the
@@ -75,6 +77,7 @@ class City {
     this.seed = (seed === undefined ? DEFAULT_SEED : seed) >>> 0;
     this.rand = makeRandom(this.seed);
     this.zones = new ZoneMap(this.seed, GRID - 1);
+    this.motorway = this.zones.corridor;
     this.terrain = new Terrain(this.seed ^ 0x3c6ef35f, GRID, CELL, this.zones.river, this.zones);
     this.lift = 0;            // vertical offset applied while building a block
     this.colliders = [];      // { x0, z0, x1, z1, top }
@@ -210,6 +213,9 @@ class City {
   // blocks that touch it. Kerbs, markings and lamp posts follow this, so the
   // road itself changes character as you drive out of town.
   roadRank(i, j) {
+    // The motorway is a trunk road wherever it runs, including out in the
+    // fields: it gets markings and lighting the countryside would not.
+    if (this.isMotorway(i, j)) return RANK_MAX;
     let r = 0;
     for (const [bi, bj] of [[i-1, j-1], [i, j-1], [i-1, j], [i, j]]) {
       if (bi < 0 || bj < 0 || bi >= GRID - 1 || bj >= GRID - 1) continue;
@@ -218,9 +224,25 @@ class City {
     return r;
   }
 
+  // Is this road cell part of the motorway corridor between the two cities?
+  isMotorway(i, j) {
+    const m = this.motorway;
+    if (!m) return false;
+    return m.alongX ? j === m.line : i === m.line;
+  }
+
+  // Is a world position on the motorway carriageway?
+  onMotorway(x, z) {
+    const m = this.motorway;
+    if (!m) return false;
+    const across = m.alongX ? z : x;
+    return Math.abs(across - roadCenter(m.line)) < ROAD / 2 + 1;
+  }
+
   // Posted speed limit for the road at a point, in metres per second. Quiet
   // country lanes are national-speed-limit fast; a high street is a crawl.
   speedLimitAt(x, z) {
+    if (this.onMotorway(x, z)) return MOTORWAY_LIMIT;
     const i = Math.round(x / CELL), j = Math.round(z / CELL);
     return SPEED_LIMITS[clamp(this.roadRank(i, j), 0, RANK_MAX)];
   }
@@ -310,6 +332,7 @@ class City {
       const c = roadCenter(i);
       for (let j = 0; j < GRID; j++) {
         if (this.roadRank(i, j) < 3) continue;
+        if (this.isMotorway(i, j)) continue;   // its own markings, laid later
         const b = chunkAt(i, j);
         const segStart = j * CELL - CELL/2;
         b.style(TEX.MARK, [1.0, 0.85, 0.15], 0);
@@ -357,6 +380,7 @@ class City {
       }
     }
 
+    this.buildMotorway(chunkAt);
     this.buildBridges(chunkAt);
 
     // --- street furniture, thinning out as the streets get quieter ---
@@ -403,7 +427,9 @@ class City {
     const rampCells = [];
     for (let i = 1; i < GRID - 1; i++) {
       for (let j = 1; j < GRID - 1; j++) {
-        if (this.roadRank(i, j) >= 3 && !onCircuit(i, j)) rampCells.push([i, j]);
+        if (this.roadRank(i, j) >= 3 && !onCircuit(i, j) && !this.isMotorway(i, j)) {
+          rampCells.push([i, j]);
+        }
       }
     }
     const emitRamp = (len, w, h) => {
@@ -438,6 +464,105 @@ class City {
     this.addCollider(hi, lo - w, hi + w, hi + w, 30);
 
     this.spawn = this.pickSpawn();
+  }
+
+  // The motorway that joins the two cities. It is not a wider road — it is the
+  // same corridor given two lanes each way, a central reservation you cannot
+  // cross, and no crossings for people to walk over. The reservation is broken
+  // at every junction, so the ordinary grid still gets through.
+  buildMotorway(chunkAt) {
+    const m = this.motorway;
+    if (!m) return;
+    const line = roadCenter(m.line);
+    const lo = -ROAD/2, hi = (GRID - 1) * CELL + ROAD/2;
+    // Along-corridor coordinate helpers: (a) runs along it, (c) across it.
+    const P = (a, c) => (m.alongX ? [a, c] : [c, a]);
+    const lastCell = GRID - 2;
+
+    for (let k = 0; k <= lastCell; k++) {
+      const a0 = roadCenter(k), a1 = roadCenter(k + 1);
+      const b = chunkAt(m.alongX ? k : m.line, m.alongX ? m.line : k);
+
+      // Lane divider between the two running lanes on each carriageway, and a
+      // solid edge line at the hard shoulder.
+      for (const side of [-1, 1]) {
+        b.style(TEX.MARK, [0.95, 0.95, 0.92], 0);
+        // These offsets are across the corridor, so they are measured from the
+        // corridor's own centre line, not from the origin.
+        const div = line + side * (CENTRAL_RES + 6.0);
+        for (let t = 0; t < 8; t++) {
+          const s0 = lerp(a0, a1, t / 8) + 3, s1 = s0 + CELL / 16;
+          if (s0 < lo || s1 > hi) continue;
+          const q0 = P(s0, div - 0.18), q1 = P(s1, div + 0.18);
+          this.sheet(b, Math.min(q0[0], q1[0]), Math.min(q0[1], q1[1]),
+                        Math.max(q0[0], q1[0]), Math.max(q0[1], q1[1]), 1, 0.05, 1, 1);
+        }
+        const edge = line + side * (ROAD/2 - 1.1);
+        const e0 = P(Math.max(a0, lo), edge - 0.2);
+        const e1 = P(Math.min(a1, hi), edge + 0.2);
+        this.sheet(b, Math.min(e0[0], e1[0]), Math.min(e0[1], e1[1]),
+                      Math.max(e0[0], e1[0]), Math.max(e0[1], e1[1]), 4, 0.05, 1, 1);
+      }
+
+      // Central reservation, stopping short of the junction at each end.
+      const gap = ROAD/2 + 3;
+      const r0 = a0 + gap, r1 = a1 - gap;
+      if (r1 > r0) {
+        const seg = new MeshBuilder();
+        const mid = (r0 + r1) / 2;
+        this.lift = this.groundY(...P(mid, line));
+        const half = (r1 - r0) / 2;
+        const c = P(mid, line);
+        seg.style(TEX.CONCRETE, [0.86, 0.86, 0.82], 0);
+        seg.chamferBox(c[0], 0.45, c[1],
+                       m.alongX ? half : CENTRAL_RES, 0.45, m.alongX ? CENTRAL_RES : half,
+                       0.22, { perUnit: 0.5 });
+        // Steel barrier on top, and a run of grass down the middle of it.
+        seg.style(TEX.LEAVES, [0.58, 0.74, 0.48], 0);
+        seg.chamferBox(c[0], 0.95, c[1],
+                       m.alongX ? half : CENTRAL_RES * 0.75, 0.16, m.alongX ? CENTRAL_RES * 0.75 : half,
+                       0.10, { perUnit: 0.8 });
+        seg.style(TEX.METAL, [0.74, 0.76, 0.78], 0);
+        for (const s2 of [-1, 1]) {
+          const bc = P(mid, line + s2 * (CENTRAL_RES - 0.1));
+          seg.chamferBox(bc[0], 1.15, bc[1],
+                         m.alongX ? half : 0.10, 0.26, m.alongX ? 0.10 : half,
+                         0.09, { perUnit: 0.6 });
+        }
+        chunkAt(m.alongX ? k : m.line, m.alongX ? m.line : k).append(seg, 0, this.lift, 0);
+        this.addCollider(Math.min(P(r0, line - CENTRAL_RES)[0], P(r1, line + CENTRAL_RES)[0]),
+                         Math.min(P(r0, line - CENTRAL_RES)[1], P(r1, line + CENTRAL_RES)[1]),
+                         Math.max(P(r0, line - CENTRAL_RES)[0], P(r1, line + CENTRAL_RES)[0]),
+                         Math.max(P(r0, line - CENTRAL_RES)[1], P(r1, line + CENTRAL_RES)[1]),
+                         1.3);
+        this.lift = 0;
+      }
+
+      // A sign gantry every few cells, which is what says "motorway" at a
+      // glance more than any amount of paint does.
+      if (k % 3 === 1) {
+        const gantry = new MeshBuilder();
+        const ga = a0 + CELL * 0.5;
+        this.lift = this.groundY(...P(ga, line));
+        const legs = [P(ga, line - (ROAD/2 - 0.6)), P(ga, line + (ROAD/2 - 0.6))];
+        gantry.style(TEX.METAL, [0.62, 0.64, 0.66], 0);
+        for (const g of legs) gantry.cylinder(g[0], 3.3, g[1], 0.22, 6.6, 8, { vRepeat: 3 });
+        const beam = P(ga, line);
+        gantry.chamferBox(beam[0], 6.8, beam[1],
+                          m.alongX ? 0.3 : ROAD/2, 0.28, m.alongX ? ROAD/2 : 0.3,
+                          0.12, { perUnit: 0.5 });
+        // Two blue sign boards, one over each carriageway.
+        gantry.style(TEX.PLAIN, [0.10, 0.22, 0.62], 0.35);
+        for (const side of [-1, 1]) {
+          const sc = P(ga, line + side * (ROAD/4 + 0.6));
+          gantry.chamferBox(sc[0], 8.1, sc[1],
+                            m.alongX ? 0.14 : ROAD/5, 1.05, m.alongX ? ROAD/5 : 0.14,
+                            0.08, { perUnit: 0.7 });
+        }
+        chunkAt(m.alongX ? k : m.line, m.alongX ? m.line : k).append(gantry, 0, this.lift, 0);
+        this.lift = 0;
+      }
+    }
   }
 
   // Wherever a road passes between two water blocks it is carrying traffic
