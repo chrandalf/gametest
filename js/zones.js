@@ -19,9 +19,10 @@ const Z = {
   DOWNTOWN: 6,    // towers
   PARK: 7,        // overlay
   INDUSTRIAL: 8,  // overlay
+  WATER: 9,       // overlay: the river, which crosses every rank it meets
 };
 
-const ZONE_COUNT = 9;
+const ZONE_COUNT = 10;
 const RANK_MAX = 6;
 
 // rank: position on the urbanity axis, or -1 for an overlay zone.
@@ -45,7 +46,13 @@ const ZONES = [
     ground: { layer: TEX.GRASS, tint: [0.66, 0.80, 0.52], scale: 6 }, map: '#3f6b3a' },
   { key: Z.INDUSTRIAL, name: 'Industrial', rank: -1, urban: true,
     ground: { layer: TEX.CONCRETE, tint: [0.72, 0.72, 0.70], scale: 4 }, map: '#6b6458' },
+  { key: Z.WATER, name: 'River', rank: -1, urban: false,
+    ground: { layer: TEX.WATER, tint: [1, 1, 1], scale: 10 }, map: '#2f5f7d' },
 ];
+
+// How far the river surface sits below the streets, and how wide its banks are.
+const WATER_Y = -1.6;
+const BANK_W = 4.0;
 
 // Where an overlay is allowed to sit, expressed as the host rank it replaces
 // plus the ranks it is willing to have as neighbours. An industrial estate on
@@ -238,6 +245,37 @@ class ZoneMap {
     // Industrial first: it is the fussier of the two, and clusters.
     scatter(Z.INDUSTRIAL, 0.055, 0.21, 0x1d3f);
     scatter(Z.PARK, 0.085, 0.29, 0x77a1);
+    this.carveRiver();
+  }
+
+  // A river from one edge of the map to the other. It ignores the urbanity
+  // gradient entirely — a real river runs through whatever is in its way, and
+  // the roads that meet it become bridges.
+  carveRiver() {
+    const n = this.n;
+    const rand = makeRandom(this.seed ^ 0x9e3779b9);
+    const vertical = rand() < 0.5;              // flows north-south or east-west
+    let a = 1 + ((rand() * (n - 2)) | 0);       // position across the flow
+    this.river = [];
+    // (b along the flow, a across it) -> block indices.
+    const wet = (a2, b2) => {
+      const bi = vertical ? a2 : b2, bj = vertical ? b2 : a2;
+      if (!this.inside(bi, bj)) return;
+      if (this.zone[this.idx(bi, bj)] === Z.WATER) return;
+      this.zone[this.idx(bi, bj)] = Z.WATER;
+      this.river.push({ bi, bj });
+    };
+    for (let b = 0; b < n; b++) {
+      // Meander, but never more than one block per row, and take the corner
+      // block on the way: a diagonal jump would leave two pools with dry land
+      // between them.
+      const drift = fbm(b * 0.42, vertical ? 11 : 71, this.seed ^ 0x51ed, 2) - 0.5;
+      const want = clamp(a + Math.round(drift * 2.4), 1, n - 2);
+      const step = clamp(want - a, -1, 1);
+      wet(a, b);
+      if (step !== 0) { a += step; wet(a, b); }
+    }
+    this.riverVertical = vertical;
   }
 
   // Any pair of neighbours that breaks the connection rule. Should be empty:

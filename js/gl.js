@@ -425,9 +425,9 @@ const TEX = {
   SHOP: 10, METAL: 11, CONCRETE: 12, LEAVES: 13, BARK: 14, MARK: 15,
   PLATE: 16,
   // Rural and light-industrial set, added for zoned worlds.
-  FIELD: 17, DIRT: 18, TILE: 19, COTTAGE: 20, SIDING: 21, HOUSE: 22,
+  FIELD: 17, DIRT: 18, TILE: 19, COTTAGE: 20, SIDING: 21, HOUSE: 22, WATER: 23,
 };
-const TEX_COUNT = 23;
+const TEX_COUNT = 24;
 const PLATE_TEXT = 'E901 GBL';
 const TEX_SIZE = 256;
 
@@ -853,6 +853,31 @@ function makeTextureArray(gl) {
       frame: 'rgba(244,244,238,0.95)', litChance: 0.4, wIn: 0.34, hIn: 0.32,
     });
     noise(12);
+  };
+
+  // River water. Kept dark and low-contrast: the surface gets its life from
+  // the Fresnel sky reflection in the shader, not from the texture.
+  painters[TEX.WATER] = () => {
+    fill('#16303c');
+    for (let i = 0; i < 160; i++) {
+      ctx.fillStyle = `rgba(${18+rand()*20|0},${44+rand()*24|0},${56+rand()*26|0},0.30)`;
+      ctx.beginPath();
+      ctx.ellipse(rand()*S, rand()*S, 20+rand()*60, 8+rand()*22, rand()*3, 0, 6.3);
+      ctx.fill();
+    }
+    // Ripple lines, roughly parallel, with a few brighter crests. Kept faint:
+    // the surface should get its brightness from the sky, not from paint.
+    for (let i = 0; i < 130; i++) {
+      const y = rand()*S;
+      ctx.strokeStyle = `rgba(${90+rand()*70|0},${130+rand()*60|0},${150+rand()*50|0},${0.03+rand()*0.07})`;
+      ctx.lineWidth = 0.7 + rand()*1.8;
+      ctx.beginPath();
+      let x = rand()*S - 40;
+      ctx.moveTo(x, y);
+      for (let k = 0; k < 5; k++) { x += 12 + rand()*22; ctx.lineTo(x, y + (rand()-0.5)*4); }
+      ctx.stroke();
+    }
+    noise(6);
   };
 
   const rgba = new Uint8Array(S * S * 4);

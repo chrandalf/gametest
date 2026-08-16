@@ -482,6 +482,64 @@ ZONE_BUILDERS[Z.INDUSTRIAL] = (city, b, ctx) => {
   }
 };
 
+// The river. Its surface runs out under the roads on any side where the next
+// block is also water, so the channel reads as continuous and the road over
+// it reads as a bridge rather than a dam.
+ZONE_BUILDERS[Z.WATER] = (city, b, ctx) => {
+  const { x0, z0, x1, z1, bi, bj, rand } = ctx;
+  const wet = (i, j) => city.zones.zoneAt(i, j) === Z.WATER;
+  const over = ROAD / 2 + 0.5;
+  const wx0 = x0 - (wet(bi - 1, bj) ? over : 0), wx1 = x1 + (wet(bi + 1, bj) ? over : 0);
+  const wz0 = z0 - (wet(bi, bj - 1) ? over : 0), wz1 = z1 + (wet(bi, bj + 1) ? over : 0);
+
+  b.style(TEX.WATER, [0.78, 0.88, 0.96], -1);   // negative emissive = glossy
+  b.quad([wx0, WATER_Y, wz1], [wx1, WATER_Y, wz1], [wx1, WATER_Y, wz0], [wx0, WATER_Y, wz0],
+         (wx1-wx0)/26, (wz1-wz0)/26);
+  // Riverbed, so a low camera does not see through the surface into nothing.
+  b.style(TEX.DIRT, [0.55, 0.52, 0.46], 0);
+  b.quad([wx0, WATER_Y - 1.4, wz1], [wx1, WATER_Y - 1.4, wz1],
+         [wx1, WATER_Y - 1.4, wz0], [wx0, WATER_Y - 1.4, wz0], 6, 6);
+
+  // Banks: a sloped edge on each dry side, with a stone lip at street level.
+  const bank = (ax0, az0, ax1, az1, nx, nz) => {
+    b.style(TEX.DIRT, [0.62, 0.58, 0.50], 0);
+    b.quad([ax0, 0, az0], [ax1, 0, az1],
+           [ax1 + nx * BANK_W, WATER_Y - 0.6, az1 + nz * BANK_W],
+           [ax0 + nx * BANK_W, WATER_Y - 0.6, az0 + nz * BANK_W], 6, 1.2);
+    b.style(TEX.CONCRETE, [0.86, 0.86, 0.82], 0);
+    b.box((ax0 + ax1) / 2 + nx * 0.35, 0.16, (az0 + az1) / 2 + nz * 0.35,
+          Math.abs(ax1 - ax0) / 2 + (nx ? 0.35 : 0), 0.16,
+          Math.abs(az1 - az0) / 2 + (nz ? 0.35 : 0), { perUnit: 0.3 });
+  };
+  if (!wet(bi, bj - 1)) bank(x0, z0, x1, z0, 0, 1);
+  if (!wet(bi, bj + 1)) bank(x1, z1, x0, z1, 0, -1);
+  if (!wet(bi - 1, bj)) bank(x0, z1, x0, z0, 1, 0);
+  if (!wet(bi + 1, bj)) bank(x1, z0, x1, z1, -1, 0);
+
+  // Reeds and the odd moored boat.
+  for (let k = 0; k < 8; k++) {
+    if (rand() < 0.4) continue;
+    const rx = lerp(x0 + 2, x1 - 2, rand()), rz = lerp(z0 + 2, z1 - 2, rand());
+    const edge = Math.min(rx - x0, x1 - rx, rz - z0, z1 - rz);
+    if (edge > 7) continue;                    // reeds grow at the margins
+    b.style(TEX.LEAVES, [0.70, 0.78, 0.42], 0);
+    for (let s = 0; s < 5; s++) {
+      b.box(rx + (rand()-0.5)*2.4, WATER_Y + 0.9, rz + (rand()-0.5)*2.4,
+            0.07, 0.9, 0.07, { perUnit: 1 });
+    }
+  }
+  if (rand() < 0.45) {
+    const bx = lerp(x0 + 6, x1 - 6, rand()), bz = lerp(z0 + 6, z1 - 6, rand());
+    const alongX = rand() < 0.5;
+    b.style(TEX.PLAIN, [0.86, 0.84, 0.78], 0);
+    b.chamferBox(bx, WATER_Y + 0.35, bz, alongX ? 3.2 : 1.1, 0.45, alongX ? 1.1 : 3.2, 0.5,
+                 { perUnit: 0.6 });
+    b.style(TEX.BARK, [0.55, 0.40, 0.28], 0);
+    b.box(bx, WATER_Y + 0.72, bz, alongX ? 2.4 : 0.8, 0.06, alongX ? 0.8 : 2.4, { perUnit: 0.8 });
+  }
+  city.water.push({ x0, z0, x1, z1 });
+};
+
 // Split a rectangle into lots, cutting on one axis then optionally the other.
 // Shared by the high street and downtown, which differ only in how coarse the
 // split is and how tall the result gets.

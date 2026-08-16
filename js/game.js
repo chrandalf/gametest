@@ -371,6 +371,24 @@ function update(dt) {
     }
   }
 
+  // Into the river. The bank is a slope, not a wall, so this is a real way to
+  // lose a delivery — you get fished out a few seconds later.
+  if (p.inCar && !game.drown && !car.airborne &&
+      game.city.waterAt && game.city.waterAt(car.x, car.z)) {
+    game.drown = 1.5;
+    game.shake = Math.min(1.2, game.shake + 0.5);
+    say('SPLASH! — in the drink');
+    playThud(0.55);
+  }
+  if (game.drown > 0) {
+    game.drown = Math.max(0, game.drown - dt);
+    const sunk = 1 - game.drown / 1.5;
+    car.vx *= Math.exp(-dt * 4.5);
+    car.vz *= Math.exp(-dt * 4.5);
+    car.y = lerp(0, WATER_Y - 1.2, smoothstep(0, 1, sunk));
+    if (game.drown === 0) { resetCar(); car.y = 0; }
+  }
+
   if (car.crashImpulse > 0.05) {
     game.shake = Math.min(1.2, game.shake + car.crashImpulse);
     playThud(car.crashImpulse);
@@ -519,6 +537,7 @@ function buildWorld(seed) {
   const city = new City(gl, seed);
   game.city = city;
   game.seed = city.seed;
+  game.drown = 0;
   game.ramps = city.ramps;
   game.isMap = false;
   game.race = null;
@@ -555,6 +574,7 @@ function buildWorld(seed) {
   for (let n = 0; n < 220 && game.peds.length < 110; n++) {
     const bi = (rand() * (GRID - 1)) | 0, bj = (rand() * (GRID - 1)) | 0;
     if (city.zones.rankAt(bi, bj) < 2) continue;
+    if (city.zones.zoneAt(bi, bj) === Z.WATER) continue;
     const x = roadCenter(bi) + ROAD/2 + 2 + rand() * (BLOCK - 4);
     const z = roadCenter(bj) + ROAD/2 + 2 + rand() * (BLOCK - 4);
     if (onRoad(x, z)) continue;

@@ -73,6 +73,8 @@ class City {
     this.colliders = [];      // { x0, z0, x1, z1, top }
     this.buildings = [];      // minimap footprints
     this.parks = [];
+    this.water = [];
+    this.bridges = [];
     this.lights = [];         // street lamp positions, used for night point lights
     this.ramps = new RampSet();
     this.chunks = [];
@@ -197,11 +199,27 @@ class City {
 
   build() {
     const rand = this.rand;
+    // Ground plane, tiled on the road grid and skipped over the river — one
+    // sheet of grass at y=0 would sit on top of the water and hide it.
     const ground = new MeshBuilder();
     const pad = ROAD * 0.5 + 40;
+    const lo0 = -pad, hi0 = (GRID - 1) * CELL + pad;
+    const edge0 = -ROAD/2 - 0.5, edge1 = (GRID - 1) * CELL + ROAD/2 + 0.5;
     ground.style(TEX.GRASS, [0.52, 0.62, 0.42], 0);
-    ground.quad([-pad, -0.05, WORLD - CELL + pad], [WORLD - CELL + pad, -0.05, WORLD - CELL + pad],
-                [WORLD - CELL + pad, -0.05, -pad], [-pad, -0.05, -pad], 140, 140);
+    const sheet = (ax0, az0, ax1, az1) =>
+      ground.quad([ax0, -0.05, az1], [ax1, -0.05, az1], [ax1, -0.05, az0], [ax0, -0.05, az0],
+                  (ax1-ax0)/16, (az1-az0)/16);
+    for (let bi = 0; bi < GRID - 1; bi++) {
+      for (let bj = 0; bj < GRID - 1; bj++) {
+        if (this.zones.zoneAt(bi, bj) === Z.WATER) continue;
+        sheet(roadCenter(bi), roadCenter(bj), roadCenter(bi + 1), roadCenter(bj + 1));
+      }
+    }
+    // Surrounding fields, out to the horizon fog.
+    sheet(lo0, lo0, hi0, edge0);
+    sheet(lo0, edge1, hi0, hi0);
+    sheet(lo0, edge0, edge0, edge1);
+    sheet(edge1, edge0, hi0, edge1);
     this.groundMesh = ground.upload(this.gl);
 
     // 3x3 blocks per chunk keeps draw calls low but culling still useful.
@@ -286,6 +304,8 @@ class City {
       }
     }
 
+    this.buildBridges(chunkAt);
+
     // --- street furniture, thinning out as the streets get quieter ---
     for (let i = 0; i < GRID; i++) {
       for (let j = 0; j < GRID; j++) {
@@ -345,6 +365,61 @@ class City {
     this.spawn = this.pickSpawn();
   }
 
+  // Wherever a road passes between two water blocks it is carrying traffic
+  // over the river, so it gets parapets and piers. The deck itself is already
+  // there — the road grid is drawn before anything knows about the water.
+  buildBridges(chunkAt) {
+    const isWet = (bi, bj) => this.zones.zoneAt(bi, bj) === Z.WATER &&
+                              bi >= 0 && bj >= 0 && bi < GRID - 1 && bj < GRID - 1;
+    const span = (b, ax, az, bx, bz, nx, nz) => {
+      const cx = (ax + bx) / 2, cz = (az + bz) / 2;
+      const hx = Math.abs(bx - ax) / 2, hz = Math.abs(bz - az) / 2;
+      // Parapets down both edges of the deck.
+      b.style(TEX.CONCRETE, [0.88, 0.88, 0.85], 0);
+      for (const s of [-1, 1]) {
+        b.chamferBox(cx + nx * s * (ROAD/2 - 0.35), 0.62, cz + nz * s * (ROAD/2 - 0.35),
+                     hx + (nx ? 0.35 : 0), 0.62, hz + (nz ? 0.35 : 0), 0.18, { perUnit: 0.4 });
+      }
+      // Piers under each end.
+      b.style(TEX.CONCRETE, [0.72, 0.72, 0.70], 0);
+      for (const t of [0.12, 0.88]) {
+        const px = lerp(ax, bx, t), pz = lerp(az, bz, t);
+        b.box(px, WATER_Y - 0.6, pz, nz ? 2.2 : ROAD/2, 1.8, nz ? ROAD/2 : 2.2, { perUnit: 0.35 });
+      }
+      // Soffit, so there is something under the deck when seen from the bank.
+      b.style(TEX.CONCRETE, [0.62, 0.62, 0.60], 0);
+      b.box(cx, -0.35, cz, hx + (nx ? 0 : 0.2), 0.35, hz + (nz ? 0 : 0.2),
+            { perUnit: 0.3, bottom: true, skipTop: true });
+      this.bridges.push({ x0: cx - hx, z0: cz - hz, x1: cx + hx, z1: cz + hz });
+    };
+
+    for (let j = 0; j < GRID; j++) {
+      for (let bi = 0; bi < GRID - 1; bi++) {
+        if (!isWet(bi, j - 1) || !isWet(bi, j)) continue;
+        span(chunkAt(bi, j), roadCenter(bi) + ROAD/2, roadCenter(j),
+             roadCenter(bi + 1) - ROAD/2, roadCenter(j), 0, 1);
+      }
+    }
+    for (let i = 0; i < GRID; i++) {
+      for (let bj = 0; bj < GRID - 1; bj++) {
+        if (!isWet(i - 1, bj) || !isWet(i, bj)) continue;
+        span(chunkAt(i, bj), roadCenter(i), roadCenter(bj) + ROAD/2,
+             roadCenter(i), roadCenter(bj + 1) - ROAD/2, 1, 0);
+      }
+    }
+  }
+
+  // Is this spot open water? Bridges count as dry land.
+  waterAt(x, z) {
+    for (const b of this.bridges) {
+      if (x > b.x0 - ROAD/2 && x < b.x1 + ROAD/2 && z > b.z0 - ROAD/2 && z < b.z1 + ROAD/2) return false;
+    }
+    for (const w of this.water) {
+      if (x > w.x0 && x < w.x1 && z > w.z0 && z < w.z1) return true;
+    }
+    return false;
+  }
+
   // A block: its ground surface, its kerbs, and whatever its zone puts on it.
   buildBlock(b, bi, bj) {
     const zones = this.zones;
@@ -356,7 +431,10 @@ class City {
 
     // Pavement: a full slab in town, a kerbside band in the suburbs, nothing
     // in the country. This is most of what sells the transition on foot.
-    const slab = rank >= 4 || zone === Z.PARK || zone === Z.INDUSTRIAL ? 'full'
+    // The river takes its host block's rank, so it has to opt out of paving
+    // explicitly or a downtown stretch gets a pavement laid over the water.
+    const slab = zone === Z.WATER ? 'none'
+               : rank >= 4 || zone === Z.PARK || zone === Z.INDUSTRIAL ? 'full'
                : rank === 3 ? 'band' : 'none';
     const baseY = slab === 'full' ? SIDEWALK_H : 0;
 
@@ -364,7 +442,7 @@ class City {
       b.style(TEX.SIDEWALK, info.ground.tint, 0);
       b.chamferBox((x0+x1)/2, SIDEWALK_H/2, (z0+z1)/2, (x1-x0)/2, SIDEWALK_H/2, (z1-z0)/2, 0.09,
                    { top: TEX.SIDEWALK, perUnit: 0.22 });
-    } else {
+    } else if (zone !== Z.WATER) {          // the river lays its own surface
       const g = info.ground;
       b.style(g.layer, g.tint, 0);
       b.quad([x0, 0.02, z1], [x1, 0.02, z1], [x1, 0.02, z0], [x0, 0.02, z0],
