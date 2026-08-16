@@ -20,7 +20,7 @@ depth sorting, sprite layering). We're 3D WebGL; that whole layer is moot.
 
 ## Ranked by value to us
 
-### 1. Terrain from Perlin noise — the biggest single gap
+### 1. Terrain from Perlin noise — the biggest single gap  ✅ DONE
 `simulation.ts` exports `perlinNoise(x, y, seed, octaves)` and builds the world
 on it. **Our world is dead flat.** This is the root cause of the "sparse" and
 "blocky" complaints that vegetation alone didn't fix — real places have relief,
@@ -61,7 +61,7 @@ Theirs pathfind and behave as a crowd. Ours wander randomly and turn at kerbs.
   draw.
 - Pedestrians waiting at lights ties 2 and 4 together.
 
-### 5. Zoning and growth (R/C/I), service buildings
+### 5. Zoning and growth (R/C/I), service buildings  ✅ DONE (generation half)
 `SERVICE_CONFIG`, `SERVICE_MAX_LEVEL`, `SERVICE_RANGE_INCREASE_PER_LEVEL`,
 zoning by Residential/Commercial/Industrial. Our city is generated once and
 never changes.
@@ -76,7 +76,7 @@ They persist multiple cities. We persist nothing — every reload regenerates.
 `localStorage` for: current world, courier best, trial bests, stunt score,
 time of day. Small job, immediately noticeable.
 
-### 7. Water, bridges, adjacency rules
+### 7. Water, bridges, adjacency rules  ✅ DONE
 `requiresWaterAdjacency`, `getWaterAdjacency`, `createBridgesOnPath`. We parse
 water from OSM (`natural=water`) but **never render it** — see
 `mapimport.js`, where `areas` is collected and then unused. Low-hanging: draw
@@ -96,17 +96,33 @@ worth knowing it exists if the racing ever wants a second player.
 
 ## Suggested order
 
-1. **Water rendering** — small, and the data is already parsed and thrown away.
-2. **Save/load** — small, high perceived polish.
-3. **Traffic lights** — medium, big realism win, hooks already exist.
-4. **Zoning-driven generation** — medium, fixes "the city looks samey".
-5. **Terrain heightfield** — large, but the single biggest visual change
-   available to us, and it addresses the complaint that vegetation didn't.
+Done, in this order (see `js/zones.js`, `js/blocks.js`, `js/terrain.js`):
 
-## Open defects to clear first
+1. **Zoning-driven generation.** One seeded world running from wildwood and
+   farmland through village, suburb, town and high street to a downtown core.
+   Blocks are banded off a continuous urbanity field, so it can only step one
+   band at a time, and a repair pass then enforces that outright — checked by
+   `ZoneMap.violations()`, which is zero across every seed tried. Parks and
+   industrial estates are overlays with host rules and a cap on their share.
+2. **Water.** A river carved from the seed across the whole map, bridges where
+   roads meet it, and a splash-and-respawn if you drive in.
+3. **Terrain heightfield.** Heights at road junctions, interpolated between;
+   blocks are terraces at their highest corner with a retaining face below.
+
+### Still to do
+
+1. **Save/load** — small, high perceived polish. Nothing persists yet.
+2. **Traffic lights** — medium; the poles are already drawn and `TrafficCar`
+   already has a lookahead brake to feed.
+3. **More vehicle classes** — buses on fixed routes reuse the lane graph.
+4. **Pedestrian pathfinding** — A* over the pavements, crossings at the zebras.
+5. **Neighbouring cities** — maps onto courier runs to an outlying village.
+
+## Open defects
 
 - Imported OSM buildings shade too dark on unlit sides (ring winding; walls
-  currently emitted double-sided as a workaround).
-- The vegetation scatter's last visual check was inconclusive — camera in that
-  capture ended up somewhere unexpected.
-- Pocket drop animation on the snooker table fights the vehicle ground clamp.
+  currently emitted double-sided as a workaround). The OSM importer is also
+  the one part of the game that has not been taught about terrain — an
+  imported map is still flat.
+- Mega ramps have never been confirmed to put a car on a roof: the climb
+  works, the launch off the lip has not been observed.
