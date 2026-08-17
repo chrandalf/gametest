@@ -672,6 +672,33 @@ class Pedestrian {
     this.vx = 0; this.vz = 0; this.y = 0;
     this.rand = rand;
     this.turnTimer = 0;
+    // Panic. A pedestrian who sees a car coming at them does not carry on
+    // strolling; they bolt, and they do not care that they are stepping off
+    // the kerb to do it. That is the whole reason a city street feels alive
+    // rather than like a diorama of people on rails.
+    this.panic = 0;
+    this.screamed = 0;
+    this.fleeYaw = 0;
+  }
+
+  // Is that car about to run me over? Distance alone is not enough — a car
+  // parked beside you is not frightening, and one doing fifty across the far
+  // side of the junction is not either. It has to be quick and pointed at you.
+  senses(car) {
+    if (!car) return 0;
+    const dx = this.x - car.x, dz = this.z - car.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 26 || d < 0.001) return 0;
+    const sp = car.speed;
+    if (sp < 4) return 0;
+    // How squarely the car is coming at them.
+    const aim = (dx * car.vx + dz * car.vz) / (d * sp);
+    // A near miss is frightening even when it was never going to hit you: a
+    // car passing a metre away at forty gets a reaction from anybody.
+    if (d < 10 && sp > 8) return clamp((1 - d / 10) * clamp(sp / 12, 0, 1) * 1.6, 0, 1);
+    if (aim < 0.3) return 0;
+    // Closer, faster and more head-on all raise the alarm.
+    return clamp((1 - d / 26) * clamp(sp / 14, 0, 1) * aim * 2.2, 0, 1);
   }
 
   update(dt, world) {
@@ -689,6 +716,38 @@ class Pedestrian {
       return;
     }
     this.y = floor;
+
+    // --- panic ---
+    const alarm = this.senses(world.threat);
+    if (alarm > 0.28) {
+      this.panic = Math.max(this.panic, 1.4 + alarm * 1.6);
+      const car = world.threat;
+      // Straight away from the car, but biased sideways: running down the road
+      // in front of a car is how you get run over, and they know it.
+      const dx = this.x - car.x, dz = this.z - car.z;
+      const away = Math.atan2(dx, dz);
+      const side = ((this.x * 7 + this.z * 13) | 0) % 2 ? 1 : -1;
+      this.fleeYaw = away + side * 0.7;
+      if (this.screamed <= 0) {
+        this.screamed = 2.4;
+        if (world.onScream) world.onScream(this);
+      }
+    }
+    if (this.screamed > 0) this.screamed -= dt;
+    if (this.panic > 0) {
+      this.panic -= dt;
+      this.yaw += angDelta(this.yaw, this.fleeYaw) * clamp(dt * 7, 0, 1);
+      // Sprinting, and off the kerb if that is where away happens to be.
+      const run = this.speed * 2.5;
+      const nx = this.x + Math.sin(this.yaw) * run * dt;
+      const nz = this.z + Math.cos(this.yaw) * run * dt;
+      const q = { x: nx, z: nz };
+      world.city.resolveCircle(q, 0.45);
+      this.x = q.x; this.z = q.z;
+      this.phase += dt * run * 3.4;
+      this.turnTimer = 0.6;                 // wander somewhere new afterwards
+      return;
+    }
 
     this.turnTimer -= dt;
     if (this.turnTimer <= 0) {

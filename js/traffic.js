@@ -10,6 +10,9 @@
 'use strict';
 
 const LIGHT_CYCLE = 14;        // seconds for a full green/green cycle
+// The fleet lives in a ring around the player: near enough to meet, far enough
+// that nothing pops into existence in the mirror.
+const SPAWN_NEAR = 95, SPAWN_FAR = 300, RETIRE_FAR = 380;
 const AMBER = 2.6;             // seconds of amber at the end of each green
 
 // Junction signals. Only the busiest junctions are signalled; quieter ones are
@@ -76,10 +79,19 @@ class TrafficPopulation {
     this.city = city;
     this.rand = rand;
     this.max = maxCars;
+    // Weighted by how built-up the junction is, by listing a busy one several
+    // times. A flat list spreads rush hour evenly over the whole map, which is
+    // the opposite of rush hour: the city should be solid and the lanes empty.
     this.cells = [];
     for (let i = 0; i < GRID; i++) {
-      for (let j = 0; j < GRID; j++) if (city.roadRank(i, j) >= 2) this.cells.push([i, j]);
+      for (let j = 0; j < GRID; j++) {
+        const rank = city.roadRank(i, j);
+        if (rank < 2) continue;
+        const weight = rank >= 5 ? 6 : rank === 4 ? 4 : rank === 3 ? 2 : 1;
+        for (let k = 0; k < weight; k++) this.cells.push([i, j, roadCenter(i), roadCenter(j)]);
+      }
     }
+    this.near = [];
     this.timer = 0;
   }
 
@@ -91,28 +103,47 @@ class TrafficPopulation {
   update(dt, hour, list, player) {
     this.timer -= dt;
     if (this.timer > 0) return;
-    this.timer = 0.9;
+    this.timer = 0.55;
     const want = this.target(hour);
     if (!this.cells.length) return;
 
+    // Spawn in a ring around the player rather than anywhere on the map. A
+    // fleet spread over a square kilometre and a half is a fleet you never
+    // meet: the same hundred and ninety cars kept within a few streets is the
+    // difference between a quiet grid and a city at half past eight.
+    this.near.length = 0;
+    for (const c of this.cells) {
+      const d = Math.hypot(c[2] - player.x, c[3] - player.z);
+      if (d > SPAWN_NEAR && d < SPAWN_FAR) this.near.push(c);
+    }
+    const pool = this.near.length ? this.near : this.cells;
+
     if (list.length < want) {
-      for (let n = 0; n < 3 && list.length < want; n++) {
-        const [i, j] = this.cells[(this.rand() * this.cells.length) | 0];
+      // Enough per tick that a rush hour actually arrives rather than
+      // trickling in over the first two minutes of play.
+      for (let n = 0; n < 10 && list.length < want; n++) {
+        const [i, j] = pool[(this.rand() * pool.length) | 0];
         const horiz = this.rand() < 0.5;
         const d = horiz ? [this.rand() < 0.5 ? 1 : -1, 0] : [0, this.rand() < 0.5 ? 1 : -1];
         const car = new TrafficCar(i, j, d[0], d[1],
           CAR_COLORS[(this.rand() * CAR_COLORS.length) | 0], this.rand, this.city);
         // Never appear in front of the player.
-        if (Math.hypot(car.x - player.x, car.z - player.z) < 90) continue;
+        if (Math.hypot(car.x - player.x, car.z - player.z) < SPAWN_NEAR) continue;
         list.push(car);
       }
-    } else if (list.length > want) {
-      let worst = -1, worstD = 0;
-      for (let k = 0; k < list.length; k++) {
-        const d = Math.hypot(list[k].x - player.x, list[k].z - player.z);
-        if (d > worstD) { worstD = d; worst = k; }
-      }
-      if (worst >= 0 && worstD > 160) list.splice(worst, 1);
     }
+    // Retire anything that has driven out of the neighbourhood, and thin the
+    // fleet from the far end when the peak passes. Several a tick, or it takes
+    // minutes to settle.
+    const order = list.map((c, k) => [Math.hypot(c.x - player.x, c.z - player.z), k])
+                      .sort((a, b) => b[0] - a[0]);
+    let drop = Math.max(0, list.length - want);
+    let gone = 0;
+    for (const [d, k] of order) {
+      if (gone >= 8) break;
+      if (d > RETIRE_FAR || drop > 0) { list[k] = null; gone++; if (drop > 0) drop--; }
+      else break;
+    }
+    if (gone) for (let k = list.length - 1; k >= 0; k--) if (!list[k]) list.splice(k, 1);
   }
 }

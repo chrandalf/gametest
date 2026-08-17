@@ -28,6 +28,9 @@ const WALK_COLS = [1, 0, 2, 0];
 
 // Row index by which way the person is facing relative to the camera.
 const FACE_SOUTH = 0, FACE_EAST = 1, FACE_NORTH = 2;
+// Row 3 in the contract is expressions; the panic poses live there, two
+// running frames per facing.
+const PANIC_ROW = 3;
 
 // A handful of townspeople. Colours are picked to survive the tone mapping:
 // mid-tone clothes, because anything near black loses its shape at night.
@@ -50,7 +53,7 @@ const css = (c, k) => `rgb(${Math.round(clamp(c[0] * (k || 1), 0, 1) * 255)},` +
 // Everything is drawn twice: once fat in the contour colour, once in the
 // material. That outline is the whole 80s cel-shaded look, and it is also
 // what keeps a 48-pixel figure readable against a busy street.
-function paintPerson(ctx, ox, oy, ch, dir, step, talking) {
+function paintPerson(ctx, ox, oy, ch, dir, step, talking, panic) {
   const INK = 'rgb(14,11,18)';
   const LINE = 2.0;      // contour width; this is what makes the figure read
   const swing = Math.sin(step / 4 * Math.PI * 2);
@@ -101,9 +104,17 @@ function paintPerson(ctx, ox, oy, ch, dir, step, talking) {
     ctx.fillRect(ox + cx - (side ? 6 : 1), oy + 24, 2, 22);
   }
 
-  // Arms, swinging opposite the legs.
+  // Arms. Swinging opposite the legs normally; straight up in the air when
+  // they have seen the car, which is the whole read of the panic pose from
+  // fifty metres — you cannot see a face at that range, only a silhouette.
   for (const [s, sw] of [[-1, -swing], [1, swing]]) {
-    if (side && s < 0) continue;                 // the far arm is hidden
+    if (side && s < 0 && !panic) continue;       // the far arm is hidden
+    if (panic) {
+      const ax = cx + s * (side ? 4 : 10.5) - 3.5;
+      slab(ax + s * 2.5, 8, 7, 19, css(ch.coat, 0.82), 3);
+      slab(ax + s * 3.5, 4, 6, 6, css(ch.skin), 3);
+      continue;
+    }
     const lean = sw * (side ? 8 : 5);
     slab(cx + s * (side ? 0 : 11) - 3.5 + lean * 0.4, 25, 7, 19, css(ch.coat, 0.82), 3);
     // Hand.
@@ -131,9 +142,14 @@ function paintPerson(ctx, ox, oy, ch, dir, step, talking) {
     } else {
       ctx.fillRect(ox + cx + 2.5 + ex - 3, oy + 17, 2, 2.5);
     }
-    // Mouth: open on the talk frames, a line otherwise.
-    ctx.fillStyle = talking ? 'rgb(80,30,34)' : INK;
-    ctx.fillRect(ox + cx - 2 + ex, oy + 21, talking ? 5 : 4, talking ? 3 : 1.2);
+    // Mouth: wide open mid-scream, ajar on the talk frames, a line otherwise.
+    ctx.fillStyle = (talking || panic) ? 'rgb(80,30,34)' : INK;
+    if (panic) {
+      roundRectPath(ctx, ox + cx - 2.5 + ex, oy + 19.5, 5, 5, 2.2);
+      ctx.fill();
+    } else {
+      ctx.fillRect(ox + cx - 2 + ex, oy + 21, talking ? 5 : 4, talking ? 3 : 1.2);
+    }
   }
   // Neck shadow, which is what stops the head reading as a balloon.
   ctx.fillStyle = css(ch.skin, 0.55);
@@ -177,6 +193,15 @@ function buildSpriteAtlas(gl, pngs) {
         const talking = col >= 4;
         const step = talking ? 0 : col;
         paintPerson(ctx, sx + col * SPR.cellW, sy + row * SPR.cellH, ch, row, step, talking);
+      }
+    }
+    // Row 3 is the contract's expression row. Columns 0-2 are this game's
+    // addition: the same three facings, arms up, mouth open — a person who
+    // has just seen a car coming. Columns 0-1 alternate as a running cycle.
+    for (let col = 0; col < 3; col++) {
+      for (let f = 0; f < 2; f++) {
+        paintPerson(ctx, sx + (col * 2 + f) * SPR.cellW, sy + PANIC_ROW * SPR.cellH,
+                    ch, col, f ? 1 : 2, false, true);
       }
     }
   }
@@ -259,8 +284,14 @@ function pushPersonSprite(b, atlas, p, camX, camZ, height) {
   } else {
     const f = spriteFacing(p.yaw, toCamYaw);
     row = f.row; mirror = f.mirror;
-    const moving = (p.speed === undefined ? 1 : p.speed) > 0.4;
-    col = moving ? WALK_COLS[Math.floor(p.phase / (Math.PI / 2)) & 3] : 0;
+    if (p.panic > 0) {
+      // Arms up, legs going: two frames per facing on the expression row.
+      col = f.row * 2 + (Math.floor(p.phase / (Math.PI / 2)) & 1);
+      row = PANIC_ROW;
+    } else {
+      const moving = (p.speed === undefined ? 1 : p.speed) > 0.4;
+      col = moving ? WALK_COLS[Math.floor(p.phase / (Math.PI / 2)) & 3] : 0;
+    }
   }
   const uv = spriteUV(atlas, sheet, row, col, mirror);
 

@@ -66,7 +66,7 @@ function start() {
     renderer.setSpriteAtlas(game.sprites.tex);
   });
   game.spriteBuilder = new MeshBuilder();
-  game.spriteMesh = new DynamicMesh(gl, 4 * 400, 6 * 400);
+  game.spriteMesh = new DynamicMesh(gl, 4 * 700, 6 * 700);
 
   game.rand = makeRandom(99);
   game.car = new Vehicle(0, 0, 0, [0.85, 0.12, 0.14]);
@@ -314,6 +314,42 @@ function playThud(strength) {
   o.start(); o.stop(ctx.currentTime + 0.32);
 }
 
+// A scream: a short falling wail with a bit of grit on it. Voices are the one
+// thing a street cannot do without, and half a dozen at once as you come round
+// a corner is worth more than any amount of extra geometry.
+let lastScream = 0;
+function playScream(pitch, gainScale) {
+  const a = game.audio;
+  if (!a) return;
+  const ctx = a.ctx;
+  // Never more than a handful at once, or a crowd turns into a siren.
+  if (ctx.currentTime - lastScream < 0.07) return;
+  lastScream = ctx.currentTime;
+  const t = ctx.currentTime;
+  const o = ctx.createOscillator();
+  const vib = ctx.createOscillator();
+  const vibGain = ctx.createGain();
+  const g = ctx.createGain();
+  const f = ctx.createBiquadFilter();
+  o.type = 'sawtooth';
+  const base = 420 * pitch;
+  o.frequency.setValueAtTime(base * 1.5, t);
+  o.frequency.exponentialRampToValueAtTime(base * 0.62, t + 0.55);
+  // Vibrato is what makes it a voice rather than a slide whistle.
+  vib.frequency.value = 11 + pitch * 4;
+  vibGain.gain.value = base * 0.06;
+  vib.connect(vibGain); vibGain.connect(o.frequency);
+  f.type = 'bandpass';
+  f.frequency.value = base * 2.2;
+  f.Q.value = 2.2;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.10 * gainScale, t + 0.05);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+  o.connect(f); f.connect(g); g.connect(a.master);
+  o.start(t); vib.start(t);
+  o.stop(t + 0.62); vib.stop(t + 0.62);
+}
+
 // ------------------------------------------------------------- simulate ----
 
 function update(dt) {
@@ -364,7 +400,18 @@ function update(dt) {
   const blockers = game.traffic.slice();
   blockers.push(car);
   for (const c of game.abandoned) blockers.push(c);
-  const world = { city: game.city, blockers, lights: game.lights };
+  // `threat` is what the pedestrians are frightened of, and `onScream` is how
+  // they say so. Only the player counts: traffic obeys the rules, so nobody
+  // needs to run from it.
+  const world = {
+    city: game.city, blockers, lights: game.lights,
+    threat: p.inCar ? car : null,
+    onScream: (ped) => {
+      const d = Math.hypot(ped.x - car.x, ped.z - car.z);
+      // Height stands in for who is doing the screaming.
+      playScream(1.35 - ped.height * 0.45, clamp(1 - d / 30, 0.15, 1));
+    },
+  };
   if (game.lights) game.lights.update(dt);
 
   const px = p.inCar ? car.x : p.walker.x;
@@ -653,27 +700,71 @@ function buildWorld(seed) {
   }
   game.abandoned = [];
 
-  // Pedestrians go where there are pavements and front doors.
+  // Pedestrians go where there are pavements and front doors, and there are
+  // far more of them the further into town you get: a village green with two
+  // people on it and a high street with forty is most of what sells the
+  // difference between the two.
   game.peds = [];
-  for (let n = 0; n < 220 && game.peds.length < 110; n++) {
-    const bi = (rand() * (GRID - 1)) | 0, bj = (rand() * (GRID - 1)) | 0;
-    if (city.zones.rankAt(bi, bj) < 2) continue;
-    if (city.zones.zoneAt(bi, bj) === Z.WATER) continue;
-    const x = roadCenter(bi) + ROAD/2 + 2 + rand() * (BLOCK - 4);
-    const z = roadCenter(bj) + ROAD/2 + 2 + rand() * (BLOCK - 4);
+  const pedBlocks = [];
+  for (let bi = 0; bi < GRID - 1; bi++) {
+    for (let bj = 0; bj < GRID - 1; bj++) {
+      const rank = city.zones.rankAt(bi, bj);
+      if (rank < 2 || city.zones.zoneAt(bi, bj) === Z.WATER) continue;
+      const weight = rank >= 5 ? 8 : rank === 4 ? 5 : rank === 3 ? 2 : 1;
+      for (let k = 0; k < weight; k++) pedBlocks.push([bi, bj]);
+    }
+  }
+  // People come in knots — round a crossing, outside a shop, waiting to cross
+  // — not evenly dusted over the pavement. Clustering the same number makes a
+  // street look several times busier than scattering it does.
+  let knot = null;
+  for (let n = 0; n < 4200 && game.peds.length < 620 && pedBlocks.length; n++) {
+    if (knot && rand() < 0.62) {
+      const gx = knot.x + (rand() - 0.5) * 9, gz = knot.z + (rand() - 0.5) * 9;
+      if (!onRoad(gx, gz)) {
+        const q = { x: gx, z: gz };
+        if (!city.resolveCircle(q, 0.6)) {
+          const mate = new Pedestrian(gx, gz, rand() * 6.28, rand);
+          mate.y = city.groundY(gx, gz);
+          mate.sheet = (rand() * TOWNSFOLK.length) | 0;
+          game.peds.push(mate);
+        }
+      }
+      continue;
+    }
+    const [bi, bj] = pedBlocks[(rand() * pedBlocks.length) | 0];
+    // Hug the kerb: people walk on pavements, not across the middle of a plot.
+    const edge = (rand() * 4) | 0;
+    // On the pavement band itself. Reaching further into the plot only meant
+    // landing inside a building and being thrown away, which is why downtown
+    // — where the buildings cover nearly the whole block — came out emptiest
+    // of anywhere despite being weighted heaviest.
+    const near = 1.1 + rand() * 2.0;
+    const along = 3 + rand() * (BLOCK - 6);
+    const x0 = roadCenter(bi) + ROAD/2, z0 = roadCenter(bj) + ROAD/2;
+    const x = edge === 2 ? x0 + near : edge === 3 ? x0 + BLOCK - near : x0 + along;
+    const z = edge === 0 ? z0 + near : edge === 1 ? z0 + BLOCK - near : z0 + along;
     if (onRoad(x, z)) continue;
     const p = { x, z };
     if (city.resolveCircle(p, 0.6)) continue;   // spawned inside a wall
     const ped = new Pedestrian(x, z, rand() * 6.28, rand);
+    // Stand them on the pavement now rather than at y = 0: a block is levelled
+    // to its own height, so an unplaced pedestrian is buried in it until their
+    // first update, and the ones out of simulation range never get one.
+    ped.y = city.groundY(x, z);
     // Which townsperson's sheet they wear, fixed for their lifetime.
     ped.sheet = (rand() * TOWNSFOLK.length) | 0;
     game.peds.push(ped);
+    // The next few gather round this one.
+    knot = rand() < 0.55 ? { x, z } : null;
   }
 
   game.snipers = new Snipers(gl, city, rand);
   game.skids = new SkidMarks(gl, 460);
   game.lights = new TrafficLights(city);
-  game.population = new TrafficPopulation(city, rand, clamp(urbanCells.length, 24, 90));
+  // The fleet a full rush hour is allowed to reach. Scaled by how much city
+  // there is, so a map that came out mostly farmland stays quiet.
+  game.population = new TrafficPopulation(city, rand, clamp(urbanCells.length * 2.4, 40, 190));
 
   const car = game.car;
   car.x = city.spawn.x; car.z = city.spawn.z; car.y = 0;
