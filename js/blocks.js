@@ -103,15 +103,31 @@ function house(city, b, opt) {
     b.style(TEX.TILE, [0.72, 0.50, 0.40], 0);
     b.cylinder(chx, base + h + 3.42, chz, 0.19, 0.62, 10, { uRepeat: 3, vRepeat: 1 });
   }
+  if (opt.dig) {
+    b.style(TEX.CONCRETE, [0.72, 0.70, 0.66], 0);
+    b.box(cx, base - opt.dig / 2, cz, w/2 - 0.1, opt.dig / 2, d/2 - 0.1,
+          { skipTop: true, perUnit: 0.3 });
+  }
   city.addBuilding(cx - w/2, cz - d/2, cx + w/2, cz + d/2, base + h);
 }
 
 // A run of hedge. Solid to drive through, but you can see it coming.
-function hedge(city, b, x0, z0, x1, z1, h, solid) {
+function hedge(city, b, x0, z0, x1, z1, h, solid, groundAt) {
   const hh = h || 1.25;
   b.style(TEX.LEAVES, [0.62, 0.78, 0.55], 0);
-  b.chamferBox((x0+x1)/2, hh/2, (z0+z1)/2, Math.abs(x1-x0)/2, hh/2, Math.abs(z1-z0)/2,
-               Math.min(0.4, hh * 0.3), { perUnit: 0.7 });
+  // Over open ground a hedgerow is cut into short lengths, each sitting at its
+  // own height, or a long one buries itself at one end of a slope.
+  const len = Math.hypot(x1 - x0, z1 - z0);
+  const segs = groundAt ? Math.max(1, Math.round(len / 11)) : 1;
+  for (let k = 0; k < segs; k++) {
+    const t0 = k / segs, t1 = (k + 1) / segs;
+    const ax = lerp(x0, x1, t0), az = lerp(z0, z1, t0);
+    const bx = lerp(x0, x1, t1), bz = lerp(z0, z1, t1);
+    const cx = (ax + bx) / 2, cz = (az + bz) / 2;
+    const y = groundAt ? groundAt(cx, cz) : 0;
+    b.chamferBox(cx, y + hh/2, cz, Math.abs(bx-ax)/2, hh/2, Math.abs(bz-az)/2,
+                 Math.min(0.4, hh * 0.3), { perUnit: 0.7 });
+  }
   if (solid !== false) city.addCollider(Math.min(x0,x1), Math.min(z0,z1), Math.max(x0,x1), Math.max(z0,z1), hh);
 }
 
@@ -182,15 +198,15 @@ ZONE_BUILDERS[Z.WILD] = (city, b, ctx) => {
   const n = 14 + ((rand() * 12) | 0);
   for (let i = 0; i < n; i++) {
     const x = lerp(x0 + 3, x1 - 3, rand()), z = lerp(z0 + 3, z1 - 3, rand());
-    if (rand() < 0.22) city.bush(b, x, z, 0.7 + rand() * 0.8);
-    else city.tree(b, x, z, 0.9 + rand() * 0.9, 0);
+    if (rand() < 0.22) city.bush(b, x, z, 0.7 + rand() * 0.8, ctx.groundAt(x, z));
+    else city.tree(b, x, z, 0.9 + rand() * 0.9, ctx.groundAt(x, z));
   }
   for (let i = 0; i < 3; i++) {
     if (rand() > 0.5) continue;
     const x = lerp(x0 + 4, x1 - 4, rand()), z = lerp(z0 + 4, z1 - 4, rand());
     const r = 0.8 + rand() * 1.6;
     b.style(TEX.CONCRETE, [0.55, 0.54, 0.50], 0);
-    b.sphere(x, r * 0.35, z, r, 7, 4, 0.5);
+    b.sphere(x, ctx.groundAt(x, z) + r * 0.35, z, r, 7, 4, 0.5);
     city.addCollider(x - r*0.7, z - r*0.7, x + r*0.7, z + r*0.7, r * 0.7);
   }
 };
@@ -213,12 +229,13 @@ ZONE_BUILDERS[Z.FARM] = (city, b, ctx) => {
                              : [0.62, 0.70, 0.40];         // pasture
     b.style(crop < 0.8 ? TEX.FIELD : TEX.GRASS, tint, 0);
     const rot = vertical !== (rand() < 0.5);
-    b.quad([fx0+1, 0.03, fz1-1], [fx1-1, 0.03, fz1-1], [fx1-1, 0.03, fz0+1], [fx0+1, 0.03, fz0+1],
-           rot ? (fx1-fx0)/6 : (fx1-fx0)/22, rot ? (fz1-fz0)/22 : (fz1-fz0)/6);
+    // A field is laid over the ground it sits on, not flat across it.
+    city.sheet(b, fx0 + 1, fz0 + 1, fx1 - 1, fz1 - 1, 5, 0.03,
+               rot ? (fx1-fx0)/6 : (fx1-fx0)/22, rot ? (fz1-fz0)/22 : (fz1-fz0)/6, true);
     // Hedgerow between strips.
     if (k < strips - 1) {
-      if (vertical) hedge(city, b, fx1 - 0.7, fz0 + 1, fx1 + 0.7, fz1 - 1, 1.5);
-      else hedge(city, b, fx0 + 1, fz1 - 0.7, fx1 - 1, fz1 + 0.7, 1.5);
+      if (vertical) hedge(city, b, fx1 - 0.7, fz0 + 1, fx1 + 0.7, fz1 - 1, 1.5, true, ctx.groundAt);
+      else hedge(city, b, fx0 + 1, fz1 - 0.7, fx1 - 1, fz1 + 0.7, 1.5, true, ctx.groundAt);
     }
   }
 
@@ -230,31 +247,34 @@ ZONE_BUILDERS[Z.FARM] = (city, b, ctx) => {
     const fz = horiz ? (e === 0 ? z0 + 13 : z1 - 13) : lerp(z0 + 16, z1 - 16, rand());
     house(city, b, { x: fx, z: fz, w: 11, d: 9, h: 5.4, rand,
                      faceX: horiz ? 0 : (e === 2 ? -1 : 1), faceZ: horiz ? (e === 0 ? -1 : 1) : 0,
-                     wall: HOUSE_WALLS[2] });
+                     wall: HOUSE_WALLS[2], baseY: ctx.groundAt(fx, fz), dig: 2.5 });
     // Barn: creosoted timber under a dark corrugated roof. Its 0.6 m eaves are
     // part of the footprint as far as fitting inside the block goes.
     const barn = fitIn(ctx, fx + (rand() < 0.5 ? -16 : 16), fz + (rand() < 0.5 ? -13 : 13),
                        8.6, 6.6);
     if (barn.fits) {
       const bx = barn.x, bz = barn.z;
+      const by = ctx.groundAt(bx, bz);
       b.style(TEX.BARK, [0.66, 0.48, 0.36], 0);
-      b.box(bx, 3.1, bz, 8, 3.1, 6, { perUnit: 0.35, skipTop: true });
+      b.box(bx, by + 1.5, bz, 8, 4.6, 6, { perUnit: 0.35, skipTop: true });
       b.style(TEX.SIDING, [0.34, 0.35, 0.33], 0);
-      pitchedRoof(b, bx, 6.2, bz, 8, 6, 2.4, true, 0.6);
-      city.addBuilding(bx - 8, bz - 6, bx + 8, bz + 6, 6.2);
+      pitchedRoof(b, bx, by + 6.2, bz, 8, 6, 2.4, true, 0.6);
+      city.addBuilding(bx - 8, bz - 6, bx + 8, bz + 6, by + 6.2);
       b.style(TEX.FIELD, [0.86, 0.80, 0.48], 0);
       for (let i = 0; i < 4; i++) {
         if (rand() < 0.4) continue;
         const bale = fitIn(ctx, bx + (rand() - 0.5) * 22, bz + (rand() - 0.5) * 18, 1.2, 1.2);
-        b.cylinder(bale.x, 1.2, bale.z, 1.2, 2.4, 9, { uRepeat: 3, vRepeat: 1 });
-        city.addCollider(bale.x - 1.2, bale.z - 1.2, bale.x + 1.2, bale.z + 1.2, 2.4);
+        const byy = ctx.groundAt(bale.x, bale.z);
+        b.cylinder(bale.x, byy + 1.2, bale.z, 1.2, 2.4, 9, { uRepeat: 3, vRepeat: 1 });
+        city.addCollider(bale.x - 1.2, bale.z - 1.2, bale.x + 1.2, bale.z + 1.2, byy + 2.4);
       }
     }
   }
   // A tree or two in the hedge line.
   for (let i = 0; i < 3; i++) {
     if (rand() < 0.45) continue;
-    city.tree(b, lerp(x0 + 4, x1 - 4, rand()), lerp(z0 + 4, z1 - 4, rand()), 1.0 + rand() * 0.5, 0);
+    const tx = lerp(x0 + 4, x1 - 4, rand()), tz = lerp(z0 + 4, z1 - 4, rand());
+    city.tree(b, tx, tz, 1.0 + rand() * 0.5, ctx.groundAt(tx, tz));
   }
 };
 

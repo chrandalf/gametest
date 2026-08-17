@@ -12,6 +12,8 @@ const MAX_STEP = 5.5;        // metres of rise allowed between built-up neighbou
 const WILD_STEP = 17;        // ...and where there is nothing but trees and fields
 const RIVER_DEPTH = 4.5;     // how far the river valley sits below its banks
 const HILL_HEIGHT = 62;      // how far a proper hill stands above the plain
+const DETAIL_AMP = 1.6;      // roll between the junctions, peak to trough
+const DETAIL_SCALE = 74;     // metres per wavelength of that roll
 
 class Terrain {
   // n is the number of junctions per axis (GRID), spacing is CELL.
@@ -45,6 +47,7 @@ class Terrain {
   node(i, j) { return this.h[this.idx(i, j)]; }
 
   build(seed, riverCells) {
+    this.seed = seed;
     const n = this.n;
     let lo = Infinity, hi = -Infinity;
     for (let j = 0; j < n; j++) {
@@ -132,21 +135,50 @@ class Terrain {
     }
   }
 
-  // Bilinear height at a world position.
+  // Height at a world position: bilinear between the junctions, plus a gentle
+  // roll in between. Without the roll the ground is piecewise flat over 88 m
+  // spans, which is what makes a hillside read as a stack of slabs.
   at(x, z) {
     const fx = x / this.spacing, fz = z / this.spacing;
     const i = Math.floor(fx), j = Math.floor(fz);
     const tx = clamp(fx - i, 0, 1), tz = clamp(fz - j, 0, 1);
     const a = this.node(i, j), b = this.node(i + 1, j);
     const c = this.node(i, j + 1), d = this.node(i + 1, j + 1);
-    return lerp(lerp(a, b, tx), lerp(c, d, tx), tz);
+    return lerp(lerp(a, b, tx), lerp(c, d, tx), tz) + this.roll(x, z);
+  }
+
+  roll(x, z) {
+    // One octave: this is a gentle undulation, and it is sampled hundreds of
+    // thousands of times while the world is built.
+    return (valueNoise(x / DETAIL_SCALE, z / DETAIL_SCALE, this.seed ^ 0x51ab) - 0.5) * DETAIL_AMP;
+  }
+
+  // Surface normal. The bilinear part's slope is analytic and free; only the
+  // roll has to be sampled, and then just twice, using the value at the point
+  // itself which the caller has already paid for.
+  normalAt(x, z, roll0) {
+    const s = this.spacing;
+    const fx = x / s, fz = z / s;
+    const i = Math.floor(fx), j = Math.floor(fz);
+    const tx = clamp(fx - i, 0, 1), tz = clamp(fz - j, 0, 1);
+    const a = this.node(i, j), b = this.node(i + 1, j);
+    const c = this.node(i, j + 1), d = this.node(i + 1, j + 1);
+    let dx = lerp(b - a, d - c, tz) / s;
+    let dz = lerp(c - a, d - b, tx) / s;
+    const r0 = roll0 === undefined ? this.roll(x, z) : roll0;
+    const e = 7;
+    dx += (this.roll(x + e, z) - r0) / e;
+    dz += (this.roll(x, z + e) - r0) / e;
+    const nx = -dx, ny = 1, nz = -dz;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    return [nx / l, ny / l, nz / l];
   }
 
   // A block is a plateau at the highest of its corners, so its pavement is
   // never below the road running past it — a kerb you step up, never down.
   blockLift(bi, bj) {
     return Math.max(this.node(bi, bj), this.node(bi + 1, bj),
-                    this.node(bi, bj + 1), this.node(bi + 1, bj + 1));
+                    this.node(bi, bj + 1), this.node(bi + 1, bj + 1)) + DETAIL_AMP * 0.5;
   }
 
   // Steepest gradient anywhere on the map, as a percentage. Used by tests:

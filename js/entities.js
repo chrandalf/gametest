@@ -385,7 +385,9 @@ class Vehicle {
     } else {
       // Grounded: follow the surface, and drop off the edge of a roof.
       const surface = city ? city.topAt(this.x, this.z) : 0;
-      if (surface < this.y - 0.35) {
+      // Tolerance enough that the roll of open country does not throw the car
+      // into the air over every crest; a roof edge is a much bigger drop.
+      if (surface < this.y - 0.6) {
         this.airborne = true;
         this.vy = 0;
       } else {

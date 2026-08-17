@@ -146,6 +146,7 @@ class City {
                     x > roadCenter(bi) + ROAD/2 && x < roadCenter(bi + 1) - ROAD/2 &&
                     z > roadCenter(bj) + ROAD/2 && z < roadCenter(bj + 1) - ROAD/2;
     if (inBlock) {
+      if (this.isRural(bi, bj)) return this.terrain.at(x, z);
       const lift = this.terrain.blockLift(bi, bj);
       return this.zones.zoneAt(bi, bj) === Z.WATER ? lift + WATER_Y : lift;
     }
@@ -252,9 +253,14 @@ class City {
   // An axis-aligned patch that follows the ground. Everything laid on the
   // surface — tarmac, grass, paint — goes through here, so nothing can end up
   // buried or hovering.
-  sheet(b, x0, z0, x1, z1, sub, yOff, uRepeat, vRepeat) {
+  sheet(b, x0, z0, x1, z1, sub, yOff, uRepeat, vRepeat, smooth) {
     const T = this.terrain;
     const n = Math.max(1, sub | 0);
+    // Per-vertex normals cost three noise samples a corner, so they are only
+    // paid for on ground the player sees as landscape — not on paint.
+    const nrm = smooth
+      ? (x, z) => T.normalAt(x, z)
+      : null;
     for (let a = 0; a < n; a++) {
       for (let c = 0; c < n; c++) {
         const ax0 = lerp(x0, x1, a / n), ax1 = lerp(x0, x1, (a + 1) / n);
@@ -264,15 +270,24 @@ class City {
         // Four corners at their own heights: the patch twists with the ground.
         const p = [[ax0, T.at(ax0, az1) + yOff, az1], [ax1, T.at(ax1, az1) + yOff, az1],
                    [ax1, T.at(ax1, az0) + yOff, az0], [ax0, T.at(ax0, az0) + yOff, az0]];
-        const ex = p[1][0]-p[0][0], ey = p[1][1]-p[0][1], ez = p[1][2]-p[0][2];
-        const fx = p[3][0]-p[0][0], fy = p[3][1]-p[0][1], fz = p[3][2]-p[0][2];
-        let nx = ey*fz - ez*fy, ny = ez*fx - ex*fz, nz = ex*fy - ey*fx;
-        const nl = Math.hypot(nx, ny, nz) || 1;
-        nx /= nl; ny /= nl; nz /= nl;
-        const base = b.vertex(p[0][0], p[0][1], p[0][2], nx, ny, nz, u0, v1);
-        b.vertex(p[1][0], p[1][1], p[1][2], nx, ny, nz, u1, v1);
-        b.vertex(p[2][0], p[2][1], p[2][2], nx, ny, nz, u1, v0);
-        b.vertex(p[3][0], p[3][1], p[3][2], nx, ny, nz, u0, v0);
+        // Each corner takes the true surface normal at its own position, so
+        // adjoining patches share an edge normal and the ground shades as a
+        // continuous curve rather than as a field of flat facets.
+        let n0, n1, n2, n3;
+        if (nrm) {
+          n0 = nrm(p[0][0], p[0][2]); n1 = nrm(p[1][0], p[1][2]);
+          n2 = nrm(p[2][0], p[2][2]); n3 = nrm(p[3][0], p[3][2]);
+        } else {
+          const ex = p[1][0]-p[0][0], ey = p[1][1]-p[0][1], ez = p[1][2]-p[0][2];
+          const fx = p[3][0]-p[0][0], fy = p[3][1]-p[0][1], fz = p[3][2]-p[0][2];
+          let nx = ey*fz - ez*fy, ny = ez*fx - ex*fz, nz = ex*fy - ey*fx;
+          const nl = Math.hypot(nx, ny, nz) || 1;
+          n0 = n1 = n2 = n3 = [nx/nl, ny/nl, nz/nl];
+        }
+        const base = b.vertex(p[0][0], p[0][1], p[0][2], n0[0], n0[1], n0[2], u0, v1);
+        b.vertex(p[1][0], p[1][1], p[1][2], n1[0], n1[1], n1[2], u1, v1);
+        b.vertex(p[2][0], p[2][1], p[2][2], n2[0], n2[1], n2[2], u1, v0);
+        b.vertex(p[3][0], p[3][1], p[3][2], n3[0], n3[1], n3[2], u0, v0);
         b.i.push(base, base + 1, base + 2, base, base + 2, base + 3);
       }
     }
@@ -291,13 +306,13 @@ class City {
       for (let bj = 0; bj < GRID - 1; bj++) {
         if (this.zones.zoneAt(bi, bj) === Z.WATER) continue;
         this.sheet(ground, roadCenter(bi), roadCenter(bj), roadCenter(bi + 1), roadCenter(bj + 1),
-                   4, -0.05, CELL / 16, CELL / 16);
+                   5, -0.05, CELL / 16, CELL / 16, true);
       }
     }
     // Surrounding fields, out to the horizon fog.
     for (const [ax0, az0, ax1, az1] of [[lo0, lo0, hi0, edge0], [lo0, edge1, hi0, hi0],
                                         [lo0, edge0, edge0, edge1], [edge1, edge0, hi0, edge1]]) {
-      this.sheet(ground, ax0, az0, ax1, az1, 6, -0.05, (ax1-ax0)/16, (az1-az0)/16);
+      this.sheet(ground, ax0, az0, ax1, az1, 3, -0.05, (ax1-ax0)/16, (az1-az0)/16, true);
     }
     this.groundMesh = ground.upload(this.gl);
 
@@ -321,9 +336,13 @@ class City {
         const rk = this.roadRank(i, j);
         const tint = rk >= 4 ? [1, 1, 1] : rk >= 2 ? [1.06, 1.04, 1.00] : [1.14, 1.10, 1.02];
         b.style(TEX.ASPHALT, tint, 0);
-        this.sheet(b, c - ROAD/2, clamp(z0, lo, hi), c + ROAD/2, clamp(z1, lo, hi), 4, 0, 2.4, 8);
+        // Carriageway width by how built-up it is. A country lane is not a
+        // 26-metre boulevard; the grass either side of it is the verge.
+        const hw = this.isMotorway(i, j) ? ROAD/2
+                 : rk >= 4 ? ROAD/2 : rk === 3 ? 10.5 : rk === 2 ? 8.5 : 7.5;
+        this.sheet(b, c - hw, clamp(z0, lo, hi), c + hw, clamp(z1, lo, hi), 4, 0, 2.4, 8);
         // East-west road, laid a hair higher so the two never z-fight.
-        this.sheet(b, clamp(z0, lo, hi), c - ROAD/2, clamp(z1, lo, hi), c + ROAD/2, 4, 0.005, 8, 2.4);
+        this.sheet(b, clamp(z0, lo, hi), c - hw, clamp(z1, lo, hi), c + hw, 4, 0.005, 8, 2.4);
       }
     }
 
@@ -646,11 +665,21 @@ class City {
   // plateau in one go, so no zone builder has to know about the terrain.
   buildBlock(chunk, bi, bj) {
     const b = new MeshBuilder();
-    const lift = this.terrain.blockLift(bi, bj);
+    // Open country is not terraced: fields and woods lie on the ground as it
+    // is. Only places with buildings and pavements get levelled, because a
+    // house needs a flat plot — a hillside of plateaus reads as brickwork.
+    const lift = this.isRural(bi, bj) ? 0 : this.terrain.blockLift(bi, bj);
     this.lift = lift;
     this.buildBlockLocal(b, bi, bj);
     this.lift = 0;
     if (!b.empty) chunk.append(b, 0, lift, 0);
+  }
+
+  // Wildwood and farmland follow the ground; everything else is levelled.
+  isRural(bi, bj) {
+    const zone = this.zones.zoneAt(bi, bj);
+    return zone !== Z.WATER && this.zones.rankAt(bi, bj) <= 1 &&
+           zone !== Z.PARK && zone !== Z.INDUSTRIAL;
   }
 
   buildBlockLocal(b, bi, bj) {
@@ -665,10 +694,13 @@ class City {
     // in the country. This is most of what sells the transition on foot.
     // The river takes its host block's rank, so it has to opt out of paving
     // explicitly or a downtown stretch gets a pavement laid over the water.
-    const slab = zone === Z.WATER ? 'none'
+    const rural = this.isRural(bi, bj);
+    const slab = zone === Z.WATER || rural ? 'none'
                : rank >= 4 || zone === Z.PARK || zone === Z.INDUSTRIAL ? 'full'
                : rank === 3 ? 'band' : 'none';
     const baseY = slab === 'full' ? SIDEWALK_H : 0;
+    // In the country, "y = 0" means the ground under that point.
+    const groundAt = rural ? (x, z) => this.terrain.at(x, z) : () => 0;
 
     if (slab === 'full') {
       b.style(TEX.SIDEWALK, info.ground.tint, 0);
@@ -677,8 +709,12 @@ class City {
     } else if (zone !== Z.WATER) {          // the river lays its own surface
       const g = info.ground;
       b.style(g.layer, g.tint, 0);
-      b.quad([x0, 0.02, z1], [x1, 0.02, z1], [x1, 0.02, z0], [x0, 0.02, z0],
-             (x1-x0)/g.scale/6, (z1-z0)/g.scale/6);
+      if (rural) {
+        this.sheet(b, x0, z0, x1, z1, 5, 0.02, (x1-x0)/g.scale/6, (z1-z0)/g.scale/6, true);
+      } else {
+        b.quad([x0, 0.02, z1], [x1, 0.02, z1], [x1, 0.02, z0], [x0, 0.02, z0],
+               (x1-x0)/g.scale/6, (z1-z0)/g.scale/6);
+      }
       if (slab === 'band') {
         b.style(TEX.SIDEWALK, [1, 1, 1], 0);
         const PW = 3.2;
@@ -691,7 +727,7 @@ class City {
 
     // Retaining edge. The plateau sits at the block's highest corner, so on a
     // slope the ground falls away beneath it — without this the block floats.
-    if (zone !== Z.WATER) {
+    if (zone !== Z.WATER && !rural) {
       let low = Infinity;
       for (const [px, pz] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1]]) {
         low = Math.min(low, this.terrain.at(px, pz));
@@ -707,7 +743,7 @@ class City {
     }
 
     const ctx = {
-      bi, bj, x0, z0, x1, z1, zone, rank, baseY,
+      bi, bj, x0, z0, x1, z1, zone, rank, baseY, rural, groundAt,
       u: zones.urbanityAt(bi, bj),
       rand: zones.randFor(bi, bj, 1),
     };
@@ -903,12 +939,13 @@ class City {
     this.addCollider(x - 0.5, z - 0.5, x + 0.5, z + 0.5, h);
   }
 
-  bush(b, x, z, scale) {
+  bush(b, x, z, scale, baseY) {
     const rand = this.rand;
+    const y0 = baseY || 0;
     const r = 1.1 * scale;
     b.style(TEX.LEAVES, [0.72 + rand()*0.3, 0.92 + rand()*0.2, 0.68], 0);
-    b.sphere(x, r * 0.7, z, r, 7, 4, 0.8);
-    b.sphere(x + (rand()-0.5)*r, r * 0.55, z + (rand()-0.5)*r, r*0.75, 6, 4, 0.85);
+    b.sphere(x, y0 + r * 0.7, z, r, 7, 4, 0.8);
+    b.sphere(x + (rand()-0.5)*r, y0 + r * 0.55, z + (rand()-0.5)*r, r*0.75, 6, 4, 0.85);
   }
 
   bench(b, x, z, baseY) {
