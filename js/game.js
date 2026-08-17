@@ -15,6 +15,9 @@ const game = {
   trial: { active: false, phase: 'idle', route: [], idx: 0, t: 0, countdown: 0, best: null, last: null },
   tyreLoad: 0,
   nitro: { charge: 1, active: false },
+  credits: 500,        // earned by mayhem, spent on repairs and recovery
+  repairSpend: 0,
+  repairing: false,
 };
 
 const keys = Object.create(null);
@@ -105,7 +108,7 @@ function bindInput() {
     if (e.code === 'KeyH') game.showHelp = !game.showHelp;
     if (e.code === 'KeyP') game.paused = !game.paused;
     if (e.code === 'KeyF') toggleCar();
-    if (e.code === 'KeyR') resetCar();
+    if (e.code === 'KeyR') recoverCar();
     if (e.code === 'KeyT') game.clock = (game.clock + 4) % 24;
     if (e.code === 'KeyV') game.recorder.toggle();
     if (e.code === 'KeyU') game.hudVisible = !game.hudVisible;
@@ -182,6 +185,36 @@ function resetCar() {
   car.x = t.x; car.z = t.z; car.yaw = 0;
   car.vx = 0; car.vz = 0; car.roll = 0; car.pitch = 0;
   if (!game.player.inCar) { game.player.inCar = true; game.player.walker = null; }
+}
+
+// Recovery, as in Carmageddon: stuck upside down in a hedge is not a failure
+// state, it is a bill. You are craned back onto the nearest road and charged
+// for it — and if you cannot pay, it happens anyway, because being stranded
+// is not interesting. The damage stays: recovery is not a repair.
+const RECOVER_COST = 120;
+function recoverCar() {
+  const paid = Math.min(game.credits, RECOVER_COST);
+  game.credits -= paid;
+  resetCar();
+  game.car.y = game.city.topAt(game.car.x, game.car.z);
+  say(paid >= RECOVER_COST ? `RECOVERED — ${RECOVER_COST} credits`
+                           : 'RECOVERED — on the house, you are skint');
+}
+
+// Repair, likewise: hold the key and the car comes back together as fast as
+// you can pay for it. This is the sink that gives credits a point.
+const REPAIR_RATE = 1400;     // credits per unit of condition restored
+function updateRepair(dt) {
+  const car = game.car;
+  game.repairing = false;
+  if (!keys['KeyE'] || !game.player.inCar) return;
+  if (car.wreckage <= 0.001) return;
+  if (game.credits < 20) { say('CANNOT AFFORD TO REPAIR'); return; }
+  const got = car.repair(dt);
+  const cost = Math.min(game.credits, Math.round(got * REPAIR_RATE));
+  game.credits -= cost;
+  game.repairSpend += cost;
+  game.repairing = true;
 }
 
 // ---------------------------------------------------------------- audio ----
@@ -435,6 +468,9 @@ function update(dt) {
     if (game.race.state === 'countdown') { car.vx = 0; car.vz = 0; }
   }
 
+  game.credits += game.stunts.collectCredits();
+  updateRepair(dt);
+  if (car.lastHitT > 0) car.lastHitT -= dt;
   updateRun(dt);
   updateTrial(dt);
   game.stunts.tick(dt);
@@ -1557,6 +1593,60 @@ function drawHud() {
     c.font = '600 12px system-ui, sans-serif';
     c.fillText(`stunt points ${game.stunts.score}`, 38, 92);
   }
+  // --- what you just hit ---
+  // The complaint this answers: you stop dead and have no idea why. Naming
+  // the thing turns an invisible wall into a lamp post you should have seen.
+  if (game.car.lastHitT > 0 && game.player.inCar) {
+    const a = clamp(game.car.lastHitT / 0.5, 0, 1);
+    c.save();
+    c.globalAlpha = a * 0.92;
+    c.textAlign = 'center';
+    c.font = '700 15px system-ui, sans-serif';
+    const txt = `CRUNCH — ${game.car.lastHit}`;
+    const tw = c.measureText(txt).width + 34;
+    c.fillStyle = 'rgba(0,0,0,0.55)';
+    roundRect(c, W/2 - tw/2, H * 0.62, tw, 28, 8); c.fill();
+    c.fillStyle = '#ff8f6a';
+    c.fillText(txt, W/2, H * 0.62 + 19);
+    c.restore();
+  }
+
+  // --- condition and credits ---
+  if (game.player.inCar) {
+    const d = game.car.damage;
+    const rows = [['ENGINE', d.engine], ['STEERING', d.steering],
+                  ['WHEELS', d.wheels], ['BODY', d.body]];
+    const bx = W - 148, by = H - 128;
+    c.save();
+    c.font = '600 10px system-ui, sans-serif';
+    c.textAlign = 'left';
+    for (let k = 0; k < rows.length; k++) {
+      const [name, v] = rows[k];
+      const y = by + k * 15;
+      c.fillStyle = 'rgba(255,255,255,0.55)';
+      c.fillText(name, bx, y + 8);
+      c.fillStyle = 'rgba(255,255,255,0.14)';
+      c.fillRect(bx + 56, y, 74, 7);
+      // Green through amber to red: you can read the car at a glance.
+      c.fillStyle = v < 0.4 ? '#5fd07a' : v < 0.75 ? '#e8b04a' : '#e05a45';
+      c.fillRect(bx + 56, y, 74 * clamp(v, 0, 1), 7);
+    }
+    c.textAlign = 'right';
+    c.font = '700 15px system-ui, sans-serif';
+    c.fillStyle = game.credits < 100 ? '#e05a45' : '#ffd34d';
+    c.fillText(`${game.credits} cr`, W - 18, by - 10);
+    if (game.repairing) {
+      c.font = '600 11px system-ui, sans-serif';
+      c.fillStyle = '#5fd07a';
+      c.fillText('REPAIRING', W - 18, by + 74);
+    } else if (game.car.wreckage > 0.35) {
+      c.font = '600 11px system-ui, sans-serif';
+      c.fillStyle = 'rgba(255,255,255,0.5)';
+      c.fillText('E — repair    R — recover', W - 18, by + 74);
+    }
+    c.restore();
+  }
+
   // The combo is on a clock of its own, so it needs to be visible while it
   // is running or there is no reason to hurry after the next one.
   if (game.stunts.combo > 1 && game.stunts.comboT > 0) {
@@ -1584,7 +1674,8 @@ function drawHud() {
       'W / S — accelerate, brake & reverse',
       'A / D — steer            Space — handbrake',
       'Shift — NITRO (refills, and stunts top it up)   F — in / out of car',
-      'C — camera   R — respawn   T — skip time   P — pause',
+      'E — repair (hold, costs credits)   R — recover (120 cr)',
+      'C — camera   T — skip time   P — pause',
       'V — record video   U — hide HUD   [ ] — clip brightness',
       'G — time trial   K — street race   M — new map (new seed)   N — map file',
       'Click the window for mouse look. H hides this.',

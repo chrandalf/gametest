@@ -98,9 +98,11 @@ class City {
   // ------------------------------------------------------------ collision --
 
   // `top` is given in the local frame of whatever is being built, so the
-  // current lift is added here rather than at every call site.
-  addCollider(x0, z0, x1, z1, top) {
-    const c = { x0, z0, x1, z1, top: top + this.lift };
+  // current lift is added here rather than at every call site. `what` names
+  // the thing, so the game can say what you just hit instead of leaving you
+  // to guess why you stopped.
+  addCollider(x0, z0, x1, z1, top, what) {
+    const c = { x0, z0, x1, z1, top: top + this.lift, what: what || 'something solid' };
     const idx = this.colliders.length;
     this.colliders.push(c);
     const cs = this.hashCell;
@@ -116,8 +118,8 @@ class City {
   }
 
   // A solid you can also land on: collides, and shows on the minimap.
-  addBuilding(x0, z0, x1, z1, top, downtown) {
-    this.addCollider(x0, z0, x1, z1, top);
+  addBuilding(x0, z0, x1, z1, top, downtown, what) {
+    this.addCollider(x0, z0, x1, z1, top, what || 'a building');
     this.buildings.push({ x0, z0, x1, z1, h: top + this.lift, downtown: downtown || 0 });
   }
 
@@ -187,7 +189,7 @@ class City {
         ox /= ol; oz /= ol;
         pos.x = bx + ox * r;
         pos.z = bz + oz * r;
-        hit = { nx: ox, nz: oz };
+        hit = { nx: ox, nz: oz, what: c.what };
         continue;
       }
       const cx = clamp(pos.x, c.x0, c.x1);
@@ -207,7 +209,7 @@ class City {
       const nx = dx / d, nz = dz / d;
       pos.x = cx + nx * r;
       pos.z = cz + nz * r;
-      hit = { nx, nz };
+      hit = { nx, nz, what: c.what };
     }
     return hit;
   }
@@ -649,19 +651,67 @@ class City {
     // A few mega ramps: steep enough to put a nitro-boosted car on a roof.
     for (let n = 0; n < 5; n++) emitRamp(15.0, 7.2, 5.4);
 
+    this.buildBoundary(builders[0]);
+
     for (const bld of builders) {
       if (bld.empty) continue;
       this.chunks.push(bld.upload(this.gl));
     }
 
-    // Invisible walls so nobody drives off the edge of the world.
-    const w = 6;
-    this.addCollider(lo - w, lo - w, hi + w, lo, 30);
-    this.addCollider(lo - w, hi, hi + w, hi + w, 30);
-    this.addCollider(lo - w, lo - w, lo, hi + w, 30);
-    this.addCollider(hi, lo - w, hi + w, hi + w, 30);
-
     this.spawn = this.pickSpawn();
+  }
+
+  // The edge of the world. This used to be four invisible walls, which is the
+  // worst thing a driving game can do: you are heading for open grass at sixty
+  // and you simply stop. It is a crash barrier now — Armco on posts, with a
+  // reflector every few metres so it reads at night and at distance — and the
+  // collider is the barrier rather than a slab of nothing behind it.
+  buildBoundary(b) {
+    const lo = -ROAD/2 - 26, hi = (GRID - 1) * CELL + ROAD/2 + 26;
+    const RAIL_Y = 0.78, POST = 3.4;
+    const run = (ax, az, bx, bz, nx, nz) => {
+      const len = Math.hypot(bx - ax, bz - az);
+      const n = Math.max(2, Math.round(len / POST));
+      const dx = (bx - ax) / n, dz = (bz - az) / n;
+      for (let k = 0; k <= n; k++) {
+        const x = ax + dx * k, z = az + dz * k;
+        const y = this.terrain.at(x, z);
+        // Post.
+        b.style(TEX.PLAIN, [0.40, 0.42, 0.44], 0);
+        b.box(x, y + RAIL_Y / 2, z, 0.11, RAIL_Y / 2 + 0.2, 0.11, { perUnit: 1 });
+        if (k === n) continue;
+        // Rail between this post and the next. A solid rather than two facing
+        // quads: hand-winding a vertical strip gets one side lit and the other
+        // black, and a black barrier is no better than an invisible one.
+        const x2 = x + dx, z2 = z + dz;
+        const y2 = this.terrain.at(x2, z2);
+        const along = Math.abs(dx) > Math.abs(dz);
+        // Alternating red and white panels, lit from within. A plain steel
+        // rail is only lit on the side the sun is on, and the far side of a
+        // ring barrier is always the dark side — which puts you right back at
+        // an invisible wall. This one reads from any angle and after dark.
+        const warn = (k % 2) === 0;
+        b.style(TEX.PLAIN, warn ? [0.86, 0.16, 0.13] : [0.94, 0.94, 0.92], 0.34);
+        b.chamferBox((x + x2) / 2, (y + y2) / 2 + RAIL_Y + 0.18, (z + z2) / 2,
+                     along ? Math.abs(dx) / 2 : 0.09, 0.20, along ? 0.09 : Math.abs(dz) / 2,
+                     0.06, { perUnit: 0.7 });
+        // A reflector on every third post: this is what makes the barrier
+        // read as a line rather than a grey smear at a hundred metres.
+        b.style(TEX.PLAIN, [1.0, 0.72, 0.18], 0.9);
+        b.box(x - nx * 0.13, y + RAIL_Y + 0.42, z - nz * 0.13, 0.13, 0.10, 0.13, { perUnit: 1 });
+      }
+    };
+    run(lo, lo, hi, lo, 0, 1);
+    run(hi, lo, hi, hi, -1, 0);
+    run(hi, hi, lo, hi, 0, -1);
+    run(lo, hi, lo, lo, 1, 0);
+
+    const w = 8;
+    const edge = 'the crash barrier at the edge of town';
+    this.addCollider(lo - w, lo - w, hi + w, lo, 30, edge);
+    this.addCollider(lo - w, hi, hi + w, hi + w, 30, edge);
+    this.addCollider(lo - w, lo - w, lo, hi + w, 30, edge);
+    this.addCollider(hi, lo - w, hi + w, hi + w, 30, edge);
   }
 
   // The motorway that joins the two cities. It is not a wider road — it is the
@@ -732,7 +782,7 @@ class City {
                          Math.min(P(r0, line - CENTRAL_RES)[1], P(r1, line + CENTRAL_RES)[1]),
                          Math.max(P(r0, line - CENTRAL_RES)[0], P(r1, line + CENTRAL_RES)[0]),
                          Math.max(P(r0, line - CENTRAL_RES)[1], P(r1, line + CENTRAL_RES)[1]),
-                         1.3);
+                         1.3, 'the central reservation');
         this.lift = 0;
       }
 
@@ -1064,8 +1114,8 @@ class City {
     b.style(TEX.METAL, [0.85, 0.80, 0.45], 0);
     b.cylinder(tx, sy + sh + 0.9, tz, 0.09, 1.8, 5);
 
-    this.addBuilding(cx - nw/2, cz - nd/2, cx + nw/2, cz + nd/2, 13.4);
-    this.addBuilding(tx - 3.4, tz - 3.4, tx + 3.4, tz + 3.4, 19.0);
+    this.addBuilding(cx - nw/2, cz - nd/2, cx + nw/2, cz + nd/2, 13.4, 0, 'the church');
+    this.addBuilding(tx - 3.4, tz - 3.4, tx + 3.4, tz + 3.4, 19.0, 0, 'the church tower');
 
     // Churchyard: wall, yews, headstones.
     const { x0, z0, x1, z1 } = ctx;
@@ -1099,7 +1149,9 @@ class City {
     const r = (2.2 + rand() * 1.2) * scale;
     b.sphere(x, y0 + h + r * 0.45, z, r, 9, 6, 0.85);
     b.sphere(x + (rand()-0.5)*r, y0 + h + r * 0.1, z + (rand()-0.5)*r, r*0.7, 8, 5, 0.9);
-    this.addCollider(x - 0.5, z - 0.5, x + 0.5, z + 0.5, h);
+    // Tight to the pole. A metre-wide box round a 30 cm lamp post is an
+    // invisible clip you feel but cannot see.
+    this.addCollider(x - 0.22, z - 0.22, x + 0.22, z + 0.22, h, 'a lamp post');
   }
 
   bush(b, x, z, scale, baseY) {
@@ -1166,7 +1218,8 @@ class City {
     this.addCollider(Math.min(...[T(-1,-2.3)[0], T(1,-2.3)[0], T(-1,2.3)[0], T(1,2.3)[0]]),
                      Math.min(...[T(-1,-2.3)[1], T(1,-2.3)[1], T(-1,2.3)[1], T(1,2.3)[1]]),
                      Math.max(...[T(-1,-2.3)[0], T(1,-2.3)[0], T(-1,2.3)[0], T(1,2.3)[0]]),
-                     Math.max(...[T(-1,-2.3)[1], T(1,-2.3)[1], T(-1,2.3)[1], T(1,2.3)[1]]), y0 + 1.6);
+                     Math.max(...[T(-1,-2.3)[1], T(1,-2.3)[1], T(-1,2.3)[1], T(1,2.3)[1]]),
+                     y0 + 1.6, 'a parked car');
   }
 
   // ------------------------------------------------------------- routing ---

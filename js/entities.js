@@ -283,6 +283,54 @@ class Vehicle {
     this.airborne = false;
     this.spinPitch = 0; this.spinRoll = 0;
     this.spinPitchRate = 0; this.spinRollRate = 0;
+    // Damage, in the spirit of dethrace's DamageSystems(): an impact is
+    // attributed to the face it landed on, and each face wrecks something
+    // different. Nose-on kills the engine, a side-swipe pulls the steering,
+    // a landing on the roof shakes the wheels loose. 0..1 each.
+    this.damage = { engine: 0, steering: 0, wheels: 0, body: 0 };
+    this.lastHit = '';        // what was hit, so the game can say so
+    this.lastHitT = 0;
+    this.wrecked = false;
+  }
+
+  // Overall condition, 0 (mint) to 1 (scrap).
+  get wreckage() {
+    const d = this.damage;
+    return clamp((d.engine + d.steering + d.wheels + d.body) / 4, 0, 1);
+  }
+
+  // Attribute an impact to a face of the car and wreck what that face
+  // protects. `nx, nz` is the outward surface normal of whatever was hit, so
+  // the dot with the nose tells us where it landed.
+  takeHit(force, nx, nz, what) {
+    if (force <= 0.02) return;
+    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+    const along = -(nx * fx + nz * fz);          // +1 nose-on, -1 rear-ended
+    const d = this.damage;
+    const side = 1 - Math.abs(along);
+    d.body = clamp(d.body + force * 0.55, 0, 1);
+    if (along > 0.55) {
+      d.engine = clamp(d.engine + force * 0.85, 0, 1);
+      d.steering = clamp(d.steering + force * 0.30, 0, 1);
+    } else if (along < -0.55) {
+      d.wheels = clamp(d.wheels + force * 0.35, 0, 1);
+    } else {
+      d.steering = clamp(d.steering + force * 0.70 * side, 0, 1);
+      d.wheels = clamp(d.wheels + force * 0.35 * side, 0, 1);
+    }
+    if (what) { this.lastHit = what; this.lastHitT = 2.2; }
+    if (this.wreckage > 0.985) this.wrecked = true;
+  }
+
+  // Hold the repair button: everything comes back at once, slowly. Returns how
+  // much condition was recovered, which is what it gets charged for.
+  repair(dt) {
+    const before = this.wreckage;
+    for (const k of ['engine', 'steering', 'wheels', 'body']) {
+      this.damage[k] = Math.max(0, this.damage[k] - dt * 0.22);
+    }
+    if (this.wreckage < 0.99) this.wrecked = false;
+    return before - this.wreckage;
   }
 
   get speed() { return Math.hypot(this.vx, this.vz); }
@@ -296,9 +344,13 @@ class Vehicle {
     let vf = this.vx * fx + this.vz * fz;
     let vr = this.vx * rx + this.vz * rz;
 
-    const MAX = 46;
+    // Damage you can feel: a wrecked engine will not pull, wrecked steering
+    // wanders, wrecked wheels will not hold the road. This is the whole point
+    // of tracking it — the gauge only confirms what the car is already doing.
+    const dmg = this.damage;
+    const MAX = 46 * (1 - dmg.engine * 0.45);
     const powerCurve = 1 - clamp(Math.abs(vf) / MAX, 0, 1) * 0.75;
-    if (throttle > 0) vf += throttle * 26 * powerCurve * dt;
+    if (throttle > 0) vf += throttle * 26 * (1 - dmg.engine * 0.62) * powerCurve * dt;
     if (nitro) vf += 34 * dt * (1 - clamp(Math.abs(vf) / 78, 0, 1));
     else if (throttle < 0) {
       // Brake first, then reverse.
@@ -315,7 +367,13 @@ class Vehicle {
     // Steering authority peaks at moderate speed and fades when very fast.
     const sp = Math.abs(vf);
     const authority = clamp(sp / 6, 0, 1) * (1 - clamp((sp - 26) / 46, 0, 0.45));
-    const targetSteer = steerIn * (0.55 - clamp(sp / MAX, 0, 1) * 0.30);
+    let targetSteer = steerIn * (0.55 - clamp(sp / MAX, 0, 1) * 0.30);
+    // Bent steering pulls to one side and answers less. The pull is constant
+    // for a given car, so you can learn to hold against it.
+    if (dmg.steering > 0.15) {
+      if (this.steerBias === undefined) this.steerBias = (this.rand ? this.rand() : Math.random()) < 0.5 ? -1 : 1;
+      targetSteer = targetSteer * (1 - dmg.steering * 0.45) + this.steerBias * dmg.steering * 0.10;
+    }
     this.steer += (targetSteer - this.steer) * clamp(dt * 9, 0, 1);
     const yawRate = this.steer * authority * 2.7 * Math.sign(vf || 1);
     this.yaw += yawRate * dt;
@@ -327,7 +385,7 @@ class Vehicle {
 
     // Lateral grip. Tyres scrub sideways motion away almost at once; only the
     // handbrake lets the tail step out and hold a slide.
-    const grip = handbrake ? 1.8 : 17.0;
+    const grip = (handbrake ? 1.8 : 17.0) * (1 - dmg.wheels * 0.55);
     vr += yawRate * vf * dt * (handbrake ? 0.9 : 0.12);
     vr *= Math.exp(-grip * dt);
     if (handbrake) vf -= vf * 1.2 * dt;
@@ -431,6 +489,10 @@ class Vehicle {
         this.vx = fx * vfwd + fz * vlat;
         this.vz = fz * vfwd - fx * vlat;
         this.crashImpulse = Math.max(this.crashImpulse, Math.min(1, before / 22));
+        // How hard it landed, and on which face. A gentle kerb scrape is not
+        // damage; anything from a walking pace upwards starts to be.
+        const bite = Math.max(0, -vn) / 26;
+        this.takeHit(bite * bite * 1.15, hit.nx, hit.nz, hit.what);
       }
     }
   }

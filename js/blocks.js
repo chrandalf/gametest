@@ -108,7 +108,7 @@ function house(city, b, opt) {
     b.box(cx, base - opt.dig / 2, cz, w/2 - 0.1, opt.dig / 2, d/2 - 0.1,
           { skipTop: true, perUnit: 0.3 });
   }
-  city.addBuilding(cx - w/2, cz - d/2, cx + w/2, cz + d/2, base + h);
+  city.addBuilding(cx - w/2, cz - d/2, cx + w/2, cz + d/2, base + h, 0, 'a house');
 }
 
 // A run of hedge. Solid to drive through, but you can see it coming.
@@ -128,7 +128,7 @@ function hedge(city, b, x0, z0, x1, z1, h, solid, groundAt) {
     b.chamferBox(cx, y + hh/2, cz, Math.abs(bx-ax)/2, hh/2, Math.abs(bz-az)/2,
                  Math.min(0.4, hh * 0.3), { perUnit: 0.7 });
   }
-  if (solid !== false) city.addCollider(Math.min(x0,x1), Math.min(z0,z1), Math.max(x0,x1), Math.max(z0,z1), hh);
+  if (solid !== false) city.addCollider(Math.min(x0,x1), Math.min(z0,z1), Math.max(x0,x1), Math.max(z0,z1), hh, 'a hedge');
 }
 
 // Post-and-rail fencing. Visual only — it is knee height, so blocking on it
@@ -211,7 +211,7 @@ ZONE_BUILDERS[Z.WILD] = (city, b, ctx) => {
     const r = 0.8 + rand() * 1.6;
     b.style(TEX.CONCRETE, [0.55, 0.54, 0.50], 0);
     b.sphere(x, ctx.groundAt(x, z) + r * 0.35, z, r, 7, 4, 0.5);
-    city.addCollider(x - r*0.7, z - r*0.7, x + r*0.7, z + r*0.7, r * 0.7);
+    city.addCollider(x - r*0.7, z - r*0.7, x + r*0.7, z + r*0.7, r * 0.7, 'a boulder');
   }
 };
 
@@ -265,14 +265,14 @@ ZONE_BUILDERS[Z.FARM] = (city, b, ctx) => {
       b.box(bx, by + 1.5, bz, 8, 4.6, 6, { perUnit: 0.35, skipTop: true });
       b.style(TEX.SIDING, [0.34, 0.35, 0.33], 0);
       pitchedRoof(b, bx, by + 6.2, bz, 8, 6, 2.4, true, 0.6);
-      city.addBuilding(bx - 8, bz - 6, bx + 8, bz + 6, by + 6.2);
+      city.addBuilding(bx - 8, bz - 6, bx + 8, bz + 6, by + 6.2, 0, 'a barn');
       b.style(TEX.FIELD, [0.86, 0.80, 0.48], 0);
       for (let i = 0; i < 4; i++) {
         if (rand() < 0.4) continue;
         const bale = fitIn(ctx, bx + (rand() - 0.5) * 22, bz + (rand() - 0.5) * 18, 1.2, 1.2);
         const byy = ctx.groundAt(bale.x, bale.z);
         b.cylinder(bale.x, byy + 1.2, bale.z, 1.2, 2.4, 9, { uRepeat: 3, vRepeat: 1 });
-        city.addCollider(bale.x - 1.2, bale.z - 1.2, bale.x + 1.2, bale.z + 1.2, byy + 2.4);
+        city.addCollider(bale.x - 1.2, bale.z - 1.2, bale.x + 1.2, bale.z + 1.2, byy + 2.4, 'a hay bale');
       }
     }
   }
@@ -402,7 +402,7 @@ ZONE_BUILDERS[Z.TOWN] = (city, b, ctx) => {
                 2.2, p.horiz, 0.4);
     city.addBuilding(cx - (p.horiz ? runW/2 : depth/2), cz - (p.horiz ? depth/2 : runW/2),
                      cx + (p.horiz ? runW/2 : depth/2), cz + (p.horiz ? depth/2 : runW/2),
-                     ctx.baseY + h + 2.2);
+                     ctx.baseY + h + 2.2, 0, 'a terrace');
   }, 1.0);
 };
 
@@ -474,7 +474,7 @@ ZONE_BUILDERS[Z.PARK] = (city, b, ctx) => {
     }
     b.style(TEX.TILE, [0.55, 0.52, 0.56], 0);
     b.cylinder(cx, y + 4.2, cz, 4.8, 0.5, 14, { uRepeat: 10, vRepeat: 1 });
-    city.addCollider(cx - 4.4, cz - 4.4, cx + 4.4, cz + 4.4, y + 0.7);
+    city.addCollider(cx - 4.4, cz - 4.4, cx + 4.4, cz + 4.4, y + 0.7, 'the bandstand');
   }
   city.parks.push({ x0, z0, x1, z1 });
 };
@@ -520,7 +520,7 @@ ZONE_BUILDERS[Z.INDUSTRIAL] = (city, b, ctx) => {
       if (w >= d) b.box(cx + t * w * 0.8, y + 2.2, cz - d/2 - 0.06, 2.6, 2.2, 0.1, { perUnit: 0.5 });
       else b.box(cx - w/2 - 0.06, y + 2.2, cz + t * d * 0.8, 0.1, 2.2, 2.6, { perUnit: 0.5 });
     }
-    city.addBuilding(sx0, sz0, sx1, sz1, y + h + Math.min(w, d) * 0.10);
+    city.addBuilding(sx0, sz0, sx1, sz1, y + h + Math.min(w, d) * 0.10, 0, 'a warehouse');
   }
 
   // Container stacks in the yard.
@@ -536,7 +536,8 @@ ZONE_BUILDERS[Z.INDUSTRIAL] = (city, b, ctx) => {
             { perUnit: 0.35 });
     }
     city.addCollider(cx - (alongX ? 6 : 1.2), cz - (alongX ? 1.2 : 6),
-                     cx + (alongX ? 6 : 1.2), cz + (alongX ? 1.2 : 6), y + stack * 2.6);
+                     cx + (alongX ? 6 : 1.2), cz + (alongX ? 1.2 : 6),
+                     y + stack * 2.6, 'a shipping container');
   }
   if (rand() < 0.5) {
     const sx = lerp(yx0 + 10, x1 - 10, rand()), sz = lerp(yz0 + 10, z1 - 10, rand());
@@ -544,7 +545,7 @@ ZONE_BUILDERS[Z.INDUSTRIAL] = (city, b, ctx) => {
     b.cylinder(sx, y + 9, sz, 3.2, 18, 14, { uRepeat: 6, vRepeat: 4 });
     b.style(TEX.METAL, [0.55, 0.56, 0.58], 0);
     b.cylinder(sx, y + 18.4, sz, 3.3, 0.8, 14, { uRepeat: 6, vRepeat: 1 });
-    city.addCollider(sx - 3.2, sz - 3.2, sx + 3.2, sz + 3.2, y + 18.4);
+    city.addCollider(sx - 3.2, sz - 3.2, sx + 3.2, sz + 3.2, y + 18.4, 'a grain silo');
   }
 };
 

@@ -80,6 +80,7 @@ class StuntTracker {
     this.combo = 1;
     this.comboT = 0;
     this.timeWon = 0;       // seconds earned since last collected
+    this.creditsWon = 0;    // ...and credits, likewise
     this.queue = [];
   }
 
@@ -89,6 +90,9 @@ class StuntTracker {
     this.score += points;
     this.best = Math.max(this.best, points);
     this.timeWon += seconds || 0;
+    // Credits as well as points: they are what pays for repairs and for being
+    // fished out of a field, so mayhem funds the recovery from mayhem.
+    this.creditsWon += Math.round(points / 10);
     const line = `${text}   +${points}${seconds ? `  +${seconds}s` : ''}`;
     if (this.bannerT > 0) this.queue.push(line);
     else { this.banner = line; this.bannerT = 2.4; }
@@ -152,6 +156,7 @@ class StuntTracker {
 
   // Seconds banked since the last call, so the run timer can collect them.
   collectTime() { const t = this.timeWon; this.timeWon = 0; return t; }
+  collectCredits() { const c = this.creditsWon; this.creditsWon = 0; return c; }
 
   tick(dt) {
     if (this.comboT > 0) {
