@@ -54,7 +54,19 @@ class RampSet {
 
 // ---------------------------------------------------------------- stunts ----
 
-// Watches the car while it is off the ground and scores what it did.
+// Watches the car and scores what it did — in the air, and on the ground.
+//
+// The ground half is lifted from chrandalf/dethrace (pedestrn.c, crush.c):
+// every hit is worth a base value multiplied by how it was done, and a run of
+// hits inside a second raises a combo multiplier that caps at five. The way a
+// hit is scored is the same taxonomy: rolling or upside down when it lands is
+// "artistic impression", a side-swipe or a hit in reverse is "extra style",
+// several at once is "nice shot sir", and a nose-to-nose is a "head on". Each
+// one also buys seconds, which is the whole engine of that game: the clock
+// only ever runs down, and mayhem is how you keep it off zero.
+const COMBO_WINDOW = 1.2;       // seconds; a later hit starts the count again
+const MAX_COMBO = 5;
+
 class StuntTracker {
   constructor() {
     this.airTime = 0;
@@ -65,6 +77,49 @@ class StuntTracker {
     this.banner = '';
     this.bannerT = 0;
     this.wasAir = false;
+    this.combo = 1;
+    this.comboT = 0;
+    this.timeWon = 0;       // seconds earned since last collected
+    this.queue = [];
+  }
+
+  // Every bonus goes through here so they cannot stomp on one another: a
+  // splatter, its combo and the head-on that caused it all get their moment.
+  award(text, points, seconds) {
+    this.score += points;
+    this.best = Math.max(this.best, points);
+    this.timeWon += seconds || 0;
+    const line = `${text}   +${points}${seconds ? `  +${seconds}s` : ''}`;
+    if (this.bannerT > 0) this.queue.push(line);
+    else { this.banner = line; this.bannerT = 2.4; }
+  }
+
+  // A pedestrian went under the wheels. `car` is whoever did it, `others` is
+  // how many went down in the same instant.
+  splat(car, others) {
+    this.comboT = COMBO_WINDOW;
+    let points = 100, label = 'SPLAT';
+    const upright = Math.cos(car.roll) > 0.35 && Math.cos(car.pitch) > 0.35;
+    const spinning = Math.abs(car.spinRollRate || 0) + Math.abs(car.spinPitchRate || 0) > 3;
+    if (others > 1) {
+      points *= 4; label = 'NICE SHOT SIR';
+    } else if (!upright || spinning || car.airborne) {
+      points *= 4; label = 'ARTISTIC IMPRESSION';
+    } else if (Math.abs(car.forwardSpeed) < car.speed * 0.72 || car.forwardSpeed < -1) {
+      // Going sideways or backwards into them rather than straight over.
+      points *= 2; label = 'EXTRA STYLE BONUS';
+    }
+    points *= this.combo;
+    const secs = 1 + Math.round(points / 300);
+    this.award(this.combo > 1 ? `${label}  ${this.combo}x COMBO` : label, points, secs);
+    if (this.combo < MAX_COMBO) this.combo++;
+  }
+
+  // Two cars meeting nose to nose. `closing` is the speed they met at.
+  headOn(closing) {
+    if (closing < 16) return;
+    const points = Math.round(closing * 40);
+    this.award('HEAD ON BONUS', points, 2 + Math.round(closing / 12));
   }
 
   update(dt, car) {
@@ -88,16 +143,29 @@ class StuntTracker {
     // Landing on the wheels is worth a lot more than landing on the roof.
     const upright = Math.cos(car.roll) > 0.35 && Math.cos(car.pitch) > 0.35;
     if (!upright) { points = Math.round(points * 0.3); parts.push('SLOPPY LANDING'); }
-    this.score += points;
-    this.best = Math.max(this.best, points);
-    this.banner = `${parts.join('  ·  ')}   +${points}`;
-    this.bannerT = 3.2;
+    // A big jump landed on its wheels is worth time as well as points.
+    this.award(parts.join('  ·  '), points, upright ? Math.round(this.airTime * 2) : 0);
     this.reset();
   }
 
   reset() { this.airTime = 0; this.spin = 0; this.flip = 0; }
 
-  tick(dt) { if (this.bannerT > 0) this.bannerT -= dt; }
+  // Seconds banked since the last call, so the run timer can collect them.
+  collectTime() { const t = this.timeWon; this.timeWon = 0; return t; }
+
+  tick(dt) {
+    if (this.comboT > 0) {
+      this.comboT -= dt;
+      if (this.comboT <= 0) this.combo = 1;
+    }
+    if (this.bannerT > 0) {
+      this.bannerT -= dt;
+      if (this.bannerT <= 0 && this.queue.length) {
+        this.banner = this.queue.shift();
+        this.bannerT = 2.4;
+      }
+    }
+  }
 }
 
 // --------------------------------------------------------------- snipers ----

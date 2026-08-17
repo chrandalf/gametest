@@ -363,7 +363,10 @@ function update(dt) {
     }
   }
 
-  // Pedestrians (only the ones near the player need simulating).
+  // Pedestrians (only the ones near the player need simulating). Everyone the
+  // player takes down in the same instant counts as one shot, which is what
+  // makes a whole queue at a crossing worth going for.
+  let splatted = 0;
   for (const ped of game.peds) {
     if (Math.hypot(ped.x - px, ped.z - pz) > 200) continue;
     ped.update(dt, world);
@@ -371,11 +374,32 @@ function update(dt) {
     for (const v of all) {
       if (Math.hypot(v.x - ped.x, v.z - ped.z) < 2.3 && v.speed > 2.5) {
         ped.knock(v.vx, v.vz);
-        if (v === car) { game.stats.knocked++; game.shake = Math.min(1, game.shake + 0.25); playThud(0.4); }
+        if (v === car) {
+          game.stats.knocked++;
+          game.shake = Math.min(1, game.shake + 0.25);
+          playThud(0.4);
+          splatted++;
+        }
         break;
       }
     }
   }
+  if (splatted) game.stunts.splat(car, splatted);
+
+  // Nose to nose with the traffic at speed. Worth a lot, and worth a lot of
+  // damage: this is the one collision the game actively wants you to look for.
+  for (const t of game.traffic) {
+    const dx = t.x - car.x, dz = t.z - car.z;
+    if (dx * dx + dz * dz > 36) continue;
+    const facing = Math.sin(car.yaw) * Math.sin(t.yaw) + Math.cos(car.yaw) * Math.cos(t.yaw);
+    if (facing > -0.55) continue;                       // not head to head
+    const closing = Math.hypot(car.vx - t.vx, car.vz - t.vz);
+    if (game.headOnCool > 0) break;
+    game.headOnCool = 1.5;
+    game.stunts.headOn(closing);
+    break;
+  }
+  game.headOnCool = Math.max(0, (game.headOnCool || 0) - dt);
 
   // Into the river. The bank is a slope, not a wall, so this is a real way to
   // lose a delivery — you get fished out a few seconds later.
@@ -692,6 +716,10 @@ function updateRun(dt) {
 
   if (r.active) {
     r.timeLeft -= dt;
+    // Mayhem buys time. Once a run is going the clock is the only thing that
+    // matters, and every bonus is a few more seconds of it.
+    const won = game.stunts.collectTime();
+    if (won > 0) r.timeLeft = Math.min(90, r.timeLeft + won);
     if (r.timeLeft <= 0) {
       r.timeLeft = 0;
       r.active = false;
@@ -1528,6 +1556,16 @@ function drawHud() {
     c.fillStyle = 'rgba(255,255,255,0.75)';
     c.font = '600 12px system-ui, sans-serif';
     c.fillText(`stunt points ${game.stunts.score}`, 38, 92);
+  }
+  // The combo is on a clock of its own, so it needs to be visible while it
+  // is running or there is no reason to hurry after the next one.
+  if (game.stunts.combo > 1 && game.stunts.comboT > 0) {
+    c.textAlign = 'left';
+    c.globalAlpha = clamp(game.stunts.comboT / 0.4, 0, 1);
+    c.fillStyle = '#ff9a3c';
+    c.font = '800 20px system-ui, sans-serif';
+    c.fillText(`${game.stunts.combo}x`, 38, 116);
+    c.globalAlpha = 1;
   }
   if (game.player.inCar && game.car.airborne) {
     c.textAlign = 'center';
