@@ -92,6 +92,15 @@ class ZoneMap {
   urbanityAt(bi, bj) { return this.inside(bi, bj) ? this.u[this.idx(bi, bj)] : 0; }
   info(bi, bj) { return ZONES[this.zoneAt(bi, bj)]; }
 
+  // Ground that has been made level by whoever built on it: pavements, yards,
+  // hard standing, a dredged river channel. Open country keeps its slopes.
+  // The terrain reads this, so a block's ground and the things standing on it
+  // cannot disagree about whether the plot is flat.
+  builtUp(bi, bj) {
+    const z = this.zoneAt(bi, bj);
+    return z === Z.WATER || z === Z.PARK || z === Z.INDUSTRIAL || this.rankAt(bi, bj) >= 2;
+  }
+
   // Per-block PRNG. Deterministic in (seed, bi, bj) alone, so a block's
   // contents never depend on the order blocks happen to be built in.
   randFor(bi, bj, salt) {

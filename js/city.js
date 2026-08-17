@@ -34,6 +34,7 @@ const CAR_COLORS = [
 ];
 
 const roadCenter = (i) => i * CELL;
+const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 // Speed limit by road rank, in metres per second. Country roads are quick and
 // empty; the high street is 20 mph because it is full of people.
@@ -78,7 +79,8 @@ class City {
     this.rand = makeRandom(this.seed);
     this.zones = new ZoneMap(this.seed, GRID - 1);
     this.motorway = this.zones.corridor;
-    this.terrain = new Terrain(this.seed ^ 0x3c6ef35f, GRID, CELL, this.zones.river, this.zones);
+    this.terrain = new Terrain(this.seed ^ 0x3c6ef35f, GRID, CELL, this.zones.river,
+                               this.zones, ROAD / 2);
     this.lift = 0;            // vertical offset applied while building a block
     this.colliders = [];      // { x0, z0, x1, z1, top }
     this.buildings = [];      // minimap footprints
@@ -138,31 +140,21 @@ class City {
     return out;
   }
 
-  // The surface with nothing built on it: a block's plateau if the point is on
-  // one, otherwise the interpolated ground between junctions.
+  // The surface with nothing built on it. The terrain already knows which
+  // ground has been levelled, so this is that height everywhere — no plateaus
+  // to reconcile, and nothing that can disagree with what is drawn. The one
+  // exception is the river, whose channel is cut below the level of its block.
   groundY(x, z) {
-    const ground = this.terrain.at(x, z);
-    // Every block within reach gets a say, and the highest wins. Consulting
-    // only the nearest one leaves a step wherever two blocks of different
-    // height share a road, which is a wall you cannot see.
-    const bi0 = clamp(Math.floor((x - ROAD/2) / CELL) - 1, 0, GRID - 2);
-    const bj0 = clamp(Math.floor((z - ROAD/2) / CELL) - 1, 0, GRID - 2);
-    let top = ground;
-    for (let bi = bi0; bi <= bi0 + 2 && bi < GRID - 1; bi++) {
-      for (let bj = bj0; bj <= bj0 + 2 && bj < GRID - 1; bj++) {
-        if (this.isRural(bi, bj)) continue;
-        const x0 = roadCenter(bi) + ROAD/2, x1 = roadCenter(bi + 1) - ROAD/2;
-        const z0 = roadCenter(bj) + ROAD/2, z1 = roadCenter(bj + 1) - ROAD/2;
-        const out = Math.max(x0 - x, x - x1, z0 - z, z - z1);
-        const run = this.zones.rankAt(bi, bj) >= 4 ? 2.0 : 3.4;
-        if (out >= run) continue;
-        const lift = this.terrain.blockLift(bi, bj);
-        const plate = this.zones.zoneAt(bi, bj) === Z.WATER ? lift + WATER_Y : lift;
-        const y = out <= 0 ? plate : lerp(plate, ground, smoothstep(0, 1, out / run));
-        if (y > top) top = y;
-      }
-    }
-    return top;
+    const y = this.terrain.at(x, z);
+    const bi = Math.floor(x / CELL), bj = Math.floor(z / CELL);
+    if (bi < 0 || bj < 0 || bi >= GRID - 1 || bj >= GRID - 1) return y;
+    if (this.zones.zoneAt(bi, bj) !== Z.WATER) return y;
+    // Down the bank and into the water, over the same run the bank is drawn on.
+    const x0 = roadCenter(bi) + ROAD/2, x1 = roadCenter(bi + 1) - ROAD/2;
+    const z0 = roadCenter(bj) + ROAD/2, z1 = roadCenter(bj + 1) - ROAD/2;
+    const inset = Math.min(x - x0, x1 - x, z - z0, z1 - z);
+    if (inset <= 0) return y;
+    return y + WATER_Y * smoothstep(0, BANK_W, inset);
   }
 
   // Height of whatever solid is under a point: a rooftop if the point is over a
@@ -260,7 +252,130 @@ class City {
     return SPEED_LIMITS[clamp(this.roadRank(i, j), 0, RANK_MAX)];
   }
 
+  // --------------------------------------------------------- road shape ---
+  // A road does not have to be a straight line just because its junctions sit
+  // on a grid. Each segment bows away from its grid line and back, so the
+  // network reads as lanes and streets that were laid along the ground rather
+  // than ruled onto it. The bow is zero at every junction and flat there too,
+  // so successive segments join without a kink and everything that navigates
+  // by junction — traffic, the race circuit, the courier drops — is untouched.
+
+  // Half the width of the carriageway. A country lane is not a boulevard, and
+  // the narrower it is the more room it has to wander inside its corridor.
+  roadHalf(rank, motorway) {
+    if (motorway) return ROAD / 2;
+    return rank >= 4 ? ROAD / 2 : rank === 3 ? 10.5 : rank === 2 ? 8.0 : 6.5;
+  }
+
+  // How far from the centre line traffic runs, matched to that width.
+  laneOff(rank) {
+    return rank >= 4 ? LANE : rank === 3 ? 5.4 : rank === 2 ? 4.0 : 3.2;
+  }
+
+  // The bow of one segment: `li` is the road's grid line, `k` the cell it
+  // crosses, `axis` 0 for a road running along X and 1 for one along Z.
+  bowAmp(li, k, axis) {
+    if (k < 0 || k >= GRID - 1 || li < 0 || li >= GRID) return 0;
+    const a = axis ? [li, k] : [k, li];
+    const c = axis ? [li, k + 1] : [k + 1, li];
+    if (this.isMotorway(a[0], a[1]) || this.isMotorway(c[0], c[1])) return 0;
+    const rank = Math.max(this.roadRank(a[0], a[1]), this.roadRank(c[0], c[1]));
+    // A high street is straight because the buildings down both sides make it
+    // straight. Nothing holds a lane between two fields to any line at all.
+    const cap = rank >= 4 ? 0 : rank === 3 ? 2.2 : rank === 2 ? 4.6 : 8.0;
+    if (!cap) return 0;
+    return (hash2(li * 7 + axis * 313, k * 11, this.seed ^ 0x2b7c1f) - 0.5) * 2 * cap;
+  }
+
+  // Lateral offset of the centre line at a point along the corridor. sin^2 is
+  // flat at both ends, so the segment leaves and rejoins its junction square
+  // on and the bends run into each other smoothly.
+  bowAt(along, li, axis) {
+    const k = Math.floor(along / CELL);
+    const amp = this.bowAmp(li, k, axis);
+    if (!amp) return 0;
+    const s = Math.sin(Math.PI * clamp(along / CELL - k, 0, 1));
+    return amp * s * s;
+  }
+
+  // Is a point on tarmac (plus a margin)? Scatter uses it, so a lane that
+  // wanders out of its corridor does not end up with a tree standing in it.
+  onRoadSurface(x, z, pad) {
+    const p = pad || 0;
+    for (let axis = 0; axis < 2; axis++) {
+      const along = axis ? z : x, across = axis ? x : z;
+      const li = Math.round(across / CELL);
+      if (li < 0 || li >= GRID) continue;
+      const k = clamp(Math.floor(along / CELL), 0, GRID - 2);
+      const a = axis ? [li, k] : [k, li];
+      const c = axis ? [li, k + 1] : [k + 1, li];
+      const rank = Math.max(this.roadRank(a[0], a[1]), this.roadRank(c[0], c[1]));
+      const half = this.roadHalf(rank, this.isMotorway(a[0], a[1]));
+      if (Math.abs(across - roadCenter(li) - this.bowAt(along, li, axis)) < half + p) return true;
+    }
+    return false;
+  }
+
+  // Where a car heading for junction (i, j) should point its nose: its own
+  // lane, a look-ahead further on, following whatever bend the road is making.
+  // Aiming straight at the junction would cut the corner off every bend.
+  aimPoint(i, j, dx, dz, x, z, look) {
+    const alongX = dx !== 0;
+    const axis = alongX ? 0 : 1;
+    const li = alongX ? j : i;
+    const dir = alongX ? dx : dz;
+    const goal = alongX ? roadCenter(i) : roadCenter(j);
+    let a = (alongX ? x : z) + dir * (look === undefined ? 15 : look);
+    a = dir > 0 ? Math.min(a, goal) : Math.max(a, goal);
+    const off = this.laneOff(this.roadRank(i, j)) * (alongX ? -dir : dir);
+    const c = roadCenter(li) + this.bowAt(a, li, axis) + off;
+    return alongX ? { x: a, z: c } : { x: c, z: a };
+  }
+
+  // The lane point at a junction. The bow is zero here, so this is on the
+  // grid: everything that routes by junction keeps working unchanged.
+  laneTarget(i, j, dx, dz) {
+    const off = this.laneOff(this.roadRank(i, j));
+    return { x: roadCenter(i) + dz * off, z: roadCenter(j) - dx * off };
+  }
+
   // ---------------------------------------------------------- generation ---
+
+  // A strip following a centre line that bows, laid on the ground it crosses.
+  // `axis` 0 runs along X at z = line; 1 runs along Z at x = line. `w0`..`w1`
+  // is the band it covers, measured sideways from the bowed centre line, so
+  // the carriageway and the verge beside it come out of the same call and
+  // meet on exactly the same vertices — no seam, and no grass poking through.
+  ribbon(b, axis, li, line, a0, a1, w0, w1, yOff, steps, uRep, vRep) {
+    const T = this.terrain;
+    const n = Math.max(1, steps | 0);
+    const corner = (a, c) => {
+      const px = axis ? c : a, pz = axis ? a : c;
+      return [px, T.at(px, pz) + yOff, pz];
+    };
+    for (let k = 0; k < n; k++) {
+      const s0 = lerp(a0, a1, k / n), s1 = lerp(a0, a1, (k + 1) / n);
+      const c0 = line + this.bowAt(s0, li, axis), c1 = line + this.bowAt(s1, li, axis);
+      const p0 = corner(s0, c0 + w0), p1 = corner(s1, c1 + w0);
+      const p2 = corner(s1, c1 + w1), p3 = corner(s0, c0 + w1);
+      // Take the winding from the geometry rather than assuming it: the strip
+      // is walked in four different directions and half of them would face
+      // down if the order were fixed.
+      const ex = p1[0]-p0[0], ey = p1[1]-p0[1], ez = p1[2]-p0[2];
+      const fx = p3[0]-p0[0], fy = p3[1]-p0[1], fz = p3[2]-p0[2];
+      let nx = ey*fz - ez*fy, ny = ez*fx - ex*fz, nz = ex*fy - ey*fx;
+      const flip = ny < 0;
+      const l = (Math.hypot(nx, ny, nz) || 1) * (flip ? -1 : 1);
+      nx /= l; ny /= l; nz /= l;
+      const v0 = vRep * k / n, v1 = vRep * (k + 1) / n;
+      const base = b.vertex(p0[0], p0[1], p0[2], nx, ny, nz, 0, v0);
+      b.vertex(p1[0], p1[1], p1[2], nx, ny, nz, 0, v1);
+      b.vertex(p2[0], p2[1], p2[2], nx, ny, nz, uRep, v1);
+      b.vertex(p3[0], p3[1], p3[2], nx, ny, nz, uRep, v0);
+      if (flip) b.i.push(base, base + 2, base + 1, base, base + 3, base + 2);
+      else b.i.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+  }
 
   // An axis-aligned patch that follows the ground. Everything laid on the
   // surface — tarmac, grass, paint — goes through here, so nothing can end up
@@ -271,7 +386,7 @@ class City {
     // Per-vertex normals cost three noise samples a corner, so they are only
     // paid for on ground the player sees as landscape — not on paint.
     const nrm = smooth
-      ? (x, z) => T.normalAt(x, z)
+      ? (x, z, y) => T.normalAt(x, z, y - yOff)
       : null;
     for (let a = 0; a < n; a++) {
       for (let c = 0; c < n; c++) {
@@ -287,8 +402,8 @@ class City {
         // continuous curve rather than as a field of flat facets.
         let n0, n1, n2, n3;
         if (nrm) {
-          n0 = nrm(p[0][0], p[0][2]); n1 = nrm(p[1][0], p[1][2]);
-          n2 = nrm(p[2][0], p[2][2]); n3 = nrm(p[3][0], p[3][2]);
+          n0 = nrm(p[0][0], p[0][2], p[0][1]); n1 = nrm(p[1][0], p[1][2], p[1][1]);
+          n2 = nrm(p[2][0], p[2][2], p[2][1]); n3 = nrm(p[3][0], p[3][2], p[3][1]);
         } else {
           const ex = p[1][0]-p[0][0], ey = p[1][1]-p[0][1], ez = p[1][2]-p[0][2];
           const fx = p[3][0]-p[0][0], fy = p[3][1]-p[0][1], fz = p[3][2]-p[0][2];
@@ -317,8 +432,15 @@ class City {
     for (let bi = 0; bi < GRID - 1; bi++) {
       for (let bj = 0; bj < GRID - 1; bj++) {
         if (this.zones.zoneAt(bi, bj) === Z.WATER) continue;
-        this.sheet(ground, roadCenter(bi), roadCenter(bj), roadCenter(bi + 1), roadCenter(bj + 1),
-                   5, -0.05, CELL / 16, CELL / 16, true);
+        // Only the block itself: the road corridors around it are covered by
+        // the carriageway and its verge, which are cut from one strip and so
+        // cannot disagree with each other about where the surface is.
+        const gx0 = roadCenter(bi) + ROAD/2 - 2, gx1 = roadCenter(bi + 1) - ROAD/2 + 2;
+        const gz0 = roadCenter(bj) + ROAD/2 - 2, gz1 = roadCenter(bj + 1) - ROAD/2 + 2;
+        // A levelled block is a plane, so it needs no subdividing at all.
+        const sub = this.isRural(bi, bj) ? 5 : 1;
+        this.sheet(ground, gx0, gz0, gx1, gz1, sub, -0.10,
+                   (gx1 - gx0) / 16, (gz1 - gz0) / 16, true);
       }
     }
     // Surrounding fields, out to the horizon fog.
@@ -337,51 +459,96 @@ class City {
       builders[Math.min(chunkCount-1, Math.floor(bi/CH)) * chunkCount +
                Math.min(chunkCount-1, Math.floor(bj/CH))];
 
-    // --- roads: one long strip per axis, drawn once so they never z-fight ---
+    // --- roads: one bowed ribbon per segment, plus a patch at each junction ---
     const lo = -ROAD/2, hi = (GRID - 1) * CELL + ROAD/2;
+    const tintFor = (rk) => rk >= 4 ? [1, 1, 1] : rk >= 2 ? [1.06, 1.04, 1.00] : [1.14, 1.10, 1.02];
+    const segRank = (axis, li, k) => {
+      const a = axis ? [li, k] : [k, li];
+      const c = axis ? [li, k + 1] : [k + 1, li];
+      return Math.max(this.roadRank(a[0], a[1]), this.roadRank(c[0], c[1]));
+    };
+    for (let axis = 0; axis < 2; axis++) {
+      for (let li = 0; li < GRID; li++) {
+        for (let k = 0; k < GRID - 1; k++) {
+          const a = axis ? [li, k] : [k, li];
+          const rk = segRank(axis, li, k);
+          const mway = this.isMotorway(a[0], a[1]) &&
+                       this.isMotorway(axis ? li : k + 1, axis ? k + 1 : li);
+          const hw = this.roadHalf(rk, mway);
+          const b = chunkAt(a[0], a[1]);
+          // A lane that wanders leaves its corridor and is laid over the field
+          // beside it, so it goes down a hair above anything the block puts on
+          // the ground. The two axes are separated the same way.
+          const yOff = (rk <= 1 ? 0.09 : 0) + axis * 0.006;
+          const s0 = roadCenter(k), s1 = roadCenter(k + 1);
+          b.style(TEX.ASPHALT, tintFor(rk), 0);
+          this.ribbon(b, axis, li, roadCenter(li), s0, s1, -hw, hw, yOff, 16, 2.4, 8);
+          // Verge: the rest of the corridor, cut from the same strip so the two
+          // share their vertices and the grass can never rise through the road.
+          if (hw < ROAD/2 - 0.05) {
+            b.style(TEX.GRASS, [0.52, 0.62, 0.42], 0);
+            // Not over the river: a verge laid across the channel would be a
+            // grass bridge sitting a metre and a half above the water.
+            const flank = (s) => {
+              const bk = axis ? [li + (s > 0 ? 0 : -1), k] : [k, li + (s > 0 ? 0 : -1)];
+              return this.zones.zoneAt(bk[0], bk[1]) !== Z.WATER;
+            };
+            // Same texture scale as the fields it runs through, or the verge
+            // stretches into a flat grey band that reads as more tarmac.
+            const vu = (ROAD/2 + 1.5 - hw) / 16, vv = (s1 - s0) / 16;
+            if (flank(-1)) {
+              this.ribbon(b, axis, li, roadCenter(li), s0, s1, -ROAD/2 - 1.5, -hw,
+                          yOff - 0.02, 16, vu, vv);
+            }
+            if (flank(1)) {
+              this.ribbon(b, axis, li, roadCenter(li), s0, s1, hw, ROAD/2 + 1.5,
+                          yOff - 0.02, 16, vu, vv);
+            }
+          }
+        }
+      }
+    }
+    // Junction patches, wide enough for the widest road that meets there.
     for (let i = 0; i < GRID; i++) {
-      const c = roadCenter(i);
       for (let j = 0; j < GRID; j++) {
+        let rk = this.roadRank(i, j);
+        for (const [di, dj] of DIRS4) rk = Math.max(rk, this.roadRank(i + di, j + dj));
+        const hw = this.roadHalf(rk, this.isMotorway(i, j));
         const b = chunkAt(i, j);
-        const z0 = j * CELL - CELL/2, z1 = z0 + CELL;
-        // Country lanes are paler and more worn than city asphalt.
-        const rk = this.roadRank(i, j);
-        const tint = rk >= 4 ? [1, 1, 1] : rk >= 2 ? [1.06, 1.04, 1.00] : [1.14, 1.10, 1.02];
-        b.style(TEX.ASPHALT, tint, 0);
-        // Carriageway width by how built-up it is. A country lane is not a
-        // 26-metre boulevard; the grass either side of it is the verge.
-        const hw = this.isMotorway(i, j) ? ROAD/2
-                 : rk >= 4 ? ROAD/2 : rk === 3 ? 10.5 : rk === 2 ? 8.5 : 7.5;
-        this.sheet(b, c - hw, clamp(z0, lo, hi), c + hw, clamp(z1, lo, hi), 4, 0, 2.4, 8);
-        // East-west road, laid a hair higher so the two never z-fight.
-        this.sheet(b, clamp(z0, lo, hi), c - hw, clamp(z1, lo, hi), c + hw, 4, 0.005, 8, 2.4);
+        b.style(TEX.ASPHALT, tintFor(rk), 0);
+        this.sheet(b, roadCenter(i) - hw, roadCenter(j) - hw,
+                      roadCenter(i) + hw, roadCenter(j) + hw, 6,
+                      (rk <= 1 ? 0.09 : 0) + 0.012, 1, 1);
       }
     }
 
-    // --- lane markings, on built-up streets only ---
+    // --- lane markings, on built-up streets only, following the bow ---
+    for (let axis = 0; axis < 2; axis++) {
+      for (let li = 0; li < GRID; li++) {
+        for (let k = 0; k < GRID - 1; k++) {
+          const a = axis ? [li, k] : [k, li];
+          if (segRank(axis, li, k) < 3) continue;
+          if (this.isMotorway(a[0], a[1])) continue;   // its own markings, later
+          const b = chunkAt(a[0], a[1]);
+          b.style(TEX.MARK, [1.0, 0.85, 0.15], 0);
+          // Dashed centre line, skipping the intersection box at each end.
+          for (let t = 0; t < 10; t++) {
+            const s0 = roadCenter(k) + t * (CELL/10) + 1, s1 = s0 + CELL/20;
+            if (s0 < lo + ROAD/2 + 3 || s1 > hi - ROAD/2 - 3) continue;
+            const nearNode = Math.min(s0 - roadCenter(k), roadCenter(k + 1) - s1) < ROAD/2 + 3;
+            if (nearNode) continue;
+            this.ribbon(b, axis, li, roadCenter(li), s0, s1, -0.22, 0.22,
+                        0.035 + axis * 0.002, 1, 1, 1);
+          }
+        }
+      }
+    }
+    // --- zebra crossings, at the busiest junctions ---
     for (let i = 0; i < GRID; i++) {
       const c = roadCenter(i);
       for (let j = 0; j < GRID; j++) {
-        if (this.roadRank(i, j) < 3) continue;
-        if (this.isMotorway(i, j)) continue;   // its own markings, laid later
+        if (this.isMotorway(i, j)) continue;
         const b = chunkAt(i, j);
-        const segStart = j * CELL - CELL/2;
-        b.style(TEX.MARK, [1.0, 0.85, 0.15], 0);
-        // Dashed centre line, skipping the intersection box.
-        for (let t = 0; t < 10; t++) {
-          const z = segStart + t * (CELL/10) + 1;
-          const zEnd = z + CELL/20;
-          if (zEnd > hi || z < lo) continue;
-          const nearNode = Math.abs(((z + CELL/2) % CELL) - CELL/2) > CELL/2 - ROAD/2 - 3;
-          if (nearNode) continue;
-          this.sheet(b, c - 0.22, z, c + 0.22, zEnd, 1, 0.03, 1, 1);
-          const x = segStart + t * (CELL/10) + 1, xEnd = x + CELL/20;
-          if (xEnd > hi || x < lo) continue;
-          const nearNodeX = Math.abs(((x + CELL/2) % CELL) - CELL/2) > CELL/2 - ROAD/2 - 3;
-          if (nearNodeX) continue;
-          this.sheet(b, x, c - 0.22, xEnd, c + 0.22, 1, 0.035, 1, 1);
-        }
-        // Zebra crossings: bars run along the travel direction, spanning the road.
         if (this.roadRank(i, j) < 4) continue;
         b.style(TEX.MARK, [0.95, 0.95, 0.92], 0);
         const cz = roadCenter(j);
@@ -673,13 +840,13 @@ class City {
   }
 
   // A block: its ground surface, its kerbs, and whatever its zone puts on it.
-  // Everything is generated flat about y=0 and then lifted onto the block's
-  // plateau in one go, so no zone builder has to know about the terrain.
+  // Everything is generated flat about y=0 and then raised to the level the
+  // terrain has already been cut to, so no zone builder has to know about the
+  // terrain and nothing stands proud of the road outside it.
   buildBlock(chunk, bi, bj) {
     const b = new MeshBuilder();
-    // Open country is not terraced: fields and woods lie on the ground as it
-    // is. Only places with buildings and pavements get levelled, because a
-    // house needs a flat plot — a hillside of plateaus reads as brickwork.
+    // Open country is not levelled: fields and woods lie on the ground as it
+    // is, and their builders place each thing at its own height.
     const lift = this.isRural(bi, bj) ? 0 : this.terrain.blockLift(bi, bj);
     this.lift = lift;
     this.buildBlockLocal(b, bi, bj);
@@ -688,11 +855,7 @@ class City {
   }
 
   // Wildwood and farmland follow the ground; everything else is levelled.
-  isRural(bi, bj) {
-    const zone = this.zones.zoneAt(bi, bj);
-    return zone !== Z.WATER && this.zones.rankAt(bi, bj) <= 1 &&
-           zone !== Z.PARK && zone !== Z.INDUSTRIAL;
-  }
+  isRural(bi, bj) { return !this.zones.builtUp(bi, bj); }
 
   buildBlockLocal(b, bi, bj) {
     const zones = this.zones;
@@ -737,56 +900,10 @@ class City {
       }
     }
 
-    // The plateau sits at the block's highest corner, so on a slope the ground
-    // falls away beneath it. That gap used to be filled with a vertical wall,
-    // which caught no light and read as a black slab beside the road. It is a
-    // banked slope now: it catches the sky, and a grassed bank at the kerb is
-    // what a British road on a gradient actually has.
-    if (zone !== Z.WATER && !rural) {
-      const T = this.terrain;
-      const run = rank >= 4 ? 2.0 : 3.4;      // how far the bank spreads out
-      const segs = 7;
-      if (rank >= 4) b.style(TEX.CONCRETE, [0.86, 0.84, 0.80], 0);
-      else b.style(TEX.GRASS, [0.62, 0.76, 0.48], 0);
-      // Each edge is walked in the direction that winds the bank facing out
-      // and up; reversing one turns that side inside out.
-      const bank = (ax0, az0, ax1, az1, nx, nz) => {
-        for (let k = 0; k < segs; k++) {
-          const t0 = k / segs, t1 = (k + 1) / segs;
-          const px0 = lerp(ax0, ax1, t0), pz0 = lerp(az0, az1, t0);
-          const px1 = lerp(ax0, ax1, t1), pz1 = lerp(az0, az1, t1);
-          const ox0 = px0 + nx * run, oz0 = pz0 + nz * run;
-          const ox1 = px1 + nx * run, oz1 = pz1 + nz * run;
-          const y0 = T.at(ox0, oz0) - this.lift - 0.25;
-          const y1 = T.at(ox1, oz1) - this.lift - 0.25;
-          if (y0 > -0.05 && y1 > -0.05) continue;      // level here, no bank
-          b.quad([px0, baseY, pz0], [px1, baseY, pz1], [ox1, y1, oz1], [ox0, y0, oz0], 1.5, 1);
-        }
-      };
-      bank(x0, z0, x1, z0, 0, -1);
-      bank(x1, z1, x0, z1, 0, 1);
-      bank(x0, z1, x0, z0, -1, 0);
-      bank(x1, z0, x1, z1, 1, 0);
-
-      // The bank is a skin: the volume behind it still has to be filled, or
-      // the block is a hollow lid and you see straight under it. Inset by the
-      // bank's run so the fill never pokes through the slope in front of it.
-      let low = Infinity;
-      for (let k = 0; k <= 4; k++) {
-        for (const [px, pz] of [[lerp(x0, x1, k/4), z0], [lerp(x0, x1, k/4), z1],
-                                [x0, lerp(z0, z1, k/4)], [x1, lerp(z0, z1, k/4)]]) {
-          low = Math.min(low, T.at(px + (px === x0 ? run : px === x1 ? -run : 0),
-                                   pz + (pz === z0 ? run : pz === z1 ? -run : 0)));
-        }
-      }
-      const fill = this.lift - low + 2.0;
-      if (fill > 0.2) {
-        b.style(TEX.CONCRETE, [0.70, 0.68, 0.64], 0);
-        b.box((x0+x1)/2, baseY - fill/2, (z0+z1)/2,
-              (x1-x0)/2 - run + 0.05, fill/2, (z1-z0)/2 - run + 0.05,
-              { skipTop: true, perUnit: 0.22 });
-      }
-    }
+    // No bank, no retaining wall and nothing to fill in behind them: the
+    // terrain under a built-up block has already been cut level, so the block
+    // surface, the kerb and the road outside it are all at the same height and
+    // the ground is solid all the way down.
 
     const ctx = {
       bi, bj, x0, z0, x1, z1, zone, rank, baseY, rural, groundAt,

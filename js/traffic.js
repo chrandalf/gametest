@@ -101,7 +101,7 @@ class TrafficPopulation {
         const horiz = this.rand() < 0.5;
         const d = horiz ? [this.rand() < 0.5 ? 1 : -1, 0] : [0, this.rand() < 0.5 ? 1 : -1];
         const car = new TrafficCar(i, j, d[0], d[1],
-          CAR_COLORS[(this.rand() * CAR_COLORS.length) | 0], this.rand);
+          CAR_COLORS[(this.rand() * CAR_COLORS.length) | 0], this.rand, this.city);
         // Never appear in front of the player.
         if (Math.hypot(car.x - player.x, car.z - player.z) < 90) continue;
         list.push(car);

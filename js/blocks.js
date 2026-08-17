@@ -198,12 +198,16 @@ ZONE_BUILDERS[Z.WILD] = (city, b, ctx) => {
   const n = 14 + ((rand() * 12) | 0);
   for (let i = 0; i < n; i++) {
     const x = lerp(x0 + 3, x1 - 3, rand()), z = lerp(z0 + 3, z1 - 3, rand());
+    // A lane through the woods bends off its grid line and into the block, so
+    // where the tarmac ends up has to be checked, not assumed.
+    if (city.onRoadSurface(x, z, 2.5)) continue;
     if (rand() < 0.22) city.bush(b, x, z, 0.7 + rand() * 0.8, ctx.groundAt(x, z));
     else city.tree(b, x, z, 0.9 + rand() * 0.9, ctx.groundAt(x, z));
   }
   for (let i = 0; i < 3; i++) {
     if (rand() > 0.5) continue;
     const x = lerp(x0 + 4, x1 - 4, rand()), z = lerp(z0 + 4, z1 - 4, rand());
+    if (city.onRoadSurface(x, z, 3.5)) continue;
     const r = 0.8 + rand() * 1.6;
     b.style(TEX.CONCRETE, [0.55, 0.54, 0.50], 0);
     b.sphere(x, ctx.groundAt(x, z) + r * 0.35, z, r, 7, 4, 0.5);
@@ -250,8 +254,10 @@ ZONE_BUILDERS[Z.FARM] = (city, b, ctx) => {
                      wall: HOUSE_WALLS[2], baseY: ctx.groundAt(fx, fz), dig: 2.5 });
     // Barn: creosoted timber under a dark corrugated roof. Its 0.6 m eaves are
     // part of the footprint as far as fitting inside the block goes.
+    // Kept well clear of the block edge: the lane past the farm bows off its
+    // grid line and can end up a metre or two inside the field.
     const barn = fitIn(ctx, fx + (rand() < 0.5 ? -16 : 16), fz + (rand() < 0.5 ? -13 : 13),
-                       8.6, 6.6);
+                       8.6, 6.6, 3.5);
     if (barn.fits) {
       const bx = barn.x, bz = barn.z;
       const by = ctx.groundAt(bx, bz);
@@ -274,6 +280,7 @@ ZONE_BUILDERS[Z.FARM] = (city, b, ctx) => {
   for (let i = 0; i < 3; i++) {
     if (rand() < 0.45) continue;
     const tx = lerp(x0 + 4, x1 - 4, rand()), tz = lerp(z0 + 4, z1 - 4, rand());
+    if (city.onRoadSurface(tx, tz, 2.5)) continue;
     city.tree(b, tx, tz, 1.0 + rand() * 0.5, ctx.groundAt(tx, tz));
   }
 };

@@ -445,15 +445,18 @@ class Vehicle {
 
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
 
-function laneTarget(i, j, dx, dz) {
-  // Offset to the correct side of the road for the travel direction.
+function laneTarget(i, j, dx, dz, city) {
+  // Offset to the correct side of the road for the travel direction. How far
+  // over depends on how wide the road is: a country lane is not a boulevard,
+  // and sitting a boulevard's distance from its centre puts a car in a hedge.
+  if (city && city.laneTarget) return city.laneTarget(i, j, dx, dz);
   const ox = dz * LANE, oz = -dx * LANE;
   return { x: roadCenter(i) + ox, z: roadCenter(j) + oz };
 }
 
 class TrafficCar extends Vehicle {
-  constructor(i, j, dx, dz, color, rand) {
-    const t = laneTarget(i, j, dx, dz);
+  constructor(i, j, dx, dz, color, rand, city) {
+    const t = laneTarget(i, j, dx, dz, city);
     super(t.x - dx * CELL * 0.5, t.z - dz * CELL * 0.5, Math.atan2(dx, dz), color);
     this.node = { i, j };
     this.dir = { x: dx, z: dz };
@@ -493,7 +496,8 @@ class TrafficCar extends Vehicle {
     for (const o of options) { r -= o.w; if (r <= 0) { chosen = o; break; } }
     this.dir.x = chosen.dx; this.dir.z = chosen.dz;
     this.node = { i: this.node.i + chosen.dx, j: this.node.j + chosen.dz };
-    this.target = laneTarget(this.node.i, this.node.j, this.dir.x, this.dir.z);
+    this.target = laneTarget(this.node.i, this.node.j, this.dir.x, this.dir.z,
+                             this.world && this.world.city);
   }
 
   // A car that might be turning at the junction it is approaching slows down
@@ -524,7 +528,14 @@ class TrafficCar extends Vehicle {
     const dist = Math.hypot(dx, dz);
     if (dist < 7) this.pickNext();
 
-    const desired = Math.atan2(dx, dz);
+    // Steer at a point further down the driver's own lane rather than straight
+    // at the junction: roads bow between their junctions, and aiming at the far
+    // end of a bend is how a car ends up cutting across the verge on the inside.
+    const aim = world.city.aimPoint
+      ? world.city.aimPoint(this.node.i, this.node.j, this.dir.x, this.dir.z,
+                            this.x, this.z, Math.max(12, this.speed * 1.1))
+      : this.target;
+    const desired = Math.atan2(aim.x - this.x, aim.z - this.z);
     const steerErr = angDelta(this.yaw, desired);
     let steerIn = clamp(steerErr * 1.9, -1, 1);
 

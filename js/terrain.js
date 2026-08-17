@@ -2,13 +2,21 @@
 // them, so the roads, the ground and the blocks all read the same function and
 // cannot disagree about where the surface is.
 //
-// Two rules keep it drivable: no two neighbouring junctions differ by more
-// than MAX_STEP, and the river corridor is flattened to one level so the water
-// sits in a valley instead of running up a hill.
+// Built-up ground is levelled *in the terrain itself*, not by standing the
+// block on a plateau above it. Each built-up block is one flat pad, and the
+// whole of the height change between two neighbouring pads is taken up by the
+// road corridor between them — twenty-six metres of gentle ramp rather than a
+// two-metre bank at the kerb. So a house stands at exactly the level of the
+// road outside it, there is no skirt to fill in behind, and nothing is
+// hollow: the ground is a single continuous function everywhere.
+//
+// Two more rules keep it drivable: no two neighbouring junctions differ by
+// more than MAX_STEP, and the river corridor is flattened to one level so the
+// water sits in a valley instead of running up a hill.
 'use strict';
 
 const TERRAIN_AMP = 30;      // metres between the lowest and highest junction
-const MAX_STEP = 1.9;        // metres of rise allowed between built-up neighbours
+const MAX_STEP = 2.4;        // metres of rise allowed between built-up neighbours
 const WILD_STEP = 17;        // ...and where there is nothing but trees and fields
 const RIVER_DEPTH = 4.5;     // how far the river valley sits below its banks
 const HILL_HEIGHT = 62;      // how far a proper hill stands above the plain
@@ -16,11 +24,13 @@ const DETAIL_AMP = 1.6;      // roll between the junctions, peak to trough
 const DETAIL_SCALE = 74;     // metres per wavelength of that roll
 
 class Terrain {
-  // n is the number of junctions per axis (GRID), spacing is CELL.
-  constructor(seed, n, spacing, riverCells, zones) {
+  // n is the number of junctions per axis (GRID), spacing is CELL, roadHalf
+  // is half the width of a road corridor — the band the levelling ramps over.
+  constructor(seed, n, spacing, riverCells, zones, roadHalf) {
     this.n = n;
     this.spacing = spacing;
     this.zones = zones;
+    this.roadFrac = (roadHalf === undefined ? 13 : roadHalf) / spacing;
     this.h = new Float32Array(n * n);
     this.hills = [];
     this.build(seed >>> 0, riverCells || []);
@@ -39,12 +49,13 @@ class Terrain {
   }
 
   // How much rise is allowed between two junctions. Built-up ground is kept
-  // gentle: every metre of fall across a block has to be taken up by a bank at
-  // its edge, and a tall bank is the thing that reads as a wall.
+  // gentle because the whole of it has to be taken up by the road ramp between
+  // two level pads: MAX_STEP over a road corridor is a one-in-eleven hill,
+  // which is steep for a street and still comfortable to drive.
   stepLimit(i, j, i2, j2) {
     const rank = Math.max(this.rankAtNode(i, j), this.rankAtNode(i2, j2));
     if (rank <= 1) return WILD_STEP;
-    return rank === 2 ? MAX_STEP * 1.5 : MAX_STEP;
+    return rank === 2 ? MAX_STEP * 1.4 : MAX_STEP;
   }
 
   idx(i, j) { return clamp(j, 0, this.n - 1) * this.n + clamp(i, 0, this.n - 1); }
@@ -107,6 +118,58 @@ class Terrain {
     }
 
     this.smooth();
+    this.levelBlocks();
+  }
+
+  // One pad height per block, and how much of it applies. A pad sits at the
+  // mean of its block's four corners, so the cut and the fill balance out and
+  // the levelled street stays with the landform instead of standing proud of
+  // it. Open country gets none of this and keeps every one of its slopes.
+  levelBlocks() {
+    const m = this.n - 1;
+    this.pad = new Float32Array(m * m);
+    this.flat = new Float32Array(m * m);
+    for (let bj = 0; bj < m; bj++) {
+      for (let bi = 0; bi < m; bi++) {
+        this.pad[bj * m + bi] = (this.node(bi, bj) + this.node(bi + 1, bj) +
+                                 this.node(bi, bj + 1) + this.node(bi + 1, bj + 1)) / 4;
+        this.flat[bj * m + bi] = !this.zones || this.zones.builtUp(bi, bj) ? 1 : 0;
+      }
+    }
+  }
+
+  // Map a world coordinate onto the block grid so that it stands still while
+  // it crosses a block and moves only while it crosses a road. Sampling the
+  // pads through this is what makes each block dead level and puts the whole
+  // ramp in the corridor between them.
+  warp(a) {
+    const c = a / this.spacing;
+    const k = Math.floor(c);
+    const f = c - k;
+    const r = this.roadFrac;
+    if (f >= r && f <= 1 - r) return k;
+    if (f < r) return k - 1 + smoothstep(0, 1, (f + r) / (2 * r));
+    return k + smoothstep(0, 1, (f - 1 + r) / (2 * r));
+  }
+
+  // Bilinear sample of a per-block field in warped block coordinates.
+  blockField(arr, u, v) {
+    const m = this.n - 1;
+    const i = Math.floor(u), j = Math.floor(v);
+    const tu = u - i, tv = v - j;
+    const at = (bi, bj) => arr[clamp(bj, 0, m - 1) * m + clamp(bi, 0, m - 1)];
+    return lerp(lerp(at(i, j), at(i + 1, j), tu),
+                lerp(at(i, j + 1), at(i + 1, j + 1), tu), tv);
+  }
+
+  // The landform with nothing built on it.
+  natural(x, z) {
+    const fx = x / this.spacing, fz = z / this.spacing;
+    const i = Math.floor(fx), j = Math.floor(fz);
+    const tx = clamp(fx - i, 0, 1), tz = clamp(fz - j, 0, 1);
+    const a = this.node(i, j), b = this.node(i + 1, j);
+    const c = this.node(i, j + 1), d = this.node(i + 1, j + 1);
+    return lerp(lerp(a, b, tx), lerp(c, d, tx), tz) + this.roll(x, z);
   }
 
   // Cut back anything that rises faster than MAX_STEP between neighbours, and
@@ -139,16 +202,17 @@ class Terrain {
     }
   }
 
-  // Height at a world position: bilinear between the junctions, plus a gentle
-  // roll in between. Without the roll the ground is piecewise flat over 88 m
-  // spans, which is what makes a hillside read as a stack of slabs.
+  // Height at a world position. Out in the country this is the landform: the
+  // junctions interpolated, plus a gentle roll so a hillside is not a stack of
+  // slabs. Over anything built it is the block's pad, and in between it is the
+  // one blending into the other across the road.
   at(x, z) {
-    const fx = x / this.spacing, fz = z / this.spacing;
-    const i = Math.floor(fx), j = Math.floor(fz);
-    const tx = clamp(fx - i, 0, 1), tz = clamp(fz - j, 0, 1);
-    const a = this.node(i, j), b = this.node(i + 1, j);
-    const c = this.node(i, j + 1), d = this.node(i + 1, j + 1);
-    return lerp(lerp(a, b, tx), lerp(c, d, tx), tz) + this.roll(x, z);
+    const u = this.warp(x), v = this.warp(z);
+    const w = this.blockField(this.flat, u, v);
+    const nat = this.natural(x, z);
+    if (w <= 0.0005) return nat;
+    const p = this.blockField(this.pad, u, v);
+    return w >= 0.9995 ? p : lerp(nat, p, w);
   }
 
   roll(x, z) {
@@ -157,32 +221,24 @@ class Terrain {
     return (valueNoise(x / DETAIL_SCALE, z / DETAIL_SCALE, this.seed ^ 0x51ab) - 0.5) * DETAIL_AMP;
   }
 
-  // Surface normal. The bilinear part's slope is analytic and free; only the
-  // roll has to be sampled, and then just twice, using the value at the point
-  // itself which the caller has already paid for.
-  normalAt(x, z, roll0) {
-    const s = this.spacing;
-    const fx = x / s, fz = z / s;
-    const i = Math.floor(fx), j = Math.floor(fz);
-    const tx = clamp(fx - i, 0, 1), tz = clamp(fz - j, 0, 1);
-    const a = this.node(i, j), b = this.node(i + 1, j);
-    const c = this.node(i, j + 1), d = this.node(i + 1, j + 1);
-    let dx = lerp(b - a, d - c, tz) / s;
-    let dz = lerp(c - a, d - b, tx) / s;
-    const r0 = roll0 === undefined ? this.roll(x, z) : roll0;
-    const e = 7;
-    dx += (this.roll(x + e, z) - r0) / e;
-    dz += (this.roll(x, z + e) - r0) / e;
+  // Surface normal, by difference. The levelling is piecewise, so there is no
+  // useful closed form any more; the caller normally already has the height at
+  // the point itself, which pays for a third of it.
+  normalAt(x, z, h0) {
+    const e = 3.5;
+    const a = h0 === undefined ? this.at(x, z) : h0;
+    const dx = (this.at(x + e, z) - a) / e;
+    const dz = (this.at(x, z + e) - a) / e;
     const nx = -dx, ny = 1, nz = -dz;
     const l = Math.hypot(nx, ny, nz) || 1;
     return [nx / l, ny / l, nz / l];
   }
 
-  // A block is a plateau at the highest of its corners, so its pavement is
-  // never below the road running past it — a kerb you step up, never down.
+  // The level a built-up block sits at. Its whole surface is at this height,
+  // and so is the kerb of every road that runs past it.
   blockLift(bi, bj) {
-    return Math.max(this.node(bi, bj), this.node(bi + 1, bj),
-                    this.node(bi, bj + 1), this.node(bi + 1, bj + 1)) + DETAIL_AMP * 0.5;
+    const m = this.n - 1;
+    return this.pad[clamp(bj, 0, m - 1) * m + clamp(bi, 0, m - 1)];
   }
 
   // Steepest gradient anywhere on the map, as a percentage. Used by tests:
