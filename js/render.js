@@ -107,6 +107,10 @@ void main() {
   vec3 N = normalize(vNormal);
   float ndl = max(dot(N, uSunDir), 0.0);
   float shadow = ndl > 0.0 ? sampleShadow(N, ndl) : 1.0;
+  // A shadow takes most of the sun, not all of it. Fully subtracting it left
+  // dark surfaces — tarmac especially — reading as flat black holes wherever a
+  // building fell across them.
+  shadow = 0.26 + 0.74 * shadow;
 
   // Hemisphere ambient: sky above, bounced ground light below.
   vec3 skyLin = toLinear(uSkyColor);

@@ -141,16 +141,28 @@ class City {
   // The surface with nothing built on it: a block's plateau if the point is on
   // one, otherwise the interpolated ground between junctions.
   groundY(x, z) {
-    const bi = Math.floor((x - ROAD/2) / CELL), bj = Math.floor((z - ROAD/2) / CELL);
-    const inBlock = bi >= 0 && bj >= 0 && bi < GRID - 1 && bj < GRID - 1 &&
-                    x > roadCenter(bi) + ROAD/2 && x < roadCenter(bi + 1) - ROAD/2 &&
-                    z > roadCenter(bj) + ROAD/2 && z < roadCenter(bj + 1) - ROAD/2;
-    if (inBlock) {
-      if (this.isRural(bi, bj)) return this.terrain.at(x, z);
-      const lift = this.terrain.blockLift(bi, bj);
-      return this.zones.zoneAt(bi, bj) === Z.WATER ? lift + WATER_Y : lift;
+    const ground = this.terrain.at(x, z);
+    // Every block within reach gets a say, and the highest wins. Consulting
+    // only the nearest one leaves a step wherever two blocks of different
+    // height share a road, which is a wall you cannot see.
+    const bi0 = clamp(Math.floor((x - ROAD/2) / CELL) - 1, 0, GRID - 2);
+    const bj0 = clamp(Math.floor((z - ROAD/2) / CELL) - 1, 0, GRID - 2);
+    let top = ground;
+    for (let bi = bi0; bi <= bi0 + 2 && bi < GRID - 1; bi++) {
+      for (let bj = bj0; bj <= bj0 + 2 && bj < GRID - 1; bj++) {
+        if (this.isRural(bi, bj)) continue;
+        const x0 = roadCenter(bi) + ROAD/2, x1 = roadCenter(bi + 1) - ROAD/2;
+        const z0 = roadCenter(bj) + ROAD/2, z1 = roadCenter(bj + 1) - ROAD/2;
+        const out = Math.max(x0 - x, x - x1, z0 - z, z - z1);
+        const run = this.zones.rankAt(bi, bj) >= 4 ? 2.0 : 3.4;
+        if (out >= run) continue;
+        const lift = this.terrain.blockLift(bi, bj);
+        const plate = this.zones.zoneAt(bi, bj) === Z.WATER ? lift + WATER_Y : lift;
+        const y = out <= 0 ? plate : lerp(plate, ground, smoothstep(0, 1, out / run));
+        if (y > top) top = y;
+      }
     }
-    return this.terrain.at(x, z);
+    return top;
   }
 
   // Height of whatever solid is under a point: a rooftop if the point is over a
@@ -725,19 +737,53 @@ class City {
       }
     }
 
-    // Retaining edge. The plateau sits at the block's highest corner, so on a
-    // slope the ground falls away beneath it — without this the block floats.
+    // The plateau sits at the block's highest corner, so on a slope the ground
+    // falls away beneath it. That gap used to be filled with a vertical wall,
+    // which caught no light and read as a black slab beside the road. It is a
+    // banked slope now: it catches the sky, and a grassed bank at the kerb is
+    // what a British road on a gradient actually has.
     if (zone !== Z.WATER && !rural) {
+      const T = this.terrain;
+      const run = rank >= 4 ? 2.0 : 3.4;      // how far the bank spreads out
+      const segs = 7;
+      if (rank >= 4) b.style(TEX.CONCRETE, [0.86, 0.84, 0.80], 0);
+      else b.style(TEX.GRASS, [0.62, 0.76, 0.48], 0);
+      // Each edge is walked in the direction that winds the bank facing out
+      // and up; reversing one turns that side inside out.
+      const bank = (ax0, az0, ax1, az1, nx, nz) => {
+        for (let k = 0; k < segs; k++) {
+          const t0 = k / segs, t1 = (k + 1) / segs;
+          const px0 = lerp(ax0, ax1, t0), pz0 = lerp(az0, az1, t0);
+          const px1 = lerp(ax0, ax1, t1), pz1 = lerp(az0, az1, t1);
+          const ox0 = px0 + nx * run, oz0 = pz0 + nz * run;
+          const ox1 = px1 + nx * run, oz1 = pz1 + nz * run;
+          const y0 = T.at(ox0, oz0) - this.lift - 0.25;
+          const y1 = T.at(ox1, oz1) - this.lift - 0.25;
+          if (y0 > -0.05 && y1 > -0.05) continue;      // level here, no bank
+          b.quad([px0, baseY, pz0], [px1, baseY, pz1], [ox1, y1, oz1], [ox0, y0, oz0], 1.5, 1);
+        }
+      };
+      bank(x0, z0, x1, z0, 0, -1);
+      bank(x1, z1, x0, z1, 0, 1);
+      bank(x0, z1, x0, z0, -1, 0);
+      bank(x1, z0, x1, z1, 1, 0);
+
+      // The bank is a skin: the volume behind it still has to be filled, or
+      // the block is a hollow lid and you see straight under it. Inset by the
+      // bank's run so the fill never pokes through the slope in front of it.
       let low = Infinity;
-      for (const [px, pz] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1]]) {
-        low = Math.min(low, this.terrain.at(px, pz));
+      for (let k = 0; k <= 4; k++) {
+        for (const [px, pz] of [[lerp(x0, x1, k/4), z0], [lerp(x0, x1, k/4), z1],
+                                [x0, lerp(z0, z1, k/4)], [x1, lerp(z0, z1, k/4)]]) {
+          low = Math.min(low, T.at(px + (px === x0 ? run : px === x1 ? -run : 0),
+                                   pz + (pz === z0 ? run : pz === z1 ? -run : 0)));
+        }
       }
-      const drop = this.lift - low + 1.2;
-      if (drop > 0.2) {
-        // Concrete in town, bare earth out in the country.
-        if (rank >= 3) b.style(TEX.CONCRETE, [0.74, 0.72, 0.68], 0);
-        else b.style(TEX.DIRT, [0.82, 0.78, 0.66], 0);
-        b.box((x0+x1)/2, -drop/2, (z0+z1)/2, (x1-x0)/2, drop/2, (z1-z0)/2,
+      const fill = this.lift - low + 2.0;
+      if (fill > 0.2) {
+        b.style(TEX.CONCRETE, [0.70, 0.68, 0.64], 0);
+        b.box((x0+x1)/2, baseY - fill/2, (z0+z1)/2,
+              (x1-x0)/2 - run + 0.05, fill/2, (z1-z0)/2 - run + 0.05,
               { skipTop: true, perUnit: 0.22 });
       }
     }
@@ -970,8 +1016,11 @@ class City {
     this.lights.push({ x: ax, y: SIDEWALK_H + h - 0.4 + this.lift, z: az });
   }
 
-  parkedCar(b, x, z, yaw) {
+  parkedCar(b, x, z, yaw, baseY) {
     const rand = this.rand;
+    // Cars park at the kerb, which is over the road and below the plateau the
+    // block is built on; without this they hang in the air above it.
+    const y0 = baseY === undefined ? this.groundY(x, z) - this.lift : baseY;
     const col = CAR_COLORS[(rand() * CAR_COLORS.length) | 0];
     const cos = Math.cos(yaw), sin = Math.sin(yaw);
     // Local (right, forward) -> world helper.
@@ -991,7 +1040,7 @@ class City {
         bb.v[i+3] = nx * cos + nz * sin;
         bb.v[i+5] = -nx * sin + nz * cos;
       }
-      b.append(bb, wx, 0, wz);
+      b.append(bb, wx, y0, wz);
     };
     boxLocal(0, 0.85, 0.95, 0.42, 2.1, TEX.METAL, col);
     boxLocal(-0.15, 1.42, 0.85, 0.34, 1.15, TEX.GLASS, [col[0]*0.4+0.1, col[1]*0.4+0.15, col[2]*0.4+0.2]);
@@ -1000,7 +1049,7 @@ class City {
     this.addCollider(Math.min(...[T(-1,-2.3)[0], T(1,-2.3)[0], T(-1,2.3)[0], T(1,2.3)[0]]),
                      Math.min(...[T(-1,-2.3)[1], T(1,-2.3)[1], T(-1,2.3)[1], T(1,2.3)[1]]),
                      Math.max(...[T(-1,-2.3)[0], T(1,-2.3)[0], T(-1,2.3)[0], T(1,2.3)[0]]),
-                     Math.max(...[T(-1,-2.3)[1], T(1,-2.3)[1], T(-1,2.3)[1], T(1,2.3)[1]]), 1.6);
+                     Math.max(...[T(-1,-2.3)[1], T(1,-2.3)[1], T(-1,2.3)[1], T(1,2.3)[1]]), y0 + 1.6);
   }
 
   // ------------------------------------------------------------- routing ---

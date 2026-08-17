@@ -8,7 +8,7 @@
 'use strict';
 
 const TERRAIN_AMP = 30;      // metres between the lowest and highest junction
-const MAX_STEP = 5.5;        // metres of rise allowed between built-up neighbours
+const MAX_STEP = 1.9;        // metres of rise allowed between built-up neighbours
 const WILD_STEP = 17;        // ...and where there is nothing but trees and fields
 const RIVER_DEPTH = 4.5;     // how far the river valley sits below its banks
 const HILL_HEIGHT = 62;      // how far a proper hill stands above the plain
@@ -38,9 +38,13 @@ class Terrain {
     return r;
   }
 
+  // How much rise is allowed between two junctions. Built-up ground is kept
+  // gentle: every metre of fall across a block has to be taken up by a bank at
+  // its edge, and a tall bank is the thing that reads as a wall.
   stepLimit(i, j, i2, j2) {
-    const wild = Math.max(this.rankAtNode(i, j), this.rankAtNode(i2, j2)) <= 1;
-    return wild ? WILD_STEP : MAX_STEP;
+    const rank = Math.max(this.rankAtNode(i, j), this.rankAtNode(i2, j2));
+    if (rank <= 1) return WILD_STEP;
+    return rank === 2 ? MAX_STEP * 1.5 : MAX_STEP;
   }
 
   idx(i, j) { return clamp(j, 0, this.n - 1) * this.n + clamp(i, 0, this.n - 1); }
