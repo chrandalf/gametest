@@ -50,6 +50,15 @@ class MeshBuilder {
     this.max = [-Infinity, -Infinity, -Infinity];
   }
 
+  // Empty it without reallocating: dynamic batches are rebuilt every frame.
+  reset() {
+    this.v.length = 0;
+    this.i.length = 0;
+    this.min = [Infinity, Infinity, Infinity];
+    this.max = [-Infinity, -Infinity, -Infinity];
+    return this;
+  }
+
   style(layer, tint, emis) {
     this.layer = layer;
     if (tint) this.tint = tint;

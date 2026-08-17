@@ -29,6 +29,23 @@ const body = pick(/<body>([\s\S]*?)<script/, '<body> markup');
 const sources = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)].map(m => m[1]);
 if (!sources.length) throw new Error('bundle: no <script src> tags found');
 
+// Character sheets, base64-inlined. The whole point of this build is one file
+// with nothing beside it, so a PNG dropped into assets/characters travels
+// inside the page rather than as a request the page cannot make from disk.
+const charDir = path.join(root, 'assets', 'characters');
+const sheets = [];
+if (fs.existsSync(charDir)) {
+  for (const f of fs.readdirSync(charDir).sort()) {
+    const m = f.match(/^(\d+)\.png$/i);
+    if (!m) continue;
+    const data = fs.readFileSync(path.join(charDir, f)).toString('base64');
+    sheets.push(`  ${Number(m[1])}: "data:image/png;base64,${data}"`);
+  }
+}
+const spriteBlob = sheets.length
+  ? `<script>\nwindow.CHARACTER_SHEET_SRC = {\n${sheets.join(',\n')}\n};\n</script>\n`
+  : '';
+
 const scripts = sources.map((src) => {
   const code = fs.readFileSync(path.join(root, src), 'utf8');
   // A literal </script> inside a string would close the tag early.
@@ -40,10 +57,10 @@ const bundle = `<title>${title}</title>
 ${style.trim()}
 </style>
 ${body.trim()}
-${scripts}
+${spriteBlob}${scripts}
 `;
 
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, bundle);
 console.log(`${path.relative(root, out)}  ${(bundle.length / 1024).toFixed(0)} KB  ` +
-            `(${sources.length} scripts inlined)`);
+            `(${sources.length} scripts, ${sheets.length} character sheets inlined)`);

@@ -56,6 +56,8 @@ in float vGloss;
 in vec4 vLightPos;
 
 uniform sampler2DArray uAtlas;
+uniform sampler2D uSprite;      // cut-out sprite sheet: alpha is coverage
+uniform float uSpriteMode;      // 1 while drawing sprite people
 uniform sampler2DShadow uShadow;
 uniform vec3 uSunDir;      // points toward the sun
 uniform vec3 uSunColor;
@@ -100,7 +102,17 @@ float sampleShadow(vec3 n, float ndl) {
 vec3 toLinear(vec3 c) { return c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878); }
 
 void main() {
-  vec4 tex = texture(uAtlas, vec3(vUV, vLayer));
+  vec4 tex;
+  if (uSpriteMode > 0.5) {
+    // The atlas alpha is an emissive mask everywhere else in this shader; on a
+    // sprite it is coverage, so it is tested and then thrown away rather than
+    // being read as a lit window.
+    tex = texture(uSprite, vUV);
+    if (tex.a < 0.5) discard;
+    tex.a = 0.0;
+  } else {
+    tex = texture(uAtlas, vec3(vUV, vLayer));
+  }
   // Textures and tints are authored in sRGB; light must be summed in linear.
   vec3 albedo = toLinear(tex.rgb) * toLinear(vTint) * toLinear(uTintMul);
 
@@ -175,13 +187,22 @@ void main() {
 const DEPTH_VS = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
+layout(location=2) in vec2 aUV;
 uniform mat4 uLightVP;
 uniform mat4 uModel;
-void main() { gl_Position = uLightVP * uModel * vec4(aPos, 1.0); }`;
+out vec2 vUV;
+void main() { vUV = aUV; gl_Position = uLightVP * uModel * vec4(aPos, 1.0); }`;
 
 const DEPTH_FS = `#version 300 es
 precision highp float;
-void main() {}`;
+in vec2 vUV;
+uniform sampler2D uSprite;
+uniform float uSpriteMode;
+void main() {
+  // A billboard is a rectangle; without the cut-out here a pedestrian throws
+  // the shadow of a signboard.
+  if (uSpriteMode > 0.5 && texture(uSprite, vUV).a < 0.5) discard;
+}`;
 
 const SKY_VS = `#version 300 es
 precision highp float;
@@ -459,6 +480,7 @@ class Renderer {
     // flush on the road, so culling front faces would erase their ground shadow.
     gl.enable(gl.POLYGON_OFFSET_FILL);
     gl.polygonOffset(2.2, 4.0);
+    this.setSpriteMode(false);
   }
 
   beginScenePass(env) {
@@ -516,6 +538,35 @@ class Renderer {
       gl.uniform4fv(p.u.uLightDir, this.lightDir);
       gl.uniform3fv(p.u.uLightCol, this.lightCol);
     }
+  }
+
+  // The sprite sheet lives on its own texture unit and is shared by the scene
+  // and depth programs, so a cut-out person is cut out of its shadow too.
+  setSpriteAtlas(tex) {
+    this.spriteTex = tex;
+    const gl = this.gl;
+    for (const p of [this.sceneProg, this.depthProg]) {
+      gl.useProgram(p);
+      gl.uniform1i(p.u.uSprite, 4);
+      gl.uniform1f(p.u.uSpriteMode, 0);
+    }
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
+  setSpriteMode(on) {
+    const gl = this.gl;
+    if (!this.prog || !this.spriteTex) return;
+    if (on) {
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, this.spriteTex);
+      gl.activeTexture(gl.TEXTURE0);
+    }
+    gl.uniform1f(this.prog.u.uSpriteMode, on ? 1 : 0);
+    // A cut-out has two visible faces: it must not be culled from behind.
+    if (on) gl.disable(gl.CULL_FACE);
+    else gl.enable(gl.CULL_FACE);
   }
 
   setMaterial(tint, emisAdd, windowMask, alpha) {

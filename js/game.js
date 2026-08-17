@@ -56,6 +56,18 @@ function start() {
   game.stunts = new StuntTracker();
   game.markerBeam = buildMarkerMesh(gl, 1.5, 1.35, 70);
 
+  // Sprite people. Any hand-drawn sheets that were inlined at build time take
+  // over from the painted ones, character for character.
+  game.sprites = buildSpriteAtlas(gl, null);
+  renderer.setSpriteAtlas(game.sprites.tex);
+  loadCharacterSheets((imgs) => {
+    gl.deleteTexture(game.sprites.tex);
+    game.sprites = buildSpriteAtlas(gl, imgs);
+    renderer.setSpriteAtlas(game.sprites.tex);
+  });
+  game.spriteBuilder = new MeshBuilder();
+  game.spriteMesh = new DynamicMesh(gl, 4 * 400, 6 * 400);
+
   game.rand = makeRandom(99);
   game.car = new Vehicle(0, 0, 0, [0.85, 0.12, 0.14]);
   game.player = { inCar: true, walker: null };
@@ -652,7 +664,10 @@ function buildWorld(seed) {
     if (onRoad(x, z)) continue;
     const p = { x, z };
     if (city.resolveCircle(p, 0.6)) continue;   // spawned inside a wall
-    game.peds.push(new Pedestrian(x, z, rand() * 6.28, rand));
+    const ped = new Pedestrian(x, z, rand() * 6.28, rand);
+    // Which townsperson's sheet they wear, fixed for their lifetime.
+    ped.sheet = (rand() * TOWNSFOLK.length) | 0;
+    game.peds.push(ped);
   }
 
   game.snipers = new Snipers(gl, city, rand);
@@ -1128,14 +1143,31 @@ function drawActors(r, env, shadowPass) {
     }
   }
 
-  // Pedestrians and the on-foot player.
-  const people = game.peds;
-  for (const ped of people) {
-    const d = Math.hypot(ped.x - cam.pos[0], ped.z - cam.pos[2]);
-    if (d > (shadowPass ? 70 : 170)) continue;
-    drawPerson(r, ped, shadowPass, d);
+  // Pedestrians and the on-foot player, as camera-facing sprites. One draw
+  // call for the lot: the batch is rebuilt each frame because every billboard
+  // depends on where the camera is standing.
+  if (game.sprites) {
+    const b = game.spriteBuilder;
+    b.reset();
+    b.style(0, [1, 1, 1], 0);
+    const reach = shadowPass ? 70 : 190;
+    for (const ped of game.peds) {
+      const d = Math.hypot(ped.x - cam.pos[0], ped.z - cam.pos[2]);
+      if (d > reach) continue;
+      pushPersonSprite(b, game.sprites, ped, cam.pos[0], cam.pos[2], 1.78 * ped.height);
+    }
+    if (!game.player.inCar && game.player.walker) {
+      pushPersonSprite(b, game.sprites, game.player.walker,
+                       cam.pos[0], cam.pos[2], 1.78 * game.player.walker.height);
+    }
+    if (b.i.length) {
+      game.spriteMesh.update(b);
+      r.setMaterial([1, 1, 1], 0, 0);
+      r.setSpriteMode(true);
+      r.draw(game.spriteMesh, null);
+      r.setSpriteMode(false);
+    }
   }
-  if (!game.player.inCar) drawPerson(r, game.player.walker, shadowPass, 0);
 
   // Sniper lasers.
   if (!shadowPass && game.snipers.mesh.count) {
