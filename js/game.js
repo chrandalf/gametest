@@ -2108,7 +2108,7 @@ function drawHud() {
       'W / S — accelerate, brake & reverse',
       'A / D — steer            Space — handbrake',
       'Shift — NITRO (refills, and stunts top it up)   F — in / out of car',
-      'E — repair (hold, costs credits)   R — recover (120 cr)',
+      'E — repair (hold; fast & half price at a petrol station)   R — recover',
       'C — camera   T — skip time   P — pause',
       'V — record video   U — hide HUD   [ ] — clip brightness',
       'G — time trial   K — street race   M — new map (new seed)   N — map file',
