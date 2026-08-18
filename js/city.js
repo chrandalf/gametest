@@ -90,6 +90,7 @@ class City {
     this.lights = [];         // street lamp positions, used for night point lights
     this.ramps = new RampSet();
     this.chunks = [];
+    this.decals = [];         // road paint: drawn, but never casts a shadow
     this.hash = new Map();
     this.hashCell = 24;
     this.build();
@@ -462,7 +463,7 @@ class City {
   // the narrower it is the more room it has to wander inside its corridor.
   roadHalf(rank, motorway) {
     if (motorway) return ROAD / 2;
-    return rank >= 4 ? ROAD / 2 : rank === 3 ? 10.5 : rank === 2 ? 8.0 : 6.5;
+    return rank >= 4 ? ROAD / 2 : rank === 3 ? 11.6 : rank === 2 ? 8.0 : 6.5;
   }
 
   // How far from the centre line traffic runs, matched to that width.
@@ -650,9 +651,16 @@ class City {
         // the carriageway and its verge, which are cut from one strip and so
         // cannot disagree with each other about where the surface is.
         const bb = this.blockBounds(bi, bj);
-        const gx0 = bb.x0 - 2, gx1 = bb.x1 + 2, gz0 = bb.z0 - 2, gz1 = bb.z1 + 2;
+        // Exactly the block, and not a metre further. A levelled block is a
+        // plane, so one quad describes it perfectly — but two metres of
+        // overhang reaches into the road corridor where the ground is ramping,
+        // and a flat quad drawn across a ramp cuts up through whatever is on
+        // top of it. That is the grass wedge showing through the tarmac. The
+        // corridors are covered by the verge and the grass strip anyway, both
+        // of which overlap the block edge and both of which follow the ramp.
+        const gx0 = bb.x0, gx1 = bb.x1, gz0 = bb.z0, gz1 = bb.z1;
         // A levelled block is a plane, so it needs no subdividing at all.
-        const sub = this.isRural(bi, bj) ? 5 : 1;
+        const sub = this.isRural(bi, bj) ? 6 : 1;
         this.sheet(ground, gx0, gz0, gx1, gz1, sub, -0.10,
                    (gx1 - gx0) / 16, (gz1 - gz0) / 16, true);
       }
@@ -668,10 +676,21 @@ class City {
     const CH = 3;
     const chunkCount = Math.ceil(GRID / CH);
     const builders = [];
-    for (let i = 0; i < chunkCount * chunkCount; i++) builders.push(new MeshBuilder());
-    const chunkAt = (bi, bj) =>
-      builders[Math.min(chunkCount-1, Math.floor(bi/CH)) * chunkCount +
-               Math.min(chunkCount-1, Math.floor(bj/CH))];
+    // Road paint goes in its own set of meshes. It is a decal lying a few
+    // centimetres above the tarmac, and a few centimetres is enough for the
+    // shadow map to treat it as a wall: every dashed line was casting a little
+    // shadow of itself onto the road beside it. Decals are drawn in the scene
+    // pass only, so they light but never occlude.
+    const decals = [];
+    for (let i = 0; i < chunkCount * chunkCount; i++) {
+      builders.push(new MeshBuilder());
+      decals.push(new MeshBuilder());
+    }
+    const chunkIdx = (bi, bj) =>
+      Math.min(chunkCount-1, Math.floor(bi/CH)) * chunkCount +
+      Math.min(chunkCount-1, Math.floor(bj/CH));
+    const chunkAt = (bi, bj) => builders[chunkIdx(bi, bj)];
+    const paintAt = (bi, bj) => decals[chunkIdx(bi, bj)];
 
     // --- roads: one bowed ribbon per segment, plus a patch at each junction ---
     const lo = -ROAD/2, hi = (GRID - 1) * CELL + ROAD/2;
@@ -736,11 +755,23 @@ class City {
     for (let i = 0; i < GRID; i++) {
       for (let j = 0; j < GRID; j++) {
         if (!this.degree(i, j)) continue;                  // nothing meets here
-        let rk = this.roadRank(i, j);
+        // Sized by the roads that actually meet here. Taking it from the rank
+        // of the blocks around instead left a boulevard-sized slab of tarmac
+        // at the end of a farm track, which is most of what makes the edge of
+        // town look like it was dropped there.
+        let hw = 0, rk = 0;
         for (const [di, dj] of DIRS4) {
-          if (this.canGo(i, j, di, dj)) rk = Math.max(rk, this.roadRank(i + di, j + dj));
+          if (!this.canGo(i, j, di, dj)) continue;
+          const r = Math.max(this.roadRank(i, j), this.roadRank(i + di, j + dj));
+          rk = Math.max(rk, r);
+          hw = Math.max(hw, this.roadHalf(r, this.isMotorway(i, j)));
         }
-        const hw = this.roadHalf(rk, this.isMotorway(i, j));
+        if (hw <= 0) continue;
+        // A town junction is paved corner to corner. Letting it stop at the
+        // width of the roads that meet there left four grass squares in the
+        // middle of a city crossroads, where a real one flares out to meet
+        // the pavement on every side.
+        if (rk >= 3) hw = ROAD / 2;
         const b = chunkAt(i, j);
         b.style(TEX.ASPHALT, tintFor(rk), 0);
         this.sheet(b, roadCenter(i) - hw, roadCenter(j) - hw,
@@ -757,7 +788,7 @@ class City {
           const a = axis ? [li, k] : [k, li];
           if (segRank(axis, li, k) < 3) continue;
           if (this.isMotorway(a[0], a[1])) continue;   // its own markings, later
-          const b = chunkAt(a[0], a[1]);
+          const b = paintAt(a[0], a[1]);
           b.style(TEX.MARK, [1.0, 0.85, 0.15], 0);
           // Dashed centre line, skipping the intersection box at each end.
           for (let t = 0; t < 10; t++) {
@@ -777,26 +808,42 @@ class City {
       for (let j = 0; j < GRID; j++) {
         if (this.isMotorway(i, j)) continue;
         if (this.degree(i, j) < 3) continue;               // not a crossroads
-        const b = chunkAt(i, j);
+        const b = paintAt(i, j);
         if (this.roadRank(i, j) < 4) continue;
         b.style(TEX.MARK, [0.95, 0.95, 0.92], 0);
         const cz = roadCenter(j);
-        const BAR_W = 0.62, BAR_L = 3.2, STEP = (ROAD - 3) / 8;
-        for (const s of [-1, 1]) {
-          for (let k = 0; k <= 8; k++) {
-            const off = -ROAD/2 + 1.5 + k * STEP;
-            // Crossing the north-south road.
-            const zEdge = cz + s * (ROAD/2 + 2.6);
-            if (zEdge > lo && zEdge < hi) {
-              this.sheet(b, c + off - BAR_W, zEdge - BAR_L/2, c + off + BAR_W, zEdge + BAR_L/2, 1, 0.04, 1, 1);
-            }
-            // Crossing the east-west road.
-            const xEdge = c + s * (ROAD/2 + 2.6);
-            if (xEdge > lo && xEdge < hi) {
-              this.sheet(b, xEdge - BAR_L/2, cz + off - BAR_W, xEdge + BAR_L/2, cz + off + BAR_W, 1, 0.045, 1, 1);
+        const BAR_W = 0.62, BAR_L = 3.2;
+        // A crossing spans the road it is painted on, kerb to kerb, and roads
+        // are not all the same width any more — a fixed span either ran out
+        // before the far kerb or carried on over the verge. It is also only
+        // painted across a road that is actually there.
+        const stripe = (alongX, side) => {
+          // The road being crossed runs along `alongX`; we stand `side` of the
+          // junction, on the arm of the junction going that way.
+          const dirI = alongX ? side : 0, dirJ = alongX ? 0 : side;
+          if (!this.canGo(i, j, dirI, dirJ)) return;
+          const seg = this.edgeFrom(i, j, dirI, dirJ);
+          const other = [i + dirI, j + dirJ];
+          const rank = Math.max(this.roadRank(i, j), this.roadRank(other[0], other[1]));
+          const hw = this.roadHalf(rank, this.isMotorway(i, j)) - 1.4;
+          const bars = Math.max(4, Math.round(hw * 2 / 2.9));
+          for (let k = 0; k <= bars; k++) {
+            const off = lerp(-hw, hw, k / bars);
+            if (alongX) {
+              // Crossing an east-west road: bars run along Z, stacked in X.
+              const xEdge = c + side * (ROAD/2 + 2.6);
+              if (xEdge <= lo || xEdge >= hi) continue;
+              this.sheet(b, xEdge - BAR_L/2, cz + off - BAR_W,
+                            xEdge + BAR_L/2, cz + off + BAR_W, 1, 0.045, 1, 1);
+            } else {
+              const zEdge = cz + side * (ROAD/2 + 2.6);
+              if (zEdge <= lo || zEdge >= hi) continue;
+              this.sheet(b, c + off - BAR_W, zEdge - BAR_L/2,
+                            c + off + BAR_W, zEdge + BAR_L/2, 1, 0.04, 1, 1);
             }
           }
-        }
+        };
+        for (const side of [-1, 1]) { stripe(true, side); stripe(false, side); }
       }
     }
 
@@ -810,7 +857,7 @@ class City {
       }
     }
 
-    this.buildMotorway(chunkAt);
+    this.buildMotorway(chunkAt, paintAt);
     this.buildBridges(chunkAt);
 
     // --- street furniture, thinning out as the streets get quieter ---
@@ -890,6 +937,10 @@ class City {
       if (bld.empty) continue;
       this.chunks.push(bld.upload(this.gl));
     }
+    for (const bld of decals) {
+      if (bld.empty) continue;
+      this.decals.push(bld.upload(this.gl));
+    }
 
     this.spawn = this.pickSpawn();
   }
@@ -951,7 +1002,7 @@ class City {
   // same corridor given two lanes each way, a central reservation you cannot
   // cross, and no crossings for people to walk over. The reservation is broken
   // at every junction, so the ordinary grid still gets through.
-  buildMotorway(chunkAt) {
+  buildMotorway(chunkAt, paintAt) {
     const m = this.motorway;
     if (!m) return;
     const line = roadCenter(m.line);
@@ -963,11 +1014,13 @@ class City {
     for (let k = 0; k <= lastCell; k++) {
       const a0 = roadCenter(k), a1 = roadCenter(k + 1);
       const b = chunkAt(m.alongX ? k : m.line, m.alongX ? m.line : k);
+      const paint = paintAt(m.alongX ? k : m.line, m.alongX ? m.line : k);
 
       // Lane divider between the two running lanes on each carriageway, and a
-      // solid edge line at the hard shoulder.
+      // solid edge line at the hard shoulder. Paint, so it goes in the decal
+      // mesh — the hard shoulder line was shadowing the hard shoulder.
       for (const side of [-1, 1]) {
-        b.style(TEX.MARK, [0.95, 0.95, 0.92], 0);
+        paint.style(TEX.MARK, [0.95, 0.95, 0.92], 0);
         // These offsets are across the corridor, so they are measured from the
         // corridor's own centre line, not from the origin.
         const div = line + side * (CENTRAL_RES + 6.0);
@@ -975,13 +1028,13 @@ class City {
           const s0 = lerp(a0, a1, t / 8) + 3, s1 = s0 + CELL / 16;
           if (s0 < lo || s1 > hi) continue;
           const q0 = P(s0, div - 0.18), q1 = P(s1, div + 0.18);
-          this.sheet(b, Math.min(q0[0], q1[0]), Math.min(q0[1], q1[1]),
+          this.sheet(paint, Math.min(q0[0], q1[0]), Math.min(q0[1], q1[1]),
                         Math.max(q0[0], q1[0]), Math.max(q0[1], q1[1]), 1, 0.05, 1, 1);
         }
         const edge = line + side * (ROAD/2 - 1.1);
         const e0 = P(Math.max(a0, lo), edge - 0.2);
         const e1 = P(Math.min(a1, hi), edge + 0.2);
-        this.sheet(b, Math.min(e0[0], e1[0]), Math.min(e0[1], e1[1]),
+        this.sheet(paint, Math.min(e0[0], e1[0]), Math.min(e0[1], e1[1]),
                       Math.max(e0[0], e1[0]), Math.max(e0[1], e1[1]), 4, 0.05, 1, 1);
       }
 
@@ -1384,9 +1437,11 @@ class City {
     const r = (2.2 + rand() * 1.2) * scale;
     b.sphere(x, y0 + h + r * 0.45, z, r, 9, 6, 0.85);
     b.sphere(x + (rand()-0.5)*r, y0 + h + r * 0.1, z + (rand()-0.5)*r, r*0.7, 8, 5, 0.9);
-    // Tight to the pole. A metre-wide box round a 30 cm lamp post is an
-    // invisible clip you feel but cannot see.
-    this.addCollider(x - 0.22, z - 0.22, x + 0.22, z + 0.22, h, 'a lamp post');
+    // The trunk, and only the trunk: the canopy is four metres across and
+    // hitting a branch should not stop a car. A grown tree does not move, so
+    // this is a proper impact — as far as the car is concerned it is a bollard.
+    const tr = 0.30 * scale;
+    this.addCollider(x - tr, z - tr, x + tr, z + tr, y0 + h, 'a tree');
   }
 
   bush(b, x, z, scale, baseY) {
@@ -1396,6 +1451,10 @@ class City {
     b.style(TEX.LEAVES, [0.72 + rand()*0.3, 0.92 + rand()*0.2, 0.68], 0);
     b.sphere(x, y0 + r * 0.7, z, r, 7, 4, 0.8);
     b.sphere(x + (rand()-0.5)*r, y0 + r * 0.55, z + (rand()-0.5)*r, r*0.75, 6, 4, 0.85);
+    // Low and soft. It stops you, but at bumper height, so a shrub scuffs the
+    // paint rather than writing off the engine.
+    this.addCollider(x - r * 0.7, z - r * 0.7, x + r * 0.7, z + r * 0.7,
+                     y0 + r * 0.9, 'a bush');
   }
 
   bench(b, x, z, baseY) {
@@ -1417,6 +1476,9 @@ class City {
           Math.abs(dirX) * 0.8 + 0.12, 0.12, Math.abs(dirZ) * 0.8 + 0.12, { perUnit: 1 });
     b.style(TEX.PLAIN, [1.0, 0.93, 0.75], 0.9);
     b.chamferBox(ax, SIDEWALK_H + h - 0.22, az, 0.42, 0.16, 0.42, 0.12, { perUnit: 1 });
+    // Tight to the pole. A metre-wide box round a 30 cm lamp post is an
+    // invisible clip you feel but cannot see.
+    this.addCollider(x - 0.22, z - 0.22, x + 0.22, z + 0.22, SIDEWALK_H + h, 'a lamp post');
     this.lights.push({ x: ax, y: SIDEWALK_H + h - 0.4 + this.lift, z: az });
   }
 

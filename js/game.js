@@ -1269,6 +1269,13 @@ function render() {
     r.draw(chunk, null);
     drawn++;
   }
+  // Road paint. Scene pass only — it was left out of the shadow pass on
+  // purpose, so a painted line lights like the road it is on and casts nothing.
+  for (const chunk of game.city.decals) {
+    if (!aabbInFrustum(game.frustum, chunk.min, chunk.max)) continue;
+    r.draw(chunk, null);
+    drawn++;
+  }
   game.chunksDrawn = drawn;
   drawActors(r, env, false);
   r.drawSky(env);

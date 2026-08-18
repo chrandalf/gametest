@@ -27,6 +27,9 @@ const DROPS = 14000;         // rain drops used to erode it
 // Steepest step allowed between two landform samples, in metres. Over a
 // 15 m spacing this is about a one-in-five hill: dramatic, still drivable.
 const TALUS = 3.1;
+// How many road cells the land takes to fall back to sea level at the map
+// boundary. Two and a half is enough to read as a shoreline rather than a cut.
+const COAST_CELLS = 2.5;
 
 class Terrain {
   // n is the number of junctions per axis (GRID), spacing is CELL, roadHalf
@@ -92,6 +95,7 @@ class Terrain {
     const span = Math.max(1e-4, hi - lo);
     for (let k = 0; k < fine.length; k++) fine[k] = (fine[k] - lo) / span * TERRAIN_AMP;
 
+
     // A hill or two, standing well clear of anything built: the smoothing
     // pass would flatten them otherwise, so they go where it is allowed to
     // leave a steep slope, and they are what you drive up for the view.
@@ -102,7 +106,9 @@ class Terrain {
       let clear = true;
       for (const h of this.hills) if (Math.hypot(h.i - ci, h.j - cj) < n * 0.4) clear = false;
       if (!clear) continue;
-      const hill = { i: ci, j: cj, reach: 1.6 + hrand() * 0.8, height: HILL_HEIGHT * (0.7 + hrand() * 0.5) };
+      const reach = 1.6 + hrand() * 0.8;
+      if (Math.min(ci, cj, n - 1 - ci, n - 1 - cj) < 1.5) continue;
+      const hill = { i: ci, j: cj, reach, height: HILL_HEIGHT * (0.7 + hrand() * 0.5) };
       this.hills.push(hill);
       for (let j = 0; j < fn; j++) {
         for (let i = 0; i < fn; i++) {
@@ -110,6 +116,19 @@ class Terrain {
           if (d >= 1) continue;
           fine[j * fn + i] += hill.height * (1 - smoothstep(0, 1, d));
         }
+      }
+    }
+
+    // Everything comes back down to sea level at the border, hills included.
+    // Without it the land can be forty metres up where the map stops and what
+    // you see over the edge is the underside of the world: a hill has to come
+    // down again somewhere, and the boundary is the only place that is
+    // guaranteed. Applied after the hills so a coastal one tapers away
+    // properly rather than being forbidden from existing at all.
+    for (let j = 0; j < fn; j++) {
+      for (let i = 0; i < fn; i++) {
+        const inset = Math.min(i, j, fn - 1 - i, fn - 1 - j) / SUBDIV;
+        fine[j * fn + i] *= smoothstep(0, COAST_CELLS, inset);
       }
     }
 
@@ -140,7 +159,14 @@ class Terrain {
       this.riverLevel = 0;
     }
 
+    // The gradient limit and the river pinning can both lift the rim again, so
+    // the border is held down to what the coastal falloff already set. A clamp
+    // rather than a second multiply: applying the same mask twice squares it,
+    // and that flattens the whole coast instead of just holding it.
     this.smooth();
+    for (let k = 0; k < this.h.length; k++) {
+      if (this.h[k] > beforeSmooth[k]) this.h[k] = beforeSmooth[k];
+    }
     // Whatever the river pinning and the gradient limit did to the junctions
     // has to be pushed back into the landform, or the fine field and the
     // junction heights disagree and the two show a seam where they meet.
