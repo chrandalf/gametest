@@ -15,6 +15,7 @@ const game = {
   trial: { active: false, phase: 'idle', route: [], idx: 0, t: 0, countdown: 0, best: null, last: null },
   tyreLoad: 0,
   nitro: { charge: 1, active: false },
+  sensor: { dist: Infinity, rev: false, timer: 0 },
   credits: 500,        // earned by mayhem, spent on repairs and recovery
   repairSpend: 0,
   repairing: false,
@@ -350,6 +351,156 @@ function playScream(pitch, gainScale) {
   o.stop(t + 0.62); vib.stop(t + 0.62);
 }
 
+// Car-to-car collisions, resolved as impulses between two masses rather
+// than as two circles shoving each other apart. What comes out of that for
+// free is everything that used to be missing: a van moves a hatchback more
+// than the hatchback moves the van, a glancing blow scrubs along instead of
+// bouncing, a corner impact spins you, and both cars take the damage — on
+// the face that actually took it.
+function resolveVehicleCollisions(all, onPlayer) {
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      const a = all[i], b = all[j];
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 5.2 || d < 1e-4) continue;
+      const nx = dx / d, nz = dz / d;
+      // Bodies are boxes, so how close they can get depends on which way they
+      // are pointing: bumper to bumper is four and a half metres, door to
+      // door is under two.
+      const minD = a.extentAlong(nx, nz) + b.extentAlong(nx, nz);
+      if (d > minD) continue;
+
+      const ima = 1 / a.mass, imb = 1 / b.mass, imSum = ima + imb;
+      // Separate them in proportion to how easy each is to move.
+      const pen = (minD - d) * 0.85;
+      a.x -= nx * pen * (ima / imSum); a.z -= nz * pen * (ima / imSum);
+      b.x += nx * pen * (imb / imSum); b.z += nz * pen * (imb / imSum);
+
+      const vRel = (b.vx - a.vx) * nx + (b.vz - a.vz) * nz;
+      if (vRel >= 0) continue;                    // already separating
+
+      // Cars crumple; they barely bounce.
+      const REST = 0.16;
+      const jn = -(1 + REST) * vRel / imSum;
+      // Panels dragging along each other: a tangential impulse, capped the way
+      // friction is capped, which is what turns a sideswipe into a scrape.
+      const tx = -nz, tz = nx;
+      const vt = (b.vx - a.vx) * tx + (b.vz - a.vz) * tz;
+      const jt = clamp(-vt / imSum, -0.5 * jn, 0.5 * jn);
+
+      const Jx = nx * jn + tx * jt, Jz = nz * jn + tz * jt;
+      a.vx -= Jx * ima; a.vz -= Jz * ima;
+      b.vx += Jx * imb; b.vz += Jz * imb;
+
+      // Spin. The contact sits on the line between them, so how far off each
+      // car's centre it lands is what decides whether it shoves or slews.
+      const cx = a.x + nx * (a.extentAlong(nx, nz)), cz = a.z + nz * (a.extentAlong(nx, nz));
+      const rax = cx - a.x, raz = cz - a.z;
+      const rbx = cx - b.x, rbz = cz - b.z;
+      a.yawKick += (raz * -Jx - rax * -Jz) / a.inertia;
+      b.yawKick += (rbz * Jx - rbx * Jz) / b.inertia;
+      a.yawKick = clamp(a.yawKick, -5, 5);
+      b.yawKick = clamp(b.yawKick, -5, 5);
+
+      // Damage. The closing speed along the normal is the part that actually
+      // gets absorbed — two cars meeting head on at thirty is a sixty impact,
+      // and two side by side drifting together is barely anything. The lighter
+      // car comes off worse, in proportion to the mass it is up against.
+      const bite = Math.abs(vRel) / 26;
+      const force = bite * bite * 1.15;
+      if (force > 0.02) {
+        a.takeHit(force * (2 * b.mass / (a.mass + b.mass)), -nx, -nz,
+                  b === onPlayer ? 'the player' : b.van ? 'a van' : 'another car');
+        b.takeHit(force * (2 * a.mass / (a.mass + b.mass)), nx, nz,
+                  a === onPlayer ? 'the player' : a.van ? 'a van' : 'another car');
+      }
+      if (onPlayer && (a === onPlayer || b === onPlayer)) {
+        const strength = Math.min(1, Math.abs(vRel) / 18);
+        if (strength > 0.12) {
+          onPlayer.crashImpulse = Math.max(onPlayer.crashImpulse, strength);
+          game.stats.hits++;
+        }
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------- parking sensor ----
+// What a real car does when you are creeping: three probes across whichever
+// bumper you are travelling towards, and a blip that gets faster the closer
+// anything is. It only runs at manoeuvring speed — a sensor that chirped at
+// every parked car you passed at forty would be unbearable, and no real one
+// does it either.
+
+const SENSOR_RANGE = 4.0;         // metres; beyond this it says nothing
+const SENSOR_SPEED = 9.0;         // m/s above which it goes quiet
+
+function sensorScan(car) {
+  const rev = car.forwardSpeed < -0.3;
+  const dir = rev ? -1 : 1;
+  const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
+  const rx = fz, rz = -fx;
+  let best = Infinity;
+  for (const lateral of [-0.8, 0, 0.8]) {
+    const px = car.x + fx * dir * car.halfLen + rx * lateral;
+    const pz = car.z + fz * dir * car.halfLen + rz * lateral;
+    for (const c of game.city.query(px, pz, SENSOR_RANGE)) {
+      // A kerb is not an obstacle, and neither is anything you are on top of.
+      if (c.top <= car.y + 0.4) continue;
+      const dx = Math.max(c.x0 - px, 0, px - c.x1);
+      const dz = Math.max(c.z0 - pz, 0, pz - c.z1);
+      const d = Math.hypot(dx, dz);
+      if (d < best) best = d;
+    }
+    for (const v of game.traffic) {
+      if (v === car) continue;
+      const ox = v.x - px, oz = v.z - pz;
+      const len = Math.hypot(ox, oz);
+      if (len > SENSOR_RANGE + 3) continue;
+      const d = len - v.extentAlong(ox / (len || 1), oz / (len || 1));
+      if (d < best) best = Math.max(0, d);
+    }
+  }
+  return { dist: best, rev };
+}
+
+function updateSensor(dt) {
+  const s = game.sensor;
+  s.timer -= dt;
+  if (!game.player.inCar || Math.abs(game.car.forwardSpeed) > SENSOR_SPEED) {
+    s.dist = Infinity;
+    return;
+  }
+  const scan = sensorScan(game.car);
+  s.dist = scan.dist;
+  s.rev = scan.rev;
+  if (scan.dist > SENSOR_RANGE) return;
+  // Quickening blips, running together into one tone at arm's length.
+  const t = clamp((scan.dist - 0.35) / (SENSOR_RANGE - 0.35), 0, 1);
+  const interval = lerp(0.075, 0.66, t * t);
+  if (s.timer <= 0) {
+    s.timer = interval;
+    playBeep(scan.dist);
+  }
+}
+
+function playBeep(dist) {
+  const a = game.audio;
+  if (!a) return;
+  const ctx = a.ctx, t = ctx.currentTime;
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = 'sine';
+  // Rising slightly as it closes, the way a real one does.
+  o.frequency.value = 1950 + clamp(1 - dist / SENSOR_RANGE, 0, 1) * 750;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.028, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.072);
+  o.connect(g); g.connect(a.master);
+  o.start(t); o.stop(t + 0.09);
+}
+
 // ------------------------------------------------------------- simulate ----
 
 function update(dt) {
@@ -427,33 +578,8 @@ function update(dt) {
     t.update(dt, world);
   }
 
-  // Car-to-car separation.
   const all = blockers;
-  for (let i = 0; i < all.length; i++) {
-    for (let j = i + 1; j < all.length; j++) {
-      const a = all[i], b = all[j];
-      const dx = b.x - a.x, dz = b.z - a.z;
-      const d = Math.hypot(dx, dz);
-      const minD = 3.3;
-      if (d > minD || d < 1e-4) continue;
-      const nx = dx / d, nz = dz / d;
-      const push = (minD - d) * 0.5;
-      a.x -= nx * push; a.z -= nz * push;
-      b.x += nx * push; b.z += nz * push;
-      const rel = (b.vx - a.vx) * nx + (b.vz - a.vz) * nz;
-      if (rel < 0) {
-        a.vx += nx * rel * 0.5; a.vz += nz * rel * 0.5;
-        b.vx -= nx * rel * 0.5; b.vz -= nz * rel * 0.5;
-        if (a === car || b === car) {
-          const strength = Math.min(1, Math.abs(rel) / 18);
-          if (strength > 0.12) {
-            car.crashImpulse = Math.max(car.crashImpulse, strength);
-            game.stats.hits++;
-          }
-        }
-      }
-    }
-  }
+  resolveVehicleCollisions(all, car);
 
   // Pedestrians (only the ones near the player need simulating). Everyone the
   // player takes down in the same instant counts as one shot, which is what
@@ -528,6 +654,7 @@ function update(dt) {
   }
 
   game.credits += game.stunts.collectCredits();
+  updateSensor(dt);
   updateRepair(dt);
   if (car.lastHitT > 0) car.lastHitT -= dt;
   updateRun(dt);
@@ -694,6 +821,8 @@ function buildWorld(seed) {
   if (game.traffic.length) {
     const van = game.traffic[(rand() * game.traffic.length) | 0];
     van.van = true;
+    van.mass = 2350;                 // a loaded van, and it shows in a shunt
+    van.halfLen = 2.55; van.halfWid = 1.05;
     van.color = [0.95, 0.95, 0.97];
     van.maxSpeed = Math.min(van.maxSpeed, 15);
     game.van = van;
@@ -1749,7 +1878,8 @@ function drawHud() {
     const d = game.car.damage;
     const rows = [['ENGINE', d.engine], ['STEERING', d.steering],
                   ['WHEELS', d.wheels], ['BODY', d.body]];
-    const bx = W - 148, by = H - 128;
+    // Clear of the speedometer, which these used to sit on top of.
+    const bx = W - 336, by = H - 118;
     c.save();
     c.font = '600 10px system-ui, sans-serif';
     c.textAlign = 'left';
@@ -1767,17 +1897,43 @@ function drawHud() {
     c.textAlign = 'right';
     c.font = '700 15px system-ui, sans-serif';
     c.fillStyle = game.credits < 100 ? '#e05a45' : '#ffd34d';
-    c.fillText(`${game.credits} cr`, W - 18, by - 10);
+    c.fillText(`${game.credits} cr`, bx + 130, by - 10);
     if (game.repairing) {
       c.font = '600 11px system-ui, sans-serif';
       c.fillStyle = '#5fd07a';
-      c.fillText('REPAIRING', W - 18, by + 74);
+      c.fillText('REPAIRING', bx + 130, by + 74);
     } else if (game.car.wreckage > 0.35) {
       c.font = '600 11px system-ui, sans-serif';
       c.fillStyle = 'rgba(255,255,255,0.5)';
-      c.fillText('E — repair    R — recover', W - 18, by + 74);
+      c.fillText('E — repair    R — recover', bx + 130, by + 74);
     }
     c.restore();
+  }
+
+  // --- parking sensor ---
+  // Four arcs behind or in front of a car glyph, filling as it closes. Small,
+  // and only there while the sensor has something to say.
+  if (game.sensor.dist < SENSOR_RANGE && game.player.inCar) {
+    const near = clamp(1 - game.sensor.dist / SENSOR_RANGE, 0, 1);
+    const cx = W / 2, cy = H - 62;
+    c.save();
+    c.translate(cx, cy);
+    if (!game.sensor.rev) c.scale(1, -1);          // arcs point the way you go
+    for (let k = 0; k < 4; k++) {
+      const lit = near > k / 4;
+      const r = 13 + k * 7;
+      c.beginPath();
+      c.arc(0, 0, r, Math.PI * 0.22, Math.PI * 0.78);
+      c.lineWidth = 4;
+      c.strokeStyle = !lit ? 'rgba(255,255,255,0.10)'
+                    : near > 0.85 ? '#e8433a' : near > 0.6 ? '#e8a33c' : '#5fd07a';
+      c.stroke();
+    }
+    c.restore();
+    c.textAlign = 'center';
+    c.font = '600 11px system-ui, sans-serif';
+    c.fillStyle = 'rgba(255,255,255,0.62)';
+    c.fillText(`${game.sensor.dist.toFixed(1)} m`, cx, cy + (game.sensor.rev ? 52 : -42));
   }
 
   // The combo is on a clock of its own, so it needs to be visible while it

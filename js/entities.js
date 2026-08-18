@@ -278,6 +278,13 @@ class Vehicle {
     this.braking = false;
     this.ai = null;
     this.radius = 1.7;
+    // Kerb weight. A van shunting a hatchback should move the hatchback, and
+    // the hatchback should come off worse; without a mass everything hits
+    // everything else like two identical shopping trolleys.
+    this.mass = 1400;
+    this.halfLen = 2.30; this.halfWid = 0.95;
+    // Spin left over from an impact, in radians per second.
+    this.yawKick = 0;
     this.crashImpulse = 0;
     this.y = 0; this.vy = 0; this.surfaceY = 0;
     this.airborne = false;
@@ -333,6 +340,21 @@ class Vehicle {
     return before - this.wreckage;
   }
 
+  // How far the body reaches from its centre along a direction. This is the
+  // exact support function of the rectangle, so two cars touch bumper to
+  // bumper at four and a half metres and door to door at under two, instead
+  // of everything keeping a circle's worth of space from everything else.
+  extentAlong(nx, nz) {
+    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+    return Math.abs(nx * fx + nz * fz) * this.halfLen +
+           Math.abs(nx * fz - nz * fx) * this.halfWid;
+  }
+
+  // Moment of inertia about the vertical axis, for a slab of this size.
+  get inertia() {
+    return this.mass * (this.halfLen * this.halfLen + this.halfWid * this.halfWid) / 3;
+  }
+
   get speed() { return Math.hypot(this.vx, this.vz); }
   get forwardSpeed() { return this.vx * Math.sin(this.yaw) + this.vz * Math.cos(this.yaw); }
 
@@ -377,6 +399,15 @@ class Vehicle {
     this.steer += (targetSteer - this.steer) * clamp(dt * 9, 0, 1);
     const yawRate = this.steer * authority * 2.7 * Math.sign(vf || 1);
     this.yaw += yawRate * dt;
+
+    // Spin left over from being hit off-centre. It decays quickly — a car is
+    // not a spinning top — but it is what makes a corner impact read as one
+    // rather than as a shove in a straight line.
+    if (this.yawKick) {
+      this.yaw += this.yawKick * dt;
+      this.yawKick *= Math.exp(-3.4 * dt);
+      if (Math.abs(this.yawKick) < 0.012) this.yawKick = 0;
+    }
 
     // Rebuild the basis from the *new* heading. Thrust has to follow the nose as
     // it points now — using the pre-steer basis makes the car crab sideways.
@@ -603,6 +634,13 @@ class TrafficCar extends Vehicle {
 
   update(dt, world) {
     this.world = world;
+    // Written off. It stops where it is and becomes an obstacle, which is what
+    // a written-off car does and what makes a pile-up build on itself.
+    if (this.wreckage > 0.7) {
+      this.status = 'stop';
+      this.drive(dt, 0, 0, true, world.city);
+      return;
+    }
     const dx = this.target.x - this.x, dz = this.target.z - this.z;
     const dist = Math.hypot(dx, dz);
     if (dist < 7) this.pickNext();
