@@ -537,20 +537,37 @@ class TrafficCar extends Vehicle {
 
   pickNext() {
     const rand = this.rand;
+    const city = this.world && this.world.city;
     const options = [];
     for (const [dx, dz] of DIRS) {
       if (dx === -this.dir.x && dz === -this.dir.z) continue;   // no U-turns
       const ni = this.node.i + dx, nj = this.node.j + dz;
       if (ni < 0 || nj < 0 || ni >= GRID || nj >= GRID) continue;
+      // Not every pair of junctions has a road between them any more.
+      if (city && city.canGo && !city.canGo(this.node.i, this.node.j, dx, dz)) continue;
       const straight = (dx === this.dir.x && dz === this.dir.z);
       // Traffic already on the motorway stays on it: the whole point of the
       // corridor is that it carries through-traffic between the two cities.
       const onMway = this.world && this.world.city.isMotorway &&
                      this.world.city.isMotorway(this.node.i, this.node.j) &&
                      this.world.city.onMotorway(this.x, this.z);
-      options.push({ dx, dz, w: straight ? (onMway ? 60 : 5) : 1 });
+      let w = straight ? (onMway ? 60 : 5) : 1;
+      // Nobody drives up a cul-de-sac unless they live there. Without this a
+      // sixth of the fleet ends up nose to tail in dead ends, turning round.
+      if (city && city.degree && city.degree(ni, nj) < 2) w *= 0.08;
+      options.push({ dx, dz, w });
     }
-    if (!options.length) { this.dir.x *= -1; this.dir.z *= -1; return; }
+    // A cul-de-sac. Turning round is the only thing left to do, and it is the
+    // one place a U-turn is right rather than a sign the AI has got lost.
+    // Swinging straight at a target behind you carves a wide arc across the
+    // verge, so it is done as a three-point turn: back up, swing the nose.
+    if (!options.length) {
+      this.dir.x *= -1; this.dir.z *= -1;
+      this.node = { i: this.node.i + this.dir.x, j: this.node.j + this.dir.z };
+      this.target = laneTarget(this.node.i, this.node.j, this.dir.x, this.dir.z, city);
+      this.jam = 1.3;
+      return;
+    }
     let total = 0;
     for (const o of options) total += o.w;
     let r = rand() * total;

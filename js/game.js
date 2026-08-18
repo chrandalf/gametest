@@ -1439,10 +1439,20 @@ function drawHud() {
   c.strokeStyle = 'rgba(210,220,235,0.55)';
   c.lineWidth = ROAD * 0.6;
   c.beginPath();
-  for (let i = 0; i < GRID; i++) {
-    const v = roadCenter(i);
-    if (Math.abs(v - px) < 170) { c.moveTo(v, pz - 170); c.lineTo(v, pz + 170); }
-    if (Math.abs(v - pz) < 170) { c.moveTo(px - 170, v); c.lineTo(px + 170, v); }
+  // Segment by segment: half the grid is not there any more, and a minimap
+  // that still shows it sends you down streets that do not exist.
+  const city = game.city;
+  for (let li = 0; li < GRID; li++) {
+    const v = roadCenter(li);
+    for (let k = 0; k < GRID - 1; k++) {
+      const a = roadCenter(k), b = roadCenter(k + 1);
+      if (Math.abs(v - pz) < 170 && b > px - 190 && a < px + 190 && city.edgeOpen(0, li, k)) {
+        c.moveTo(a, v); c.lineTo(b, v);
+      }
+      if (Math.abs(v - px) < 170 && b > pz - 190 && a < pz + 190 && city.edgeOpen(1, li, k)) {
+        c.moveTo(v, a); c.lineTo(v, b);
+      }
+    }
   }
   c.stroke();
 

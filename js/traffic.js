@@ -87,6 +87,9 @@ class TrafficPopulation {
       for (let j = 0; j < GRID; j++) {
         const rank = city.roadRank(i, j);
         if (rank < 2) continue;
+        // Only where a car could actually be. A junction with every road round
+        // it deleted is a field corner, not a place to spawn traffic.
+        if (city.degree && city.degree(i, j) < 2) continue;
         const weight = rank >= 5 ? 6 : rank === 4 ? 4 : rank === 3 ? 2 : 1;
         for (let k = 0; k < weight; k++) this.cells.push([i, j, roadCenter(i), roadCenter(j)]);
       }
@@ -123,9 +126,15 @@ class TrafficPopulation {
       // trickling in over the first two minutes of play.
       for (let n = 0; n < 10 && list.length < want; n++) {
         const [i, j] = pool[(this.rand() * pool.length) | 0];
-        const horiz = this.rand() < 0.5;
-        const d = horiz ? [this.rand() < 0.5 ? 1 : -1, 0] : [0, this.rand() < 0.5 ? 1 : -1];
-        const car = new TrafficCar(i, j, d[0], d[1],
+        // Head off down a road that exists.
+        const ways = DIRS4.filter(([dx, dz]) => this.city.canGo(i, j, dx, dz));
+        if (!ways.length) continue;
+        const d = ways[(this.rand() * ways.length) | 0];
+        // A car is placed half a cell *before* the junction it is heading for,
+        // so it must be aimed at the far end of the road we just checked —
+        // aiming at this junction would drop it on the segment behind, which
+        // is quite possibly one of the ones that no longer exists.
+        const car = new TrafficCar(i + d[0], j + d[1], d[0], d[1],
           CAR_COLORS[(this.rand() * CAR_COLORS.length) | 0], this.rand, this.city);
         // Never appear in front of the player.
         if (Math.hypot(car.x - player.x, car.z - player.z) < SPAWN_NEAR) continue;

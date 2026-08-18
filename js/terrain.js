@@ -22,6 +22,11 @@ const RIVER_DEPTH = 4.5;     // how far the river valley sits below its banks
 const HILL_HEIGHT = 62;      // how far a proper hill stands above the plain
 const DETAIL_AMP = 1.6;      // roll between the junctions, peak to trough
 const DETAIL_SCALE = 74;     // metres per wavelength of that roll
+const SUBDIV = 6;            // landform samples per road cell: 88 m / 6 = ~15 m
+const DROPS = 14000;         // rain drops used to erode it
+// Steepest step allowed between two landform samples, in metres. Over a
+// 15 m spacing this is about a one-in-five hill: dramatic, still drivable.
+const TALUS = 3.1;
 
 class Terrain {
   // n is the number of junctions per axis (GRID), spacing is CELL, roadHalf
@@ -64,20 +69,28 @@ class Terrain {
   build(seed, riverCells) {
     this.seed = seed;
     const n = this.n;
+
+    // The landform is built at SUBDIV times the junction spacing, because the
+    // junctions are eighty-eight metres apart and erosion at that resolution
+    // does nothing you could see. The fine field is what `natural()` reads;
+    // the junction heights are sampled back out of it afterwards.
+    const fn = this.fn = (n - 1) * SUBDIV + 1;
+    const fine = this.fine = new Float32Array(fn * fn);
     let lo = Infinity, hi = -Infinity;
-    for (let j = 0; j < n; j++) {
-      for (let i = 0; i < n; i++) {
+    for (let j = 0; j < fn; j++) {
+      for (let i = 0; i < fn; i++) {
+        const ci = i / SUBDIV, cj = j / SUBDIV;
         // Two scales: broad hills, plus a gentler ripple so long straights are
         // not perfectly planar.
-        const v = fbm(i * 0.16, j * 0.16, seed, 3) * 0.75 +
-                  fbm(i * 0.44 + 13, j * 0.44 - 7, seed ^ 0x2f1b, 2) * 0.25;
-        this.h[this.idx(i, j)] = v;
+        const v = fbm(ci * 0.16, cj * 0.16, seed, 3) * 0.75 +
+                  fbm(ci * 0.44 + 13, cj * 0.44 - 7, seed ^ 0x2f1b, 2) * 0.25;
+        fine[j * fn + i] = v;
         if (v < lo) lo = v;
         if (v > hi) hi = v;
       }
     }
     const span = Math.max(1e-4, hi - lo);
-    for (let k = 0; k < this.h.length; k++) this.h[k] = (this.h[k] - lo) / span * TERRAIN_AMP;
+    for (let k = 0; k < fine.length; k++) fine[k] = (fine[k] - lo) / span * TERRAIN_AMP;
 
     // A hill or two, standing well clear of anything built: the smoothing
     // pass would flatten them otherwise, so they go where it is allowed to
@@ -91,14 +104,24 @@ class Terrain {
       if (!clear) continue;
       const hill = { i: ci, j: cj, reach: 1.6 + hrand() * 0.8, height: HILL_HEIGHT * (0.7 + hrand() * 0.5) };
       this.hills.push(hill);
-      for (let j = 0; j < n; j++) {
-        for (let i = 0; i < n; i++) {
-          const d = Math.hypot(i - hill.i, j - hill.j) / hill.reach;
+      for (let j = 0; j < fn; j++) {
+        for (let i = 0; i < fn; i++) {
+          const d = Math.hypot(i / SUBDIV - hill.i, j / SUBDIV - hill.j) / hill.reach;
           if (d >= 1) continue;
-          this.h[this.idx(i, j)] += hill.height * (1 - smoothstep(0, 1, d));
+          fine[j * fn + i] += hill.height * (1 - smoothstep(0, 1, d));
         }
       }
     }
+
+    this.erode(seed ^ 0x1d872b41);
+
+    // Junction heights are read back out of the eroded landform.
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        this.h[this.idx(i, j)] = fine[(j * SUBDIV) * fn + i * SUBDIV];
+      }
+    }
+    const beforeSmooth = Float32Array.from(this.h);
 
     // The river picks a level and its corridor is cut down to it. Junctions on
     // the corners of a water block are pinned, so the channel is level.
@@ -118,7 +141,128 @@ class Terrain {
     }
 
     this.smooth();
+    // Whatever the river pinning and the gradient limit did to the junctions
+    // has to be pushed back into the landform, or the fine field and the
+    // junction heights disagree and the two show a seam where they meet.
+    this.reconcile(beforeSmooth);
     this.levelBlocks();
+  }
+
+  // Particle erosion. Rain a few thousand drops on the landform; each picks up
+  // material where it runs fast and drops it where it slows, which is what
+  // turns a field of noise lumps into ridgelines with valleys between them.
+  // It is confined to open country: town is levelled block by block anyway, so
+  // eroding it would only fight the levelling and leave a seam at the kerb.
+  erode(seed) {
+    const fn = this.fn, h = this.fine;
+    const before = Float32Array.from(h);
+    const rand = makeRandom(seed >>> 0);
+    const heightAt = (x, z) => {
+      const ix = x | 0, iz = z | 0;
+      const fx = x - ix, fz = z - iz;
+      const k = iz * fn + ix;
+      return lerp(lerp(h[k], h[k+1], fx), lerp(h[k+fn], h[k+fn+1], fx), fz);
+    };
+    const deposit = (x, z, amount) => {
+      const ix = x | 0, iz = z | 0;
+      const fx = x - ix, fz = z - iz;
+      const k = iz * fn + ix;
+      h[k]      += amount * (1 - fx) * (1 - fz);
+      h[k+1]    += amount * fx * (1 - fz);
+      h[k+fn]   += amount * (1 - fx) * fz;
+      h[k+fn+1] += amount * fx * fz;
+    };
+
+    for (let d = 0; d < DROPS; d++) {
+      let x = 1 + rand() * (fn - 3), z = 1 + rand() * (fn - 3);
+      let vx = 0, vz = 0, water = 1, carried = 0;
+      for (let step = 0; step < 40; step++) {
+        const ix = x | 0, iz = z | 0;
+        if (ix < 1 || iz < 1 || ix >= fn - 2 || iz >= fn - 2) break;
+        const fx = x - ix, fz = z - iz;
+        const k = iz * fn + ix;
+        const gx = lerp(h[k+1] - h[k], h[k+fn+1] - h[k+fn], fz);
+        const gz = lerp(h[k+fn] - h[k], h[k+fn+1] - h[k+1], fx);
+        // Inertia, so a drop carves round a shoulder instead of straight down.
+        vx = vx * 0.65 - gx;
+        vz = vz * 0.65 - gz;
+        const len = Math.hypot(vx, vz);
+        if (len < 1e-5) break;
+        vx /= len; vz /= len;
+        const nx = x + vx, nz = z + vz;
+        if (nx < 1 || nz < 1 || nx >= fn - 2 || nz >= fn - 2) break;
+        const drop = heightAt(x, z) - heightAt(nx, nz);
+        // Capacity to carry material rises with speed and how steeply it falls.
+        const capacity = Math.max(drop, 0) * water * 5.5;
+        if (carried > capacity || drop <= 0) {
+          // Slowing, or running uphill into a hollow: put material down.
+          const put = drop <= 0 ? Math.min(carried, -drop + 0.02) : (carried - capacity) * 0.32;
+          deposit(x, z, put);
+          carried -= put;
+        } else {
+          const take = Math.min((capacity - carried) * 0.32, drop);
+          deposit(x, z, -take);
+          carried += take;
+        }
+        water *= 0.985;
+        x = nx; z = nz;
+      }
+    }
+
+    // Angle of repose. Water alone cuts gullies at a hundred and fifty per
+    // cent, which is the sheer-cliff problem all over again; loose material
+    // does not stand at that angle, it slides. Repeatedly move the excess from
+    // the high side of any pair that is steeper than TALUS to the low side,
+    // and what is left is a hillside you can drive up.
+    for (let pass = 0; pass < 12; pass++) {
+      let moved = 0;
+      for (let j = 0; j < fn; j++) {
+        for (let i = 0; i < fn; i++) {
+          const k = j * fn + i;
+          for (const nk of [i < fn - 1 ? k + 1 : -1, j < fn - 1 ? k + fn : -1]) {
+            if (nk < 0) continue;
+            const d = h[k] - h[nk];
+            if (Math.abs(d) <= TALUS) continue;
+            const shift = (Math.abs(d) - TALUS) * 0.5 * Math.sign(d);
+            h[k] -= shift; h[nk] += shift;
+            moved++;
+          }
+        }
+      }
+      if (!moved) break;
+    }
+
+    // Erosion is a countryside feature. Scale each cell's change by how far it
+    // is from anything built, so a levelled block never has a gully in it.
+    if (!this.zones) return;
+    const m = this.n - 1;
+    for (let j = 0; j < fn; j++) {
+      for (let i = 0; i < fn; i++) {
+        const bi = clamp(Math.floor(i / SUBDIV), 0, m - 1);
+        const bj = clamp(Math.floor(j / SUBDIV), 0, m - 1);
+        const wild = this.zones.builtUp(bi, bj) ? 0 : 1;
+        const k = j * fn + i;
+        h[k] = before[k] + (h[k] - before[k]) * wild;
+      }
+    }
+  }
+
+  // Add the junction corrections back into the fine landform, spread bilinearly
+  // between the junctions so nothing creases.
+  reconcile(before) {
+    const n = this.n, fn = this.fn, h = this.fine;
+    const delta = new Float32Array(n * n);
+    for (let k = 0; k < delta.length; k++) delta[k] = this.h[k] - before[k];
+    for (let j = 0; j < fn; j++) {
+      for (let i = 0; i < fn; i++) {
+        const ci = i / SUBDIV, cj = j / SUBDIV;
+        const a = Math.min(n - 2, ci | 0), b = Math.min(n - 2, cj | 0);
+        const tx = ci - a, tz = cj - b;
+        const d = lerp(lerp(delta[b * n + a], delta[b * n + a + 1], tx),
+                       lerp(delta[(b+1) * n + a], delta[(b+1) * n + a + 1], tx), tz);
+        h[j * fn + i] += d;
+      }
+    }
   }
 
   // One pad height per block, and how much of it applies. A pad sits at the
@@ -134,6 +278,33 @@ class Terrain {
         this.pad[bj * m + bi] = (this.node(bi, bj) + this.node(bi + 1, bj) +
                                  this.node(bi, bj + 1) + this.node(bi + 1, bj + 1)) / 4;
         this.flat[bj * m + bi] = !this.zones || this.zones.builtUp(bi, bj) ? 1 : 0;
+      }
+    }
+  }
+
+  // Merged blocks share one pad. Called once the road network is known, which
+  // is after the first levelling pass, so this overwrites rather than replaces.
+  levelGroups(groups, merged) {
+    const m = this.n - 1;
+    for (const g of groups.values()) {
+      if (g.cells <= 1) continue;
+      let sum = 0, count = 0;
+      for (let bj = g.j0; bj <= g.j1; bj++) {
+        for (let bi = g.i0; bi <= g.i1; bi++) { sum += this.pad[bj * m + bi]; count++; }
+      }
+      const mean = sum / count;
+      // If every cell of the group is built up the whole thing levels; if any
+      // of it is open country the group is not levelled at all, or a field
+      // would end up as a flat plate the size of two blocks.
+      let allBuilt = true;
+      for (let bj = g.j0; bj <= g.j1 && allBuilt; bj++) {
+        for (let bi = g.i0; bi <= g.i1; bi++) {
+          if (!this.flat[bj * m + bi]) { allBuilt = false; break; }
+        }
+      }
+      if (!allBuilt) continue;
+      for (let bj = g.j0; bj <= g.j1; bj++) {
+        for (let bi = g.i0; bi <= g.i1; bi++) this.pad[bj * m + bi] = mean;
       }
     }
   }
@@ -162,14 +333,16 @@ class Terrain {
                 lerp(at(i, j + 1), at(i + 1, j + 1), tu), tv);
   }
 
-  // The landform with nothing built on it.
+  // The landform with nothing built on it: the eroded fine field, plus a
+  // gentle roll under the resolution of it.
   natural(x, z) {
-    const fx = x / this.spacing, fz = z / this.spacing;
-    const i = Math.floor(fx), j = Math.floor(fz);
-    const tx = clamp(fx - i, 0, 1), tz = clamp(fz - j, 0, 1);
-    const a = this.node(i, j), b = this.node(i + 1, j);
-    const c = this.node(i, j + 1), d = this.node(i + 1, j + 1);
-    return lerp(lerp(a, b, tx), lerp(c, d, tx), tz) + this.roll(x, z);
+    const fn = this.fn, h = this.fine;
+    const gx = clamp(x / this.spacing * SUBDIV, 0, fn - 1.001);
+    const gz = clamp(z / this.spacing * SUBDIV, 0, fn - 1.001);
+    const i = gx | 0, j = gz | 0;
+    const tx = gx - i, tz = gz - j;
+    const k = j * fn + i;
+    return lerp(lerp(h[k], h[k+1], tx), lerp(h[k+fn], h[k+fn+1], tx), tz) + this.roll(x, z);
   }
 
   // Cut back anything that rises faster than MAX_STEP between neighbours, and

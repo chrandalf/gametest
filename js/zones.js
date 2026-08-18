@@ -74,9 +74,14 @@ function effectiveRank(key, host) {
 
 class ZoneMap {
   // n is the number of blocks per axis.
-  constructor(seed, n) {
+  constructor(seed, n, terrainSeed) {
     this.n = n;
     this.seed = seed >>> 0;
+    // The zone map is built before the terrain, but towns want to go where the
+    // ground is flat, so it recomputes the broad landform from the terrain's
+    // own seed and formula. Only the two low-frequency octaves are needed —
+    // hills and erosion come later and are kept away from anything built.
+    this.terrainSeed = (terrainSeed === undefined ? seed ^ 0x3c6ef35f : terrainSeed) >>> 0;
     this.rank = new Int8Array(n * n);
     this.zone = new Int8Array(n * n);
     this.u = new Float32Array(n * n);      // smoothed urbanity, 0..1
@@ -109,6 +114,32 @@ class ZoneMap {
     return makeRandom(h || 1);
   }
 
+  // The broad landform, in block coordinates. Must match the first two octaves
+  // of Terrain.build() or the towns would be sited against the wrong hills.
+  landAt(bi, bj) {
+    const ci = bi + 0.5, cj = bj + 0.5;
+    return fbm(ci * 0.16, cj * 0.16, this.terrainSeed, 3) * 0.75 +
+           fbm(ci * 0.44 + 13, cj * 0.44 - 7, this.terrainSeed ^ 0x2f1b, 2) * 0.25;
+  }
+
+  // How level the ground is around a block, 0 (a hillside) to 1 (a plain).
+  // Settlements grew where you could build, plough and cart things about, and
+  // scoring for it is what stops a high street being laid up a one-in-four.
+  flatnessAt(bi, bj) {
+    const n = this.n;
+    let sum = 0, sumSq = 0, count = 0;
+    for (let dj = -2; dj <= 2; dj++) {
+      for (let di = -2; di <= 2; di++) {
+        const x = clamp(bi + di, 0, n - 1), z = clamp(bj + dj, 0, n - 1);
+        const v = this.landAt(x, z);
+        sum += v; sumSq += v * v; count++;
+      }
+    }
+    const mean = sum / count;
+    const variance = Math.max(0, sumSq / count - mean * mean);
+    return 1 / (1 + Math.sqrt(variance) * 26);
+  }
+
   build() {
     const n = this.n, seed = this.seed;
     const rand = makeRandom(seed ^ 0x5bf03635);
@@ -116,10 +147,35 @@ class ZoneMap {
     // Two cities, at opposite ends of one line across the map, with open
     // country between them. Sharing a line is what lets a single motorway
     // corridor join them up rather than wander diagonally through the fields.
+    //
+    // Which line, and where along it, is decided by the ground rather than by
+    // the dice: the corridor takes the flattest row or column in the middle of
+    // the map — a plain or a valley floor, which is where a trunk road would
+    // actually go — and each city sits at the flattest spot along its half of
+    // it. Centrality still counts for a little, so they do not hug the edges.
     const alongX = rand() < 0.5;
-    const line = Math.round(lerp(n * 0.26, n * 0.74, rand()));
-    const aPos = n * (0.15 + rand() * 0.04);
-    const bPos = n * (0.85 - rand() * 0.04);
+    const lo = Math.round(n * 0.26), hi = Math.round(n * 0.74);
+    let line = lo, lineBest = -Infinity;
+    for (let k = lo; k <= hi; k++) {
+      let sum = 0;
+      for (let t = 2; t < n - 2; t++) sum += this.flatnessAt(alongX ? t : k, alongX ? k : t);
+      // A whisker of noise, so two equally flat lines do not always tie the same way.
+      const score = sum / (n - 4) + rand() * 0.02;
+      if (score > lineBest) { lineBest = score; line = k; }
+    }
+    const centre = (n - 1) / 2;
+    const bestAlong = (from, to) => {
+      let at = from, best = -Infinity;
+      for (let t = from; t <= to; t++) {
+        const bi = alongX ? t : line, bj = alongX ? line : t;
+        const centrality = 1 - Math.abs(t - centre) / centre;
+        const score = this.flatnessAt(bi, bj) * 0.7 + centrality * 0.3 + rand() * 0.03;
+        if (score > best) { best = score; at = t; }
+      }
+      return at;
+    };
+    const aPos = bestAlong(Math.round(n * 0.12), Math.round(n * 0.34));
+    const bPos = bestAlong(Math.round(n * 0.66), Math.round(n * 0.88));
     const city = (pos, peak, reach) => ({
       bi: alongX ? pos : line, bj: alongX ? line : pos, peak, reach: n * reach,
     });
@@ -128,14 +184,27 @@ class ZoneMap {
     this.corridor = { alongX, line };
 
     // A village or two off the corridor, so the countryside is not empty.
+    // They are sited the same way: the flattest spot within reach, and never
+    // crowding a town that is already there.
     const satellites = 1 + ((rand() * 2) | 0);
     for (let s = 0; s < satellites; s++) {
-      const a = rand() * Math.PI * 2;
-      const d = n * (0.18 + rand() * 0.12);
-      const c = this.centres[s % 2];
+      let pick = null, best = -Infinity;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const a = rand() * Math.PI * 2;
+        const d = n * (0.18 + rand() * 0.12);
+        const c = this.centres[s % 2];
+        const bi = clamp(c.bi + Math.cos(a) * d, 1, n - 2);
+        const bj = clamp(c.bj + Math.sin(a) * d, 1, n - 2);
+        let crowded = 0;
+        for (const other of this.centres) {
+          const gap = Math.hypot(other.bi - bi, other.bj - bj);
+          if (gap < n * 0.16) crowded += (n * 0.16 - gap) / (n * 0.16);
+        }
+        const score = this.flatnessAt(Math.round(bi), Math.round(bj)) - crowded * 0.8;
+        if (score > best) { best = score; pick = { bi, bj }; }
+      }
       this.centres.push({
-        bi: clamp(c.bi + Math.cos(a) * d, 1, n - 2),
-        bj: clamp(c.bj + Math.sin(a) * d, 1, n - 2),
+        bi: pick.bi, bj: pick.bj,
         peak: 0.40 + rand() * 0.12,       // a settlement, not a third city
         reach: n * (0.11 + rand() * 0.06),
       });

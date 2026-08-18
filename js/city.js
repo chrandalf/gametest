@@ -77,7 +77,7 @@ class City {
     this.gl = gl;
     this.seed = (seed === undefined ? DEFAULT_SEED : seed) >>> 0;
     this.rand = makeRandom(this.seed);
-    this.zones = new ZoneMap(this.seed, GRID - 1);
+    this.zones = new ZoneMap(this.seed, GRID - 1, this.seed ^ 0x3c6ef35f);
     this.motorway = this.zones.corridor;
     this.terrain = new Terrain(this.seed ^ 0x3c6ef35f, GRID, CELL, this.zones.river,
                                this.zones, ROAD / 2);
@@ -254,6 +254,202 @@ class City {
     return SPEED_LIMITS[clamp(this.roadRank(i, j), 0, RANK_MAX)];
   }
 
+  // ------------------------------------------------------- road network ---
+  // A grid is not a road network, it is a chessboard. Real streets have dead
+  // ends, lanes that go nowhere and blocks of three and five sides, and the
+  // cheapest way to get all of that is not to grow a network from scratch —
+  // it is to generate the grid and then take roads *out* of it, which is what
+  // city-tour's road_network_simplifier does after its buildings are placed.
+  //
+  // Two rules keep the result playable. A minimum spanning tree is worked out
+  // first, weighted toward flat ground and busy streets, and those edges can
+  // never be removed — so the network is provably connected however unlucky
+  // the dice are. And anything too steep to drive is removed outright, which
+  // is where the ragged edges of the map come from: the lanes stop at the
+  // hills rather than climbing them.
+
+  segIndex(axis, li, k) { return (axis * GRID + li) * (GRID - 1) + k; }
+
+  // Is there a road along this segment? `axis` 0 runs along X at grid line
+  // `li`, crossing cell `k`; axis 1 runs along Z.
+  edgeOpen(axis, li, k) {
+    if (li < 0 || li >= GRID || k < 0 || k >= GRID - 1) return false;
+    return this.open[this.segIndex(axis, li, k)] === 1;
+  }
+
+  // The segment leaving junction (i, j) in direction (di, dj), as [axis, li, k].
+  edgeFrom(i, j, di, dj) {
+    if (di !== 0) return [0, j, di > 0 ? i : i - 1];
+    return [1, i, dj > 0 ? j : j - 1];
+  }
+
+  // Can you drive from junction (i, j) in this direction?
+  canGo(i, j, di, dj) {
+    const ni = i + di, nj = j + dj;
+    if (ni < 0 || nj < 0 || ni >= GRID || nj >= GRID) return false;
+    const [axis, li, k] = this.edgeFrom(i, j, di, dj);
+    return this.edgeOpen(axis, li, k);
+  }
+
+  // How many roads meet at a junction. One is a cul-de-sac; two in line is
+  // just a bend; three or four is a proper junction.
+  degree(i, j) {
+    let d = 0;
+    for (const [di, dj] of DIRS4) if (this.canGo(i, j, di, dj)) d++;
+    return d;
+  }
+
+  buildNetwork() {
+    const n = GRID, segs = 2 * GRID * (GRID - 1);
+    this.open = new Uint8Array(segs).fill(1);
+    const T = this.terrain;
+
+    // Every segment, with the two junctions it joins and what it costs to use.
+    const edges = [];
+    for (let axis = 0; axis < 2; axis++) {
+      for (let li = 0; li < GRID; li++) {
+        for (let k = 0; k < GRID - 1; k++) {
+          const a = axis ? [li, k] : [k, li];
+          const b = axis ? [li, k + 1] : [k + 1, li];
+          const rank = Math.max(this.roadRank(a[0], a[1]), this.roadRank(b[0], b[1]));
+          const rise = Math.abs(T.node(a[0], a[1]) - T.node(b[0], b[1]));
+          const mway = this.isMotorway(a[0], a[1]) && this.isMotorway(b[0], b[1]);
+          const noise = hash2(axis * 977 + li, k, this.seed ^ 0x5eed10ad);
+          edges.push({
+            axis, li, k, rank, rise, mway,
+            ia: a[1] * GRID + a[0], ib: b[1] * GRID + b[0],
+            // A spanning route prefers flat ground and busy streets. The
+            // motorway is free, so the trunk route is always part of it.
+            cost: mway ? -1000 : rise * 3 + (RANK_MAX - rank) * 1.6 + noise * 2,
+            noise,
+            roll: hash2(axis * 31 + k, li * 17, this.seed ^ 0x3aa1c0de),
+          });
+        }
+      }
+    }
+
+    // Cut first, repair after. Protecting a spanning tree up front sounds
+    // safer but half the grid ends up in the tree, so almost nothing can be
+    // removed; deleting freely and then mending only what actually broke
+    // leaves the countryside genuinely sparse.
+    //
+    // A downtown block keeps its grid because a city centre really is gridded;
+    // a village keeps about half its lanes; open country keeps a road only
+    // where one was worth making.
+    const CUT = [0.62, 0.56, 0.42, 0.27, 0.13, 0.07, 0.03];
+    // Steeper than this between two junctions and the road is simply not built.
+    const MAX_CLIMB = CELL * 0.15;
+    let cut = 0, steep = 0;
+    for (const e of edges) {
+      const idx = this.segIndex(e.axis, e.li, e.k);
+      if (e.mway) continue;                       // the trunk route is untouchable
+      if (e.rise > MAX_CLIMB) { this.open[idx] = 0; steep++; cut++; continue; }
+      if (e.roll < CUT[clamp(e.rank, 0, RANK_MAX)]) { this.open[idx] = 0; cut++; }
+    }
+
+    // Whatever that broke into islands is joined back up with the cheapest
+    // road available, so the map is provably connected however the dice fell.
+    const parent = new Int32Array(n * n);
+    for (let k = 0; k < parent.length; k++) parent[k] = k;
+    const find = (a) => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
+    const union = (a, b) => { const ra = find(a), rb = find(b); if (ra === rb) return false; parent[ra] = rb; return true; };
+    for (const e of edges) {
+      if (this.open[this.segIndex(e.axis, e.li, e.k)]) union(e.ia, e.ib);
+    }
+    let mended = 0;
+    for (const e of [...edges].sort((p, q) => p.cost - q.cost)) {
+      const idx = this.segIndex(e.axis, e.li, e.k);
+      if (this.open[idx]) continue;
+      if (!union(e.ia, e.ib)) continue;
+      this.open[idx] = 1;
+      cut--; mended++;
+      if (e.rise > MAX_CLIMB) steep--;
+    }
+    this.network = { total: segs, cut, steep, mended, kept: segs - cut };
+  }
+
+  // Where a road has been taken out, the two blocks either side of it and the
+  // corridor between them are one piece of land, and something should be built
+  // across the whole of it — otherwise a deleted street just leaves a strip of
+  // grass with the same two blocks staring at each other over it.
+  //
+  // Merges are only accepted when the result is still a filled rectangle. Every
+  // zone builder works in x0..x1 by z0..z1 and hands out plots along four
+  // edges; an L-shaped block would need all nine of them rewritten, and a
+  // bigger rectangle needs none of them touched at all.
+  buildMerges() {
+    const m = GRID - 1;
+    const parent = new Int32Array(m * m);
+    const box = [];
+    for (let k = 0; k < m * m; k++) {
+      parent[k] = k;
+      box.push({ i0: k % m, j0: (k / m) | 0, i1: k % m, j1: (k / m) | 0, cells: 1 });
+    }
+    const find = (a) => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
+
+    const zoneOf = (k) => this.zones.zoneAt(k % m, (k / m) | 0);
+    const tryJoin = (ka, kb) => {
+      const ra = find(ka), rb = find(kb);
+      if (ra === rb) return;
+      // The river draws its own surface per cell and the terrain levels open
+      // country differently from town; neither survives being merged.
+      if (zoneOf(ka) === Z.WATER || zoneOf(kb) === Z.WATER) return;
+      if (this.isRural(ka % m, (ka / m) | 0) !== this.isRural(kb % m, (kb / m) | 0)) return;
+      const a = box[ra], b = box[rb];
+      const i0 = Math.min(a.i0, b.i0), i1 = Math.max(a.i1, b.i1);
+      const j0 = Math.min(a.j0, b.j0), j1 = Math.max(a.j1, b.j1);
+      // Only if the two together exactly fill their bounding box.
+      if ((i1 - i0 + 1) * (j1 - j0 + 1) !== a.cells + b.cells) return;
+      // ...and not so big that a single zone swallows a quarter of the map.
+      if ((i1 - i0 + 1) > 2 || (j1 - j0 + 1) > 2) return;
+      parent[ra] = rb;
+      box[rb] = { i0, j0, i1, j1, cells: a.cells + b.cells };
+    };
+
+    for (let bj = 0; bj < m; bj++) {
+      for (let bi = 0; bi < m; bi++) {
+        // The road separating this block from its eastern neighbour runs along
+        // Z at grid line bi+1; the one to the north runs along X at line bj+1.
+        if (bi + 1 < m && !this.edgeOpen(1, bi + 1, bj)) tryJoin(bj * m + bi, bj * m + bi + 1);
+        if (bj + 1 < m && !this.edgeOpen(0, bj + 1, bi)) tryJoin(bj * m + bi, (bj + 1) * m + bi);
+      }
+    }
+
+    // A merged group takes the zone of its root, so it reads as one place
+    // rather than half a park and half a warehouse yard.
+    this.merged = new Int32Array(m * m);
+    this.groups = new Map();
+    for (let k = 0; k < m * m; k++) {
+      const r = find(k);
+      this.merged[k] = r;
+      if (!this.groups.has(r)) this.groups.set(r, box[r]);
+    }
+    let joined = 0;
+    for (const g of this.groups.values()) if (g.cells > 1) joined++;
+    this.mergeCount = joined;
+    // The terrain levels each block to its own pad; a merged block has to be
+    // one pad or its buildings stand at one height and its ground at another.
+    this.terrain.levelGroups(this.groups, this.merged);
+  }
+
+  // Bounds of the block a cell belongs to, merges included.
+  blockBounds(bi, bj) {
+    const m = GRID - 1;
+    const g = this.groups ? this.groups.get(this.merged[bj * m + bi]) : null;
+    const b = g || { i0: bi, j0: bj, i1: bi, j1: bj };
+    return {
+      x0: roadCenter(b.i0) + ROAD/2, x1: roadCenter(b.i1 + 1) - ROAD/2,
+      z0: roadCenter(b.j0) + ROAD/2, z1: roadCenter(b.j1 + 1) - ROAD/2,
+      root: b,
+    };
+  }
+
+  // Is this cell the one that builds for its group?
+  isBlockRoot(bi, bj) {
+    const m = GRID - 1;
+    return !this.merged || this.merged[bj * m + bi] === bj * m + bi;
+  }
+
   // --------------------------------------------------------- road shape ---
   // A road does not have to be a straight line just because its junctions sit
   // on a grid. Each segment bows away from its grid line and back, so the
@@ -278,6 +474,7 @@ class City {
   // crosses, `axis` 0 for a road running along X and 1 for one along Z.
   bowAmp(li, k, axis) {
     if (k < 0 || k >= GRID - 1 || li < 0 || li >= GRID) return 0;
+    if (this.open && !this.edgeOpen(axis, li, k)) return 0;
     const a = axis ? [li, k] : [k, li];
     const c = axis ? [li, k + 1] : [k + 1, li];
     if (this.isMotorway(a[0], a[1]) || this.isMotorway(c[0], c[1])) return 0;
@@ -311,9 +508,21 @@ class City {
       const k = clamp(Math.floor(along / CELL), 0, GRID - 2);
       const a = axis ? [li, k] : [k, li];
       const c = axis ? [li, k + 1] : [k + 1, li];
+      if (!this.edgeOpen(axis, li, k)) continue;
       const rank = Math.max(this.roadRank(a[0], a[1]), this.roadRank(c[0], c[1]));
       const half = this.roadHalf(rank, this.isMotorway(a[0], a[1]));
       if (Math.abs(across - roadCenter(li) - this.bowAt(along, li, axis)) < half + p) return true;
+    }
+    // Junction boxes are tarmac too, and they are wider than either road that
+    // meets there — a car swinging round in one is not off the road.
+    const ji = Math.round(x / CELL), jj = Math.round(z / CELL);
+    if (ji >= 0 && jj >= 0 && ji < GRID && jj < GRID && this.degree(ji, jj)) {
+      let rk = this.roadRank(ji, jj);
+      for (const [di, dj] of DIRS4) {
+        if (this.canGo(ji, jj, di, dj)) rk = Math.max(rk, this.roadRank(ji + di, jj + dj));
+      }
+      const hw = this.roadHalf(rk, this.isMotorway(ji, jj)) + p;
+      if (Math.abs(x - roadCenter(ji)) < hw && Math.abs(z - roadCenter(jj)) < hw) return true;
     }
     return false;
   }
@@ -424,6 +633,8 @@ class City {
 
   build() {
     const rand = this.rand;
+    this.buildNetwork();
+    this.buildMerges();
     // Ground plane, tiled on the road grid and skipped over the river — one
     // sheet of grass at y=0 would sit on top of the water and hide it.
     const ground = new MeshBuilder();
@@ -434,11 +645,12 @@ class City {
     for (let bi = 0; bi < GRID - 1; bi++) {
       for (let bj = 0; bj < GRID - 1; bj++) {
         if (this.zones.zoneAt(bi, bj) === Z.WATER) continue;
+        if (!this.isBlockRoot(bi, bj)) continue;
         // Only the block itself: the road corridors around it are covered by
         // the carriageway and its verge, which are cut from one strip and so
         // cannot disagree with each other about where the surface is.
-        const gx0 = roadCenter(bi) + ROAD/2 - 2, gx1 = roadCenter(bi + 1) - ROAD/2 + 2;
-        const gz0 = roadCenter(bj) + ROAD/2 - 2, gz1 = roadCenter(bj + 1) - ROAD/2 + 2;
+        const bb = this.blockBounds(bi, bj);
+        const gx0 = bb.x0 - 2, gx1 = bb.x1 + 2, gz0 = bb.z0 - 2, gz1 = bb.z1 + 2;
         // A levelled block is a plane, so it needs no subdividing at all.
         const sub = this.isRural(bi, bj) ? 5 : 1;
         this.sheet(ground, gx0, gz0, gx1, gz1, sub, -0.10,
@@ -472,6 +684,16 @@ class City {
     for (let axis = 0; axis < 2; axis++) {
       for (let li = 0; li < GRID; li++) {
         for (let k = 0; k < GRID - 1; k++) {
+          if (!this.edgeOpen(axis, li, k)) {
+            // No road here. The corridor still has to be covered or there is a
+            // twenty-six metre hole through the world where one used to be.
+            // Grass, laid the same way, so it mates with its neighbours.
+            const b0 = chunkAt(axis ? li : k, axis ? k : li);
+            b0.style(TEX.GRASS, [0.52, 0.62, 0.42], 0);
+            this.ribbon(b0, axis, li, roadCenter(li), roadCenter(k), roadCenter(k + 1),
+                        -ROAD/2 - 2, ROAD/2 + 2, -0.02, 8, (ROAD + 4) / 16, CELL / 16);
+            continue;
+          }
           const a = axis ? [li, k] : [k, li];
           const rk = segRank(axis, li, k);
           const mway = this.isMotorway(a[0], a[1]) &&
@@ -513,8 +735,11 @@ class City {
     // Junction patches, wide enough for the widest road that meets there.
     for (let i = 0; i < GRID; i++) {
       for (let j = 0; j < GRID; j++) {
+        if (!this.degree(i, j)) continue;                  // nothing meets here
         let rk = this.roadRank(i, j);
-        for (const [di, dj] of DIRS4) rk = Math.max(rk, this.roadRank(i + di, j + dj));
+        for (const [di, dj] of DIRS4) {
+          if (this.canGo(i, j, di, dj)) rk = Math.max(rk, this.roadRank(i + di, j + dj));
+        }
         const hw = this.roadHalf(rk, this.isMotorway(i, j));
         const b = chunkAt(i, j);
         b.style(TEX.ASPHALT, tintFor(rk), 0);
@@ -528,6 +753,7 @@ class City {
     for (let axis = 0; axis < 2; axis++) {
       for (let li = 0; li < GRID; li++) {
         for (let k = 0; k < GRID - 1; k++) {
+          if (!this.edgeOpen(axis, li, k)) continue;
           const a = axis ? [li, k] : [k, li];
           if (segRank(axis, li, k) < 3) continue;
           if (this.isMotorway(a[0], a[1])) continue;   // its own markings, later
@@ -550,6 +776,7 @@ class City {
       const c = roadCenter(i);
       for (let j = 0; j < GRID; j++) {
         if (this.isMotorway(i, j)) continue;
+        if (this.degree(i, j) < 3) continue;               // not a crossroads
         const b = chunkAt(i, j);
         if (this.roadRank(i, j) < 4) continue;
         b.style(TEX.MARK, [0.95, 0.95, 0.92], 0);
@@ -574,8 +801,11 @@ class City {
     }
 
     // --- blocks ---
+    // One pass per group, not per cell: a merged block is built once, across
+    // the whole of the land the deleted road released.
     for (let bi = 0; bi < GRID - 1; bi++) {
       for (let bj = 0; bj < GRID - 1; bj++) {
+        if (!this.isBlockRoot(bi, bj)) continue;
         this.buildBlock(chunkAt(bi, bj), bi, bj);
       }
     }
@@ -587,7 +817,7 @@ class City {
     for (let i = 0; i < GRID; i++) {
       for (let j = 0; j < GRID; j++) {
         const rk = this.roadRank(i, j);
-        if (rk < 2) continue;
+        if (rk < 2 || !this.degree(i, j)) continue;
         const cx = roadCenter(i), cz = roadCenter(j);
         const corners = rk >= 4 ? [[-1,-1],[1,-1],[-1,1],[1,1]]
                       : rk === 3 ? [[-1,-1],[1,1]] : [[1,1]];
@@ -607,10 +837,12 @@ class City {
         // most of why the city went pitch black between corners.
         if (rk >= 2) {
           const spacing = rk >= 4 ? CELL / 4 : rk === 3 ? CELL / 3 : CELL / 2;
+          // Down the length of each street that actually exists.
+          const northOpen = this.canGo(i, j, 0, 1), eastOpen = this.canGo(i, j, 1, 0);
           for (let t = spacing; t < CELL - 1; t += spacing) {
             const side = ((t / spacing) | 0) % 2 ? 1 : -1;
-            if (i < GRID - 1) place(cx + side * (ROAD/2 + 1.6), cz + t, -side, 0);
-            if (j < GRID - 1) place(cx + t, cz + side * (ROAD/2 + 1.6), 0, -side);
+            if (northOpen) place(cx + side * (ROAD/2 + 1.6), cz + t, -side, 0);
+            if (eastOpen) place(cx + t, cz + side * (ROAD/2 + 1.6), 0, -side);
           }
         }
       }
@@ -627,7 +859,8 @@ class City {
     const rampCells = [];
     for (let i = 1; i < GRID - 1; i++) {
       for (let j = 1; j < GRID - 1; j++) {
-        if (this.roadRank(i, j) >= 3 && !onCircuit(i, j) && !this.isMotorway(i, j)) {
+        if (this.roadRank(i, j) >= 3 && !onCircuit(i, j) && !this.isMotorway(i, j) &&
+            this.canGo(i, j, 1, 0) && this.canGo(i, j, 0, 1)) {
           rampCells.push([i, j]);
         }
       }
@@ -848,6 +1081,7 @@ class City {
     for (let j = 0; j < GRID; j++) {
       for (let bi = 0; bi < GRID - 1; bi++) {
         if (!isWet(bi, j - 1) || !isWet(bi, j)) continue;
+        if (!this.edgeOpen(0, j, bi)) continue;      // no road, so no crossing
         span(chunkAt(bi, j), roadCenter(bi) + ROAD/2, roadCenter(j),
              roadCenter(bi + 1) - ROAD/2, roadCenter(j), 0, 1);
       }
@@ -855,6 +1089,7 @@ class City {
     for (let i = 0; i < GRID; i++) {
       for (let bj = 0; bj < GRID - 1; bj++) {
         if (!isWet(i - 1, bj) || !isWet(i, bj)) continue;
+        if (!this.edgeOpen(1, i, bj)) continue;
         span(chunkAt(i, bj), roadCenter(i), roadCenter(bj) + ROAD/2,
              roadCenter(i), roadCenter(bj + 1) - ROAD/2, 1, 0);
       }
@@ -868,9 +1103,9 @@ class City {
     const m = margin === undefined ? 0.6 : margin;
     const out = [];
     for (const b of this.buildings) {
-      const bi = Math.floor((b.x0 + b.x1) / 2 / CELL), bj = Math.floor((b.z0 + b.z1) / 2 / CELL);
-      const x0 = roadCenter(bi) + ROAD/2, x1 = roadCenter(bi + 1) - ROAD/2;
-      const z0 = roadCenter(bj) + ROAD/2, z1 = roadCenter(bj + 1) - ROAD/2;
+      const bi = clamp(Math.floor((b.x0 + b.x1) / 2 / CELL), 0, GRID - 2);
+      const bj = clamp(Math.floor((b.z0 + b.z1) / 2 / CELL), 0, GRID - 2);
+      const { x0, x1, z0, z1 } = this.blockBounds(bi, bj);
       if (b.x0 < x0 - m || b.x1 > x1 + m || b.z0 < z0 - m || b.z1 > z1 + m) {
         out.push({ bi, bj, b });
       }
@@ -911,8 +1146,8 @@ class City {
     const zones = this.zones;
     const zone = zones.zoneAt(bi, bj);
     const info = ZONES[zone];
-    const x0 = roadCenter(bi) + ROAD/2, x1 = roadCenter(bi + 1) - ROAD/2;
-    const z0 = roadCenter(bj) + ROAD/2, z1 = roadCenter(bj + 1) - ROAD/2;
+    const bounds = this.blockBounds(bi, bj);
+    const x0 = bounds.x0, x1 = bounds.x1, z0 = bounds.z0, z1 = bounds.z1;
     const rank = zones.rankAt(bi, bj);
 
     // Pavement: a full slab in town, a kerbside band in the suburbs, nothing
@@ -1235,6 +1470,16 @@ class City {
         for (const size of [3, 4]) {
           const i1 = i0 + size, j1 = j0 + size;
           if (i1 >= GRID || j1 >= GRID) continue;
+          // Every side has to be a road you can actually drive, or the lap is
+          // a lap through somebody's garden.
+          let whole = true;
+          for (let i = i0; i < i1 && whole; i++) {
+            if (!this.edgeOpen(0, j0, i) || !this.edgeOpen(0, j1, i)) whole = false;
+          }
+          for (let j = j0; j < j1 && whole; j++) {
+            if (!this.edgeOpen(1, i0, j) || !this.edgeOpen(1, i1, j)) whole = false;
+          }
+          if (!whole) continue;
           let score = 0;
           for (let i = i0; i <= i1; i++) {
             score += this.roadRank(i, j0) + this.roadRank(i, j1);
@@ -1269,10 +1514,24 @@ class City {
   // Somewhere sensible to start: on a road in the middle of the suburbs, so
   // the city is one way and the countryside the other.
   pickSpawn() {
-    const blk = this.zones.findBlock([Z.SUBURB, Z.TOWN], this.rand) ||
-                this.zones.findBlock([Z.VILLAGE], this.rand) || { bi: 1, bj: 1 };
-    return { x: roadCenter(blk.bi) + CELL/2, z: roadCenter(blk.bj) - LANE,
-             yaw: Math.PI / 2, bi: blk.bi, bj: blk.bj };
+    // Somewhere with a road out of it, or you start the game in a field.
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const blk = this.zones.findBlock([Z.SUBURB, Z.TOWN], this.rand) ||
+                  this.zones.findBlock([Z.VILLAGE], this.rand);
+      if (!blk) break;
+      if (!this.edgeOpen(0, blk.bj, blk.bi)) continue;
+      return { x: roadCenter(blk.bi) + CELL/2, z: roadCenter(blk.bj) - LANE,
+               yaw: Math.PI / 2, bi: blk.bi, bj: blk.bj };
+    }
+    // Fall back to any open east-west segment on the map.
+    for (let j = 1; j < GRID - 1; j++) {
+      for (let i = 0; i < GRID - 1; i++) {
+        if (!this.edgeOpen(0, j, i)) continue;
+        return { x: roadCenter(i) + CELL/2, z: roadCenter(j) - LANE,
+                 yaw: Math.PI / 2, bi: i, bj: j };
+      }
+    }
+    return { x: roadCenter(1) + CELL/2, z: roadCenter(1) - LANE, yaw: Math.PI/2, bi: 1, bj: 1 };
   }
 
   // Which zone a world position falls in.
