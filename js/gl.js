@@ -437,7 +437,6 @@ const TEX = {
   FIELD: 17, DIRT: 18, TILE: 19, COTTAGE: 20, SIDING: 21, HOUSE: 22, WATER: 23,
 };
 const TEX_COUNT = 24;
-const PLATE_TEXT = 'E901 GBL';
 const TEX_SIZE = 256;
 
 function makeTextureArray(gl) {
@@ -585,23 +584,33 @@ function makeTextureArray(gl) {
   painters[TEX.PLAIN] = () => { fill('#ffffff'); noise(6); };
 
   painters[TEX.PLATE] = () => {
-    // The square tile is stretched across a 4.7:1 plate, so the glyphs are drawn
-    // pre-squashed here and come out correctly proportioned on the car.
+    // Sixteen different registrations in a 4x4 grid. Each car picks one tile
+    // through the scene shader's UV window, so no two cars in a queue need
+    // wear the same plate. Tiles are stretched across a 4.7:1 plate on the
+    // car, so the glyphs are drawn pre-squashed and come out proportioned.
     fill('#fbfbf7');
-    ctx.fillStyle = '#0a0a0a';
+    const letters = 'ABCDEFGHJKLMNPRSTVWXY';
+    const pick = () => letters[(rand() * letters.length) | 0];
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const size = 205;
-    ctx.font = `bold ${size}px "Arial Narrow", Arial, system-ui, sans-serif`;
-    const w = ctx.measureText(PLATE_TEXT).width || 1;
-    ctx.save();
-    ctx.translate(S / 2, S / 2);
-    ctx.scale((S * 0.92) / w, 1);
-    ctx.fillText(PLATE_TEXT, 0, 6);
-    ctx.restore();
-    ctx.strokeStyle = '#2a2a2a';
-    ctx.lineWidth = 7;
-    ctx.strokeRect(3.5, 3.5, S - 7, S - 7);
+    const cell = S / 4;
+    for (let k = 0; k < 16; k++) {
+      const gx = (k % 4) * cell, gy = ((k / 4) | 0) * cell;
+      const txt = `${pick()}${pick()}${(rand() * 10) | 0}${(rand() * 10) | 0} ${pick()}${pick()}${pick()}`;
+      ctx.fillStyle = '#0a0a0a';
+      ctx.font = 'bold 50px "Arial Narrow", Arial, system-ui, sans-serif';
+      const w = ctx.measureText(txt).width || 1;
+      ctx.save();
+      ctx.translate(gx + cell / 2, gy + cell / 2);
+      // Vertically flipped: the atlas is uploaded without UNPACK_FLIP_Y, so a
+      // canvas-upright glyph lands on the plate upside down.
+      ctx.scale((cell * 0.9) / w, -1);
+      ctx.fillText(txt, 0, 2);
+      ctx.restore();
+      ctx.strokeStyle = '#2a2a2a';
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(gx + 1.5, gy + 1.5, cell - 3, cell - 3);
+    }
   };
   painters[TEX.MARK] = () => { fill('#f2f2ee'); noise(10); };
 

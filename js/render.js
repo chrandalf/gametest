@@ -18,6 +18,9 @@ uniform mat4 uViewProj;
 uniform mat4 uModel;
 uniform mat4 uLightVP;
 uniform mat3 uNormalMat;
+// UV window: scale and offset applied to every UV. (1,1,0,0) is the whole
+// tile; a quarter window picks one number plate out of the 4x4 plate sheet.
+uniform vec4 uUVWin;
 
 out vec3 vWorld;
 out vec3 vNormal;
@@ -32,7 +35,7 @@ void main() {
   vec4 wp = uModel * vec4(aPos, 1.0);
   vWorld = wp.xyz;
   vNormal = uNormalMat * aNormal;
-  vUV = aUV;
+  vUV = aUV * uUVWin.xy + uUVWin.zw;
   vLayer = aLayer;
   vTint = aTint;
   vEmis = abs(aEmis);
@@ -515,6 +518,7 @@ class Renderer {
     gl.uniform1f(p.u.uEmisAdd, 0);
     gl.uniform1f(p.u.uWindowMask, 1);
     gl.uniform1f(p.u.uAlpha, 1);
+    gl.uniform4f(p.u.uUVWin, 1, 1, 0, 0);
 
     const lights = env.lights || [];
     const n = Math.min(lights.length, MAX_LIGHTS);
@@ -567,6 +571,14 @@ class Renderer {
     // A cut-out has two visible faces: it must not be culled from behind.
     if (on) gl.disable(gl.CULL_FACE);
     else gl.enable(gl.CULL_FACE);
+  }
+
+  // Pick a sub-rectangle of the texture tile for the next draws. Used for the
+  // number plates: one mesh, sixteen registrations.
+  setUVWindow(sx, sy, ox, oy) {
+    const gl = this.gl;
+    if (this.prog !== this.sceneProg) return;
+    gl.uniform4f(this.prog.u.uUVWin, sx, sy, ox, oy);
   }
 
   setMaterial(tint, emisAdd, windowMask, alpha) {

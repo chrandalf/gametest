@@ -109,6 +109,202 @@ function house(city, b, opt) {
           { skipTop: true, perUnit: 0.3 });
   }
   city.addBuilding(cx - w/2, cz - d/2, cx + w/2, cz + d/2, base + h, 0, 'a house');
+
+  // Every house is somebody's address. The door position is where a walker
+  // heads for; the id ties a driveway spot to the family that parks in it.
+  const id = city.homes.length;
+  city.homes.push({ x: px + fx * 1.3, z: pz + fz * 1.3, cap: 2 + ((rand() * 3) | 0) });
+  return id;
+}
+
+// A surface car park: an apron of tarmac with painted bays and an aisle to
+// swing round in. Every bay is registered as a parking spot, so the census can
+// put somebody's car in it and a commuter can reverse into it. The bay lines
+// go into the block's decal mesh, so like all road paint they cast no shadow.
+function carPark(city, b, ctx, x0, z0, x1, z1) {
+  const y = ctx.baseY;
+  b.style(TEX.ASPHALT, [1.05, 1.04, 1.01], 0);
+  b.quad([x0, y + 0.03, z1], [x1, y + 0.03, z1], [x1, y + 0.03, z0], [x0, y + 0.03, z0],
+         (x1 - x0) / 9, (z1 - z0) / 9);
+  const paint = ctx.paint;
+  const horiz = (x1 - x0) >= (z1 - z0);       // bays stack along the long axis
+  const long = horiz ? x1 - x0 : z1 - z0;
+  const deep = horiz ? z1 - z0 : x1 - x0;
+  const BAY_W = 3.1;
+  const rows = deep >= 5.4 * 2 + 6 ? 2 : 1;
+  const BAY_D = Math.min(5.4, rows === 1 ? deep - 6.2 : deep / 2 - 3);
+  if (BAY_D < 4.0 || long < BAY_W * 2 + 2) return;
+  const n = Math.floor((long - 2) / BAY_W);
+  paint.style(TEX.MARK, [0.92, 0.92, 0.88], 0);
+  const stripe = (ax, az, bx, bz) => {
+    paint.quad([Math.min(ax, bx), y + 0.045, Math.max(az, bz)],
+               [Math.max(ax, bx), y + 0.045, Math.max(az, bz)],
+               [Math.max(ax, bx), y + 0.045, Math.min(az, bz)],
+               [Math.min(ax, bx), y + 0.045, Math.min(az, bz)], 1, 1);
+  };
+  const sides = rows === 2 ? [-1, 1] : [1];
+  for (const side of sides) {
+    for (let k = 0; k <= n; k++) {
+      const a = (horiz ? x0 : z0) + 1 + k * BAY_W;
+      if (horiz) {
+        const ze = side < 0 ? z0 : z1;
+        stripe(a - 0.07, ze - side * BAY_D, a + 0.07, ze);
+        if (k < n) {
+          city.addSpot(a + BAY_W / 2, ze - side * BAY_D / 2, side < 0 ? Math.PI : 0, 'bay');
+        }
+      } else {
+        const xe = side < 0 ? x0 : x1;
+        stripe(xe - side * BAY_D, a - 0.07, xe, a + 0.07);
+        if (k < n) {
+          city.addSpot(xe - side * BAY_D / 2, a + BAY_W / 2,
+                       side < 0 ? -Math.PI / 2 : Math.PI / 2, 'bay');
+        }
+      }
+    }
+  }
+  // Lamps at two corners, just outside the tarmac — in the aisle they were
+  // exactly where a car swings while reversing into a bay.
+  city.streetLight(b, x0 - 0.9, z0 - 0.9, 1, 1);
+  city.streetLight(b, x1 + 0.9, z1 + 0.9, -1, -1);
+}
+
+// A petrol station: forecourt, canopy over two pump islands, a shop, a price
+// totem, and somewhere to leave the car while you pay. Repairs done on the
+// forecourt are quick and cheap — this is the game's garage.
+function buildGasStation(city, b, ctx) {
+  const { x0, z0, x1, z1 } = ctx;
+  const y = ctx.baseY;
+  const cx = (x0 + x1) / 2;
+
+  // Forecourt apron, open to the road on the south edge.
+  const f0 = z0 + 1.5, f1 = z0 + 27;
+  b.style(TEX.CONCRETE, [0.86, 0.86, 0.84], 0);
+  b.quad([x0 + 1.5, y + 0.04, f1], [x1 - 1.5, y + 0.04, f1],
+         [x1 - 1.5, y + 0.04, f0], [x0 + 1.5, y + 0.04, f0],
+         (x1 - x0) / 7, (f1 - f0) / 7);
+
+  // Canopy: four columns and a flat deck whose underside glows at night.
+  const pz = z0 + 13;
+  b.style(TEX.METAL, [0.82, 0.83, 0.85], 0);
+  for (const sx of [-7.5, 7.5]) {
+    for (const sz of [-3.2, 3.2]) {
+      b.cylinder(cx + sx, y + 2.9, pz + sz, 0.24, 5.8, 8, { vRepeat: 2 });
+    }
+  }
+  b.style(TEX.PLAIN, [0.95, 0.95, 0.94], 0.30);
+  b.chamferBox(cx, y + 6.05, pz, 11.5, 0.30, 6.2, 0.14, { perUnit: 0.4 });
+  b.style(TEX.PLAIN, [0.92, 0.16, 0.14], 0.62);
+  b.chamferBox(cx, y + 6.52, pz, 11.7, 0.22, 6.4, 0.10, { perUnit: 0.5 });
+
+  // Two pump islands, two pumps each. The pumps are solid — clipping one at
+  // forty is a crash, exactly as it would be.
+  for (const ix of [-4.5, 4.5]) {
+    b.style(TEX.CONCRETE, [0.9, 0.9, 0.87], 0);
+    b.chamferBox(cx + ix, y + 0.14, pz, 1.1, 0.14, 4.6, 0.08, { perUnit: 0.5 });
+    for (const iz of [-2.2, 2.2]) {
+      b.style(TEX.PLAIN, [0.90, 0.20, 0.16], 0.12);
+      b.chamferBox(cx + ix, y + 1.05, pz + iz, 0.44, 0.78, 0.5, 0.08, { perUnit: 1 });
+      b.style(TEX.PLAIN, [0.94, 0.94, 0.92], 0.3);
+      b.box(cx + ix, y + 1.48, pz + iz, 0.34, 0.20, 0.4, { perUnit: 1 });
+      city.addCollider(cx + ix - 0.6, pz + iz - 0.66, cx + ix + 0.6, pz + iz + 0.66,
+                       y + 1.9, 'a petrol pump');
+    }
+  }
+
+  // The shop, set back behind the pumps.
+  const shopZ = z0 + 34;
+  b.style(TEX.SHOP, [1, 1, 1], 0);
+  b.chamferBox(cx, y + 2.2, shopZ, 8, 2.2, 4.5, 0.2, { skipTop: true, uvU: 2, uvV: 1 });
+  b.style(TEX.CONCRETE, [0.88, 0.88, 0.85], 0);
+  b.box(cx, y + 4.55, shopZ, 8.4, 0.22, 4.9, { perUnit: 0.4 });
+  city.addBuilding(cx - 8, shopZ - 4.5, cx + 8, shopZ + 4.5, y + 4.8, 0,
+                   'the petrol station shop');
+  city.works.push({ x: cx, z: shopZ - 6.2, jobs: 3 });
+
+  // Price totem by the entrance.
+  b.style(TEX.METAL, [0.6, 0.62, 0.64], 0);
+  b.box(x0 + 6, y + 2.6, z0 + 4, 0.3, 2.6, 0.3, { perUnit: 1 });
+  b.style(TEX.PLAIN, [0.92, 0.16, 0.14], 0.7);
+  b.chamferBox(x0 + 6, y + 6.0, z0 + 4, 1.5, 1.4, 0.4, 0.12, { perUnit: 0.7 });
+  city.addCollider(x0 + 5.6, z0 + 3.6, x0 + 6.4, z0 + 4.4, y + 7.4,
+                   'the petrol station sign');
+
+  // Bays beside the shop for anyone stopping longer than a fill-up.
+  for (let k = 0; k < 3; k++) {
+    city.addSpot(cx + 11.2, shopZ - 3.5 + k * 3.3, Math.PI / 2, 'bay');
+  }
+
+  // The back of the plot stays green.
+  hedge(city, b, x0 + 3, z1 - 3.6, x1 - 3, z1 - 2.4, 1.3);
+  const rand = ctx.rand;
+  for (let i = 0; i < 4; i++) {
+    if (rand() < 0.3) continue;
+    const tx = lerp(x0 + 6, x1 - 6, rand()), tz = lerp(z0 + 44, z1 - 7, rand());
+    if (!city.onRoadSurface(tx, tz, 2.5)) city.tree(b, tx, tz, 0.9 + rand() * 0.6, y);
+  }
+
+  city.stations.push({ x: cx, z: pz, x0: x0 + 1.5, z0: f0, x1: x1 - 1.5, z1: shopZ + 6 });
+}
+
+// The hospital: a white slab with a red cross you can see across town, an
+// A&E canopy, an ambulance apron the ambulance actually uses, and a visitor
+// car park down one side. Where everyone you run over ends up.
+function buildHospital(city, b, ctx) {
+  const { x0, z0, x1, z1 } = ctx;
+  const y = ctx.baseY;
+  const cx = (x0 + x1) / 2 - 6;
+
+  // Main block, set back behind the ambulance apron.
+  const w = Math.min(30, x1 - x0 - 26), d = 20;
+  const bz = z0 + 22;
+  const h = 6 * FLOOR_H;
+  b.style(TEX.MODERN, [0.97, 0.98, 1.0], 0);
+  b.chamferBox(cx, y + h / 2, bz + d / 2, w / 2, h / 2, d / 2, 0.6,
+               { top: TEX.ROOF, topTint: [1, 1, 1],
+                 uvU: Math.max(1, Math.round(w / (4 * FLOOR_H))),
+                 uvV: Math.max(1, Math.round(h / (7 * FLOOR_H))) });
+  // The red cross, proud of the front face and lit from within.
+  b.style(TEX.PLAIN, [0.95, 0.12, 0.10], 0.85);
+  b.box(cx, y + h - 3.2, bz - 0.18, 0.65, 2.0, 0.16, { perUnit: 1 });
+  b.box(cx, y + h - 3.2, bz - 0.18, 2.0, 0.65, 0.16, { perUnit: 1 });
+  city.addBuilding(cx - w / 2, bz, cx + w / 2, bz + d, y + h, 0.3, 'the hospital');
+  city.works.push({ x: cx, z: bz - 1.6, jobs: 15 });
+
+  // A&E canopy over the doors.
+  b.style(TEX.METAL, [0.80, 0.82, 0.84], 0);
+  for (const sx of [-4, 4]) b.cylinder(cx + sx, y + 2.2, bz - 5.5, 0.2, 4.4, 8);
+  b.style(TEX.PLAIN, [0.95, 0.95, 0.94], 0.25);
+  b.chamferBox(cx, y + 4.5, bz - 3, 5.4, 0.24, 3.4, 0.12, { perUnit: 0.5 });
+
+  // Ambulance apron: concrete, red border, kept clear.
+  const a0x = cx - 9, a1x = cx + 9, a0z = z0 + 3, a1z = bz - 1;
+  b.style(TEX.CONCRETE, [0.87, 0.87, 0.85], 0);
+  b.quad([a0x, y + 0.045, a1z], [a1x, y + 0.045, a1z],
+         [a1x, y + 0.045, a0z], [a0x, y + 0.045, a0z], 4, 4);
+  const paint = ctx.paint;
+  paint.style(TEX.MARK, [0.9, 0.18, 0.14], 0);
+  const border = (bx0, bz0, bx1, bz1) => {
+    paint.quad([bx0, y + 0.06, bz1], [bx1, y + 0.06, bz1],
+               [bx1, y + 0.06, bz0], [bx0, y + 0.06, bz0], 1, 1);
+  };
+  border(a0x, a0z, a1x, a0z + 0.3);
+  border(a0x, a1z - 0.3, a1x, a1z);
+  border(a0x, a0z, a0x + 0.3, a1z);
+  border(a1x - 0.3, a0z, a1x, a1z);
+
+  city.hospital = { x: cx, z: bz - 3,
+                    bay: { x: cx, z: (a0z + a1z) / 2, yaw: Math.PI } };
+
+  // Visitor parking down the east side.
+  carPark(city, b, ctx, x1 - 14, z0 + 5, x1 - 2, z1 - 8);
+
+  // Green edges.
+  const rand = ctx.rand;
+  for (let i = 0; i < 5; i++) {
+    if (rand() < 0.3) continue;
+    const tx = lerp(x0 + 5, cx + w / 2, rand()), tz = lerp(bz + d + 5, z1 - 5, rand());
+    if (!city.onRoadSurface(tx, tz, 2.5)) city.tree(b, tx, tz, 0.9 + rand() * 0.6, y);
+  }
 }
 
 // A run of hedge. Solid to drive through, but you can see it coming.
@@ -308,7 +504,7 @@ ZONE_BUILDERS[Z.VILLAGE] = (city, b, ctx) => {
     const w = Math.min(p.w - 3.5, 8 + p.rand() * 4);
     const d = 7 + p.rand() * 2.5;
     const along = p.horiz ? w : d, across = p.horiz ? d : w;
-    house(city, b, {
+    const homeId = house(city, b, {
       x: p.cx + (p.horiz ? 0 : (p.rand()-0.5) * 1.5),
       z: p.cz + (p.horiz ? (p.rand()-0.5) * 1.5 : 0),
       w: p.horiz ? along : across, d: p.horiz ? across : along,
@@ -323,6 +519,11 @@ ZONE_BUILDERS[Z.VILLAGE] = (city, b, ctx) => {
       if (p.horiz) hedge(city, b, gx - p.w/2 + 1.5, gz - 0.5, gx + p.w/2 - 1.5, gz + 0.5, 1.0);
       else hedge(city, b, gx - 0.5, gz - p.w/2 + 1.5, gx + 0.5, gz + p.w/2 - 1.5, 1.0);
     }
+    // Village parking is on the verge outside the garden, parallel to the lane.
+    if (p.rand() < 0.6) {
+      const vx = p.cx + p.faceX * 10.2, vz = p.cz + p.faceZ * 10.2;
+      city.addSpot(vx, vz, p.horiz ? Math.PI / 2 : 0, 'kerb', homeId);
+    }
   });
 };
 
@@ -331,30 +532,33 @@ ZONE_BUILDERS[Z.SUBURB] = (city, b, ctx) => {
   const { rand } = ctx;
   frontage(ctx, [0, 1, 2, 3], 17, 16, (p) => {
     if (p.rand() < 0.08) return;
-    const w = Math.min(p.w - 4, 10 + p.rand() * 3);
+    // Narrow enough that the driveway genuinely fits beside the house: the
+    // old width put the pad — and the car on it — inside the gable wall.
+    const w = Math.min(p.w - 7, 10 + p.rand() * 3);
     const d = 8.5 + p.rand() * 2;
     const floors = p.rand() < 0.72 ? 2 : 1;
     const h = floors * 3.0;
     const along = w, across = d;
     const cx = p.cx - p.faceX * 1.5, cz = p.cz - p.faceZ * 1.5;
-    house(city, b, {
+    const homeId = house(city, b, {
       x: cx, z: cz,
       w: p.horiz ? along : across, d: p.horiz ? across : along,
       h, rand: p.rand, faceX: p.faceX, faceZ: p.faceZ,
       wall: HOUSE_WALLS[(p.rand() * 3) | 0], ridgeAlongX: p.horiz,
       baseY: ctx.baseY,
     });
-    // Garage and driveway down the side of the plot.
-    const off = (p.rand() < 0.5 ? -1 : 1) * p.w * 0.32;
+    // Garage and driveway down the side of the plot, clear of the house wall.
+    const off = (p.rand() < 0.5 ? -1 : 1) * (w / 2 + 2.5);
     const dx = p.horiz ? cx + off : cx, dz = p.horiz ? cz : cz + off;
     b.style(TEX.CONCRETE, [0.78, 0.78, 0.76], 0);
     b.quad([dx - (p.horiz ? 2.2 : 6), ctx.baseY + 0.02, dz + (p.horiz ? 6 : 2.2)],
            [dx + (p.horiz ? 2.2 : 6), ctx.baseY + 0.02, dz + (p.horiz ? 6 : 2.2)],
            [dx + (p.horiz ? 2.2 : 6), ctx.baseY + 0.02, dz - (p.horiz ? 6 : 2.2)],
            [dx - (p.horiz ? 2.2 : 6), ctx.baseY + 0.02, dz - (p.horiz ? 6 : 2.2)], 2, 4);
-    if (p.rand() < 0.45) {
-      city.parkedCar(b, dx + p.faceX * 2.5, dz + p.faceZ * 2.5, p.horiz ? 0 : Math.PI/2);
-    }
+    // The driveway is this house's parking. Nose-in, so leaving home means
+    // reversing out onto the street the way everyone actually does.
+    city.addSpot(dx + p.faceX * 2.5, dz + p.faceZ * 2.5,
+                 Math.atan2(-p.faceX, -p.faceZ), 'drive', homeId);
     if (p.rand() < 0.55) {
       city.tree(b, cx - p.faceX * 6.5 + (p.horiz ? off * 0.6 : 0),
                    cz - p.faceZ * 6.5 + (p.horiz ? 0 : off * 0.6), 0.8 + p.rand() * 0.5, ctx.baseY);
@@ -370,6 +574,13 @@ ZONE_BUILDERS[Z.TOWN] = (city, b, ctx) => {
     const depth = 11 + p.rand() * 2;
     const runW = p.w - 2;
     const cx = p.cx - p.faceX * 1.2, cz = p.cz - p.faceZ * 1.2;
+    if (p.rand() < 0.13) {
+      // A surface car park in place of a building: the town needs somewhere
+      // to put all the cars the census hands out.
+      const hw = p.horiz ? runW / 2 : depth / 2, hd = p.horiz ? depth / 2 : runW / 2;
+      carPark(city, b, ctx, cx - hw, cz - hd, cx + hw, cz + hd);
+      return;
+    }
     if (p.rand() < 0.24) {
       // A small block of flats or an office breaks up the terrace.
       const h = 9 + u * 12 + p.rand() * 5;
@@ -395,6 +606,12 @@ ZONE_BUILDERS[Z.TOWN] = (city, b, ctx) => {
             ctx.baseY + 1.0,
             hz + p.faceZ * (p.horiz ? depth/2 + 0.05 : 0) + (p.horiz ? 0 : uw * 0.28),
             p.horiz ? 0.55 : 0.07, 1.0, p.horiz ? 0.07 : 0.55, { perUnit: 1 });
+      // Each front door on the terrace is one address.
+      city.homes.push({
+        x: hx + p.faceX * (p.horiz ? 0 : depth/2 + 1.4) + (p.horiz ? uw * 0.28 : 0),
+        z: hz + p.faceZ * (p.horiz ? depth/2 + 1.4 : 0) + (p.horiz ? 0 : uw * 0.28),
+        cap: 2,
+      });
     }
     b.style(TEX.TILE, ROOF_TINTS[(p.rand() * ROOF_TINTS.length) | 0], 0);
     pitchedRoof(b, cx, ctx.baseY + h, cz,
@@ -404,25 +621,42 @@ ZONE_BUILDERS[Z.TOWN] = (city, b, ctx) => {
                      cx + (p.horiz ? runW/2 : depth/2), cz + (p.horiz ? depth/2 : runW/2),
                      ctx.baseY + h + 2.2, 0, 'a terrace');
   }, 1.0);
+  // Kerbside parking wherever the street outside actually exists.
+  for (let k = 0; k < 4; k++) {
+    if (rand() < 0.4) continue;
+    const side = (rand() * 4) | 0, t = 0.15 + rand() * 0.7;
+    const px = side < 2 ? lerp(ctx.x0, ctx.x1, t) : (side === 2 ? ctx.x0 - 2.1 : ctx.x1 + 2.1);
+    const pz = side < 2 ? (side === 0 ? ctx.z0 - 2.1 : ctx.z1 + 2.1) : lerp(ctx.z0, ctx.z1, t);
+    if (!city.onRoadSurface(px, pz, 0)) continue;
+    // Parallel to the kerb, facing along the road.
+    city.addSpot(px, pz, side < 2 ? Math.PI / 2 : 0, 'kerb');
+  }
 };
 
 // High street: shops at ground level, flats above, no gaps.
 ZONE_BUILDERS[Z.HIGHST] = (city, b, ctx) => {
   const { x0, z0, x1, z1, rand, u } = ctx;
   const inset = 3.0;
-  const lots = splitLots(x0 + inset, z0 + inset, x1 - inset, z1 - inset, rand, 2 + ((rand() * 2) | 0), 1.2);
+  // Some blocks give their frontage over to a pay-and-display car park.
+  let bz0 = z0 + inset;
+  if (rand() < 0.38) {
+    carPark(city, b, ctx, x0 + inset, z0 + inset, x1 - inset, z0 + inset + 16);
+    bz0 = z0 + inset + 19;
+  }
+  const lots = splitLots(x0 + inset, bz0, x1 - inset, z1 - inset, rand, 2 + ((rand() * 2) | 0), 1.2);
   for (const [lx0, lz0, lx1, lz1] of lots) {
     if (lx1 - lx0 < 9 || lz1 - lz0 < 9) continue;
     const h = 13 + u * 22 + rand() * 8;
     city.buildBuilding(b, lx0, lz0, lx1, lz1, h, 0.45, ctx);
   }
-  for (let k = 0; k < 4; k++) {
-    if (rand() > 0.5) continue;
+  // Kerbside spots tight to the kerb, on streets that exist.
+  for (let k = 0; k < 5; k++) {
+    if (rand() > 0.6) continue;
     const side = (rand() * 4) | 0, t = 0.2 + rand() * 0.6;
-    // Tight to the kerb: any further out and they overlap the running lane.
     const px = side < 2 ? lerp(x0, x1, t) : (side === 2 ? x0 - 2.1 : x1 + 2.1);
     const pz = side < 2 ? (side === 0 ? z0 - 2.1 : z1 + 2.1) : lerp(z0, z1, t);
-    city.parkedCar(b, px, pz, side < 2 ? (side === 0 ? 0 : Math.PI) : (side === 2 ? Math.PI/2 : -Math.PI/2));
+    if (!city.onRoadSurface(px, pz, 0)) continue;
+    city.addSpot(px, pz, side < 2 ? Math.PI / 2 : 0, 'kerb');
   }
 };
 
@@ -430,7 +664,13 @@ ZONE_BUILDERS[Z.HIGHST] = (city, b, ctx) => {
 ZONE_BUILDERS[Z.DOWNTOWN] = (city, b, ctx) => {
   const { x0, z0, x1, z1, rand, u } = ctx;
   const inset = 3.0;
-  const lots = splitLots(x0 + inset, z0 + inset, x1 - inset, z1 - inset, rand,
+  // Even downtown keeps the odd surface lot between the towers.
+  let bz0 = z0 + inset;
+  if (rand() < 0.3) {
+    carPark(city, b, ctx, x0 + inset, z0 + inset, x1 - inset, z0 + inset + 16);
+    bz0 = z0 + inset + 19;
+  }
+  const lots = splitLots(x0 + inset, bz0, x1 - inset, z1 - inset, rand,
                          rand() < 0.5 ? 1 : 2, 2.5);
   for (const [lx0, lz0, lx1, lz1] of lots) {
     if (lx1 - lx0 < 9 || lz1 - lz0 < 9) continue;
@@ -521,6 +761,7 @@ ZONE_BUILDERS[Z.INDUSTRIAL] = (city, b, ctx) => {
       else b.box(cx - w/2 - 0.06, y + 2.2, cz + t * d * 0.8, 0.1, 2.2, 2.6, { perUnit: 0.5 });
     }
     city.addBuilding(sx0, sz0, sx1, sz1, y + h + Math.min(w, d) * 0.10, 0, 'a warehouse');
+    city.works.push({ x: cx, z: sz0 - 2, jobs: 8 });
   }
 
   // Container stacks in the yard.

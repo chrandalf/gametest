@@ -88,6 +88,14 @@ class City {
     this.water = [];
     this.bridges = [];
     this.lights = [];         // street lamp positions, used for night point lights
+    // The civic ledger: everything the population hangs off. Homes have doors
+    // and room for a family, workplaces have jobs, parking spots have a yaw to
+    // park at. The census joins them up into people.
+    this.homes = [];          // { x, z, cap }
+    this.works = [];          // { x, z, jobs }
+    this.spots = [];          // { x, z, yaw, kind: 'drive'|'bay'|'kerb', taken, home }
+    this.stations = [];       // petrol stations: { x, z, x0, z0, x1, z1 }
+    this.hospital = null;     // { x, z, bay: { x, z, yaw } }
     this.ramps = new RampSet();
     this.chunks = [];
     this.decals = [];         // road paint: drawn, but never casts a shadow
@@ -122,6 +130,15 @@ class City {
   addBuilding(x0, z0, x1, z1, top, downtown, what) {
     this.addCollider(x0, z0, x1, z1, top, what || 'a building');
     this.buildings.push({ x0, z0, x1, z1, h: top + this.lift, downtown: downtown || 0 });
+  }
+
+  // Register one parking spot. `yaw` is the way a car parked in it faces.
+  // Positions are world x/z; the ground supplies the height when a car is
+  // actually stood in it.
+  addSpot(x, z, yaw, kind, home) {
+    const s = { x, z, yaw, kind, taken: 0, home: home === undefined ? -1 : home };
+    this.spots.push(s);
+    return s;
   }
 
   query(x, z, r) {
@@ -850,10 +867,11 @@ class City {
     // --- blocks ---
     // One pass per group, not per cell: a merged block is built once, across
     // the whole of the land the deleted road released.
+    this.pickCivicBlocks();
     for (let bi = 0; bi < GRID - 1; bi++) {
       for (let bj = 0; bj < GRID - 1; bj++) {
         if (!this.isBlockRoot(bi, bj)) continue;
-        this.buildBlock(chunkAt(bi, bj), bi, bj);
+        this.buildBlock(chunkAt(bi, bj), paintAt(bi, bj), bi, bj);
       }
     }
 
@@ -1181,21 +1199,66 @@ class City {
   // Everything is generated flat about y=0 and then raised to the level the
   // terrain has already been cut to, so no zone builder has to know about the
   // terrain and nothing stands proud of the road outside it.
-  buildBlock(chunk, bi, bj) {
+  buildBlock(chunk, decal, bi, bj) {
     const b = new MeshBuilder();
+    // Anything a block paints on its own ground — parking bays, hatching —
+    // goes into this builder and on into the decal mesh, so it lights like
+    // the surface it lies on and casts no shadow of itself.
+    const paint = new MeshBuilder();
     // Open country is not levelled: fields and woods lie on the ground as it
     // is, and their builders place each thing at its own height.
     const lift = this.isRural(bi, bj) ? 0 : this.terrain.blockLift(bi, bj);
     this.lift = lift;
-    this.buildBlockLocal(b, bi, bj);
+    this.buildBlockLocal(b, paint, bi, bj);
     this.lift = 0;
     if (!b.empty) chunk.append(b, 0, lift, 0);
+    if (!paint.empty) decal.append(paint, 0, lift, 0);
+  }
+
+  // Two petrol stations on the way into town and one hospital in it, each
+  // taking over a whole ordinary block. Chosen here, before any block builds,
+  // so the zone builders can simply be swapped out for the civic ones.
+  pickCivicBlocks() {
+    const m = GRID - 1;
+    this.gasBlocks = new Set();
+    this.hospitalBlock = -1;
+    const cands = [];
+    for (let bi = 0; bi < m; bi++) {
+      for (let bj = 0; bj < m; bj++) {
+        if (!this.isBlockRoot(bi, bj)) continue;
+        const z = this.zones.zoneAt(bi, bj);
+        if (z === Z.WATER || z === Z.PARK) continue;
+        // A single, unmerged block with a road along its southern edge, which
+        // is the edge both builders put their entrance on.
+        if ((this.blockBounds(bi, bj).root.cells || 1) !== 1) continue;
+        if (!this.edgeOpen(0, bj, bi)) continue;
+        cands.push({ bi, bj, key: bj * m + bi, rank: this.zones.rankAt(bi, bj),
+                     roll: hash2(bi * 31 + 7, bj * 57 + 3, this.seed ^ 0x9a5f00d) });
+      }
+    }
+    // Petrol stations live on the edge of town: busy enough to have trade,
+    // cheap enough land for a forecourt.
+    const gas = cands.filter((c) => c.rank >= 2 && c.rank <= 4)
+                     .sort((a, b) => b.roll - a.roll);
+    for (const g of gas) {
+      if (this.gasBlocks.size >= 2) break;
+      let clear = true;
+      for (const k of this.gasBlocks) {
+        const oi = k % m, oj = (k / m) | 0;
+        if (Math.hypot(g.bi - oi, g.bj - oj) < 5) clear = false;
+      }
+      if (clear) this.gasBlocks.add(g.key);
+    }
+    // The hospital wants to be in town, where the casualties are.
+    const hosp = cands.filter((c) => c.rank >= 3 && !this.gasBlocks.has(c.key))
+                      .sort((a, b) => (b.rank * 10 + b.roll) - (a.rank * 10 + a.roll));
+    if (hosp.length) this.hospitalBlock = hosp[0].key;
   }
 
   // Wildwood and farmland follow the ground; everything else is levelled.
   isRural(bi, bj) { return !this.zones.builtUp(bi, bj); }
 
-  buildBlockLocal(b, bi, bj) {
+  buildBlockLocal(b, paint, bi, bj) {
     const zones = this.zones;
     const zone = zones.zoneAt(bi, bj);
     const info = ZONES[zone];
@@ -1244,10 +1307,15 @@ class City {
     // the ground is solid all the way down.
 
     const ctx = {
-      bi, bj, x0, z0, x1, z1, zone, rank, baseY, rural, groundAt,
+      bi, bj, x0, z0, x1, z1, zone, rank, baseY, rural, groundAt, paint,
       u: zones.urbanityAt(bi, bj),
       rand: zones.randFor(bi, bj, 1),
     };
+    // Civic blocks: the zone builder stands aside for the petrol station or
+    // the hospital, which was chosen for this block before anything built.
+    const key = bj * (GRID - 1) + bi;
+    if (this.gasBlocks && this.gasBlocks.has(key)) return buildGasStation(this, b, ctx);
+    if (this.hospitalBlock === key) return buildHospital(this, b, ctx);
     const builder = ZONE_BUILDERS[zone];
     if (builder) builder(this, b, ctx);
   }
@@ -1367,6 +1435,24 @@ class City {
     }
 
     this.addBuilding(x0, z0, x1, z1, base + totalH, downtown);
+
+    // Ledger entry: a tower is offices, anything smaller is flats, and a shop
+    // front below the flats is a workplace of its own. The door goes on the
+    // face nearest the street, which is where a walker will head for.
+    if (ctx) {
+      const door = [
+        { d: z0 - ctx.z0, x: cx, z: z0 - 1.4 },
+        { d: ctx.z1 - z1, x: cx, z: z1 + 1.4 },
+        { d: x0 - ctx.x0, x: x0 - 1.4, z: cz },
+        { d: ctx.x1 - x1, x: x1 + 1.4, z: cz },
+      ].sort((a, c) => a.d - c.d)[0];
+      if (downtown > 0.5) {
+        this.works.push({ x: door.x, z: door.z, jobs: Math.min(60, floors * 3) });
+      } else {
+        this.homes.push({ x: door.x, z: door.z, cap: Math.min(12, floors * 2) });
+        if (shopH > 0) this.works.push({ x: door.x, z: door.z, jobs: 3 });
+      }
+    }
   }
 
   // A parish church: nave, porch, tower and spire. One per village or two.
@@ -1404,6 +1490,7 @@ class City {
 
     this.addBuilding(cx - nw/2, cz - nd/2, cx + nw/2, cz + nd/2, 13.4, 0, 'the church');
     this.addBuilding(tx - 3.4, tz - 3.4, tx + 3.4, tz + 3.4, 19.0, 0, 'the church tower');
+    this.works.push({ x: cx, z: cz + nd/2 + 2, jobs: 2 });
 
     // Churchyard: wall, yews, headstones.
     const { x0, z0, x1, z1 } = ctx;
@@ -1480,43 +1567,6 @@ class City {
     // invisible clip you feel but cannot see.
     this.addCollider(x - 0.22, z - 0.22, x + 0.22, z + 0.22, SIDEWALK_H + h, 'a lamp post');
     this.lights.push({ x: ax, y: SIDEWALK_H + h - 0.4 + this.lift, z: az });
-  }
-
-  parkedCar(b, x, z, yaw, baseY) {
-    const rand = this.rand;
-    // Cars park at the kerb, which is over the road and below the plateau the
-    // block is built on; without this they hang in the air above it.
-    const y0 = baseY === undefined ? this.groundY(x, z) - this.lift : baseY;
-    const col = CAR_COLORS[(rand() * CAR_COLORS.length) | 0];
-    const cos = Math.cos(yaw), sin = Math.sin(yaw);
-    // Local (right, forward) -> world helper.
-    const T = (rx, fz) => [x + rx * cos + fz * sin, z - rx * sin + fz * cos];
-    const boxLocal = (fz, y, hw, hy, hl, layer, tint, emis) => {
-      const [wx, wz] = T(0, fz);
-      const bb = new MeshBuilder();
-      bb.style(layer, tint, emis || 0);
-      if (emis) bb.box(0, y, 0, hw, hy, hl, { perUnit: 0.6, emis });
-      else bb.chamferBox(0, y, 0, hw, hy, hl, Math.min(hw, hy, hl) * 0.55, { perUnit: 0.6 });
-      // Rotate the little box into place.
-      for (let i = 0; i < bb.v.length; i += VERT_FLOATS) {
-        const px = bb.v[i], pz = bb.v[i+2];
-        const nx = bb.v[i+3], nz = bb.v[i+5];
-        bb.v[i] = px * cos + pz * sin;
-        bb.v[i+2] = -px * sin + pz * cos;
-        bb.v[i+3] = nx * cos + nz * sin;
-        bb.v[i+5] = -nx * sin + nz * cos;
-      }
-      b.append(bb, wx, y0, wz);
-    };
-    boxLocal(0, 0.85, 0.95, 0.42, 2.1, TEX.METAL, col);
-    boxLocal(-0.15, 1.42, 0.85, 0.34, 1.15, TEX.GLASS, [col[0]*0.4+0.1, col[1]*0.4+0.15, col[2]*0.4+0.2]);
-    boxLocal(2.0, 0.9, 0.72, 0.16, 0.12, TEX.PLAIN, [1, 0.95, 0.8], 0.15);
-    boxLocal(-2.0, 0.9, 0.72, 0.16, 0.12, TEX.PLAIN, [0.9, 0.15, 0.12], 0.15);
-    this.addCollider(Math.min(...[T(-1,-2.3)[0], T(1,-2.3)[0], T(-1,2.3)[0], T(1,2.3)[0]]),
-                     Math.min(...[T(-1,-2.3)[1], T(1,-2.3)[1], T(-1,2.3)[1], T(1,2.3)[1]]),
-                     Math.max(...[T(-1,-2.3)[0], T(1,-2.3)[0], T(-1,2.3)[0], T(1,2.3)[0]]),
-                     Math.max(...[T(-1,-2.3)[1], T(1,-2.3)[1], T(-1,2.3)[1], T(1,2.3)[1]]),
-                     y0 + 1.6, 'a parked car');
   }
 
   // ------------------------------------------------------------- routing ---

@@ -150,6 +150,8 @@ class TrafficPopulation {
     let gone = 0;
     for (const [d, k] of order) {
       if (gone >= 8) break;
+      // Commuters mid-journey and the ambulance are not the pool's to cull.
+      if (list[k] && list[k].noRetire) continue;
       if (d > RETIRE_FAR || drop > 0) { list[k] = null; gone++; if (drop > 0) drop--; }
       else break;
     }

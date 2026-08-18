@@ -10,7 +10,7 @@ const game = {
   camMode: 0,          // 0 chase, 1 far, 2 bonnet
   fps: 0,
   shake: 0,
-  stats: { hits: 0, knocked: 0, topSpeed: 0 },
+  stats: { hits: 0, knocked: 0, topSpeed: 0, hospitalised: 0 },
   run: { active: false, score: 0, best: 0, timeLeft: 0, target: null, streak: 0, message: '', messageT: 0 },
   trial: { active: false, phase: 'idle', route: [], idx: 0, t: 0, countdown: 0, best: null, last: null },
   tyreLoad: 0,
@@ -171,10 +171,11 @@ function toggleCar() {
     game.abandoned.push(car);
     car.vx = 0; car.vz = 0;
   } else {
-    // Get into the nearest vehicle within reach.
+    // Get into the nearest vehicle within reach — somebody's parked car very
+    // much included.
     const w = p.walker;
     let best = null, bestD = 4.0;
-    for (const list of [game.abandoned, game.traffic]) {
+    for (const list of [game.abandoned, game.traffic, game.parked]) {
       for (const car of list) {
         const d = Math.hypot(car.x - w.x, car.z - w.z);
         if (d < bestD) { bestD = d; best = { car, list }; }
@@ -182,6 +183,8 @@ function toggleCar() {
     }
     if (!best) return;
     best.list.splice(best.list.indexOf(best.car), 1);
+    // Taking somebody's parked car has consequences in the ledger.
+    if (best.list === game.parked && game.life) game.life.onStolen(best.car);
     game.car = best.car;
     game.car.ai = null;
     if (game.car instanceof TrafficCar) game.car.isPlayer = true;
@@ -215,16 +218,33 @@ function recoverCar() {
 }
 
 // Repair, likewise: hold the key and the car comes back together as fast as
-// you can pay for it. This is the sink that gives credits a point.
+// you can pay for it. This is the sink that gives credits a point. Doing it
+// on a petrol station forecourt is three times as fast at half the price —
+// that is what the stations are for.
 const REPAIR_RATE = 1400;     // credits per unit of condition restored
+function atStation() {
+  const car = game.car;
+  const stations = game.city.stations;
+  if (!stations) return null;
+  for (const s of stations) {
+    if (car.x > s.x0 && car.x < s.x1 && car.z > s.z0 && car.z < s.z1) return s;
+  }
+  return null;
+}
 function updateRepair(dt) {
   const car = game.car;
   game.repairing = false;
+  game.atGarage = game.player.inCar && car.speed < 8 && !!atStation();
+  if (game.atGarage && car.wreckage > 0.1 && !game.garageHinted) {
+    game.garageHinted = true;
+    say('GARAGE — hold E: fast repairs at half price');
+  }
+  if (!game.atGarage) game.garageHinted = false;
   if (!keys['KeyE'] || !game.player.inCar) return;
   if (car.wreckage <= 0.001) return;
   if (game.credits < 20) { say('CANNOT AFFORD TO REPAIR'); return; }
-  const got = car.repair(dt);
-  const cost = Math.min(game.credits, Math.round(got * REPAIR_RATE));
+  const got = car.repair(game.atGarage ? dt * 3 : dt);
+  const cost = Math.min(game.credits, Math.round(got * REPAIR_RATE * (game.atGarage ? 0.5 : 1)));
   game.credits -= cost;
   game.repairSpend += cost;
   game.repairing = true;
@@ -351,6 +371,25 @@ function playScream(pitch, gainScale) {
   o.stop(t + 0.62); vib.stop(t + 0.62);
 }
 
+// The ambulance's two-tone, alternating each call. Distance sets the volume.
+let sirenTone = 0;
+function playSiren(loud) {
+  const a = game.audio;
+  if (!a) return;
+  const ctx = a.ctx, t = ctx.currentTime;
+  sirenTone = 1 - sirenTone;
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = 'sawtooth';
+  o.frequency.value = sirenTone ? 660 : 494;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.05 * loud, t + 0.03);
+  g.gain.setValueAtTime(0.05 * loud, t + 0.5);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+  o.connect(g); g.connect(a.master);
+  o.start(t); o.stop(t + 0.62);
+}
+
 // Car-to-car collisions, resolved as impulses between two masses rather
 // than as two circles shoving each other apart. What comes out of that for
 // free is everything that used to be missing: a van moves a hatchback more
@@ -380,8 +419,10 @@ function resolveVehicleCollisions(all, onPlayer) {
       const vRel = (b.vx - a.vx) * nx + (b.vz - a.vz) * nz;
       if (vRel >= 0) continue;                    // already separating
 
-      // Cars crumple; they barely bounce.
-      const REST = 0.16;
+      // Restitution up from 0.16: real cars barely bounce, but a shunt that
+      // parts the two cars visibly reads as a hit where a dead stop reads as
+      // driving into a wall — which is exactly what it used to feel like.
+      const REST = 0.42;
       const jn = -(1 + REST) * vRel / imSum;
       // Panels dragging along each other: a tangential impulse, capped the way
       // friction is capped, which is what turns a sideswipe into a scrape.
@@ -402,6 +443,16 @@ function resolveVehicleCollisions(all, onPlayer) {
       b.yawKick += (rbz * Jx - rbx * Jz) / b.inertia;
       a.yawKick = clamp(a.yawKick, -5, 5);
       b.yawKick = clamp(b.yawKick, -5, 5);
+
+      // Knock the grip out of whoever was hit hard, so the impulse actually
+      // carries them: with full grip the tyres scrub the sideways part of the
+      // shove away within a tenth of a second and nothing appears to move.
+      const shock = Math.abs(vRel);
+      if (shock > 5) {
+        const spin = Math.min(1.4, shock / 13);
+        if (a !== onPlayer || shock > 12) a.skid = Math.max(a.skid, spin);
+        if (b !== onPlayer || shock > 12) b.skid = Math.max(b.skid, spin);
+      }
 
       // Damage. The closing speed along the normal is the part that actually
       // gets absorbed — two cars meeting head on at thirty is a sixty impact,
@@ -453,13 +504,15 @@ function sensorScan(car) {
       const d = Math.hypot(dx, dz);
       if (d < best) best = d;
     }
-    for (const v of game.traffic) {
-      if (v === car) continue;
-      const ox = v.x - px, oz = v.z - pz;
-      const len = Math.hypot(ox, oz);
-      if (len > SENSOR_RANGE + 3) continue;
-      const d = len - v.extentAlong(ox / (len || 1), oz / (len || 1));
-      if (d < best) best = Math.max(0, d);
+    for (const list of [game.traffic, game.parked, game.abandoned]) {
+      for (const v of list) {
+        if (v === car) continue;
+        const ox = v.x - px, oz = v.z - pz;
+        const len = Math.hypot(ox, oz);
+        if (len > SENSOR_RANGE + 3) continue;
+        const d = len - v.extentAlong(ox / (len || 1), oz / (len || 1));
+        if (d < best) best = Math.max(0, d);
+      }
     }
   }
   return { dist: best, rev };
@@ -547,9 +600,10 @@ function update(dt) {
     w.update(dt, wx, wz, keys.ShiftLeft || keys.ShiftRight, game.city);
   }
 
-  // Traffic sees the player's car, abandoned cars and each other.
+  // Traffic sees the player's car, parked cars, abandoned cars and each other.
   const blockers = game.traffic.slice();
   blockers.push(car);
+  for (const c of game.parked) blockers.push(c);
   for (const c of game.abandoned) blockers.push(c);
   // `threat` is what the pedestrians are frightened of, and `onScream` is how
   // they say so. Only the player counts: traffic obeys the rules, so nobody
@@ -570,12 +624,24 @@ function update(dt) {
 
   // Rush hour: the number of cars on the road tracks the clock.
   if (game.population) game.population.update(dt, game.clock, game.traffic, { x: px, z: pz });
+  // The census: parked cars, commuters and the ambulance.
+  if (game.life) game.life.update(dt, game.clock, { x: px, z: pz }, world);
 
   // Cars beyond the fog are not simulated: with a rush-hour fleet the
   // look-ahead scan is the most expensive thing in the frame.
   for (const t of game.traffic) {
     if (Math.hypot(t.x - px, t.z - pz) > 300) continue;
     t.update(dt, world);
+  }
+
+  // A parked car is asleep until something hits it; then it is just a car
+  // with nobody's foot on the brake, and it rolls, slides and spins with
+  // whatever the impact gave it until that runs out.
+  for (const pk of game.parked) {
+    if (pk.speed > 0.05 || Math.abs(pk.yawKick) > 0.02 || pk.airborne) {
+      pk.disturbed = true;
+      pk.drive(dt, 0, 0, false, game.city);
+    }
   }
 
   const all = blockers;
@@ -766,6 +832,8 @@ function loadMapWorld(json, label) {
   game.traffic = [];
   game.peds = [];
   game.abandoned = [];
+  game.parked = [];
+  game.life = null;
   game.snipers = new Snipers(gl, world, game.rand);
   game.skids = new SkidMarks(gl, 460);
 
@@ -828,6 +896,7 @@ function buildWorld(seed) {
     game.van = van;
   }
   game.abandoned = [];
+  game.parked = [];
 
   // Pedestrians go where there are pavements and front doors, and there are
   // far more of them the further into town you get: a village green with two
@@ -891,6 +960,9 @@ function buildWorld(seed) {
   game.snipers = new Snipers(gl, city, rand);
   game.skids = new SkidMarks(gl, 460);
   game.lights = new TrafficLights(city);
+  // The census: who lives where, works where, and parks what where.
+  game.life = new CityLife(city, rand);
+  console.log('census:', JSON.stringify(game.life.censusSummary));
   // The fleet a full rush hour is allowed to reach. Scaled by how much city
   // there is, so a map that came out mostly farmland stays quiet.
   game.population = new TrafficPopulation(city, rand, clamp(urbanCells.length * 2.4, 40, 190));
@@ -1320,7 +1392,7 @@ function drawActors(r, env, shadowPass) {
     r.setMaterial([1, 1, 1], 0, 0);
   }
 
-  const cars = [game.car, ...game.traffic, ...game.abandoned];
+  const cars = [game.car, ...game.traffic, ...(game.parked || []), ...game.abandoned];
   if (game.race) for (const r of game.race.racers) cars.push(r);
   const headlightsOn = env.night > 0.25;
 
@@ -1331,23 +1403,86 @@ function drawActors(r, env, shadowPass) {
     car.modelMatrix(_m);
 
     const M = car.van ? game.vanMeshes : game.carMeshes;
-    if (!shadowPass) r.setMaterial(car.color, 0, 0);
-    r.draw(M.paint, _m);
-    if (car.van && !shadowPass) {
+    // Damage you can see across the street: past half wrecked the body swaps
+    // for the crumpled shell, and the paint dulls with every panel it loses.
+    const dmg = car.damage;
+    const battered = car.wreckage > 0.42;
+    if (!shadowPass) {
+      const dk = 1 - Math.min(0.55, dmg.body * 0.5 + car.wreckage * 0.15);
+      r.setMaterial([car.color[0] * dk, car.color[1] * dk * 0.97, car.color[2] * dk * 0.94], 0, 0);
+    }
+    r.draw(battered ? M.paintWreck : M.paint, _m);
+    if (car.van && !car.ambulance && !shadowPass) {
       r.setMaterial([1, 1, 1], 0, 0);
       r.draw(M.prop, _m);
     }
 
     if (!shadowPass) {
+      // Its own registration, front and back, out of the 4x4 plate sheet.
+      const plate = car.plate || 0;
+      r.setUVWindow(0.25, 0.25, (plate & 3) * 0.25, (plate >> 2) * 0.25);
+      r.setMaterial([1, 1, 1], 0.22, 0);
+      r.draw(M.plates, _m);
+      r.setUVWindow(1, 1, 0, 0);
+
       r.beginTranslucent();
       r.setMaterial([1, 1, 1], 0, 0, 0.62);
-      r.draw(M.glass, _m);
+      r.draw(battered ? M.glassWreck : M.glass, _m);
       r.endTranslucent();
       r.setMaterial([1, 1, 1], 0, 0);
-      r.setMaterial([1, 1, 1], headlightsOn ? 1.2 : 0.05, 0);
+      // A wrecked engine takes the headlights with it.
+      const lightsDead = dmg.engine > 0.65;
+      r.setMaterial([1, 1, 1], lightsDead ? 0.02 : (headlightsOn ? 1.2 : 0.05), 0);
       r.draw(M.lights, _m);
       r.setMaterial([1, 1, 1], car.braking ? 1.4 : (headlightsOn ? 0.45 : 0.05), 0);
       r.draw(M.tail, _m);
+      // Ambulance dressing: red crosses on the box sides and a light bar
+      // that flashes red and blue while it is running hot.
+      if (car.ambulance) {
+        r.setMaterial([0.92, 0.10, 0.10], 0.25, 0);
+        for (const s of [-1, 1]) {
+          M4.compose(_m2, s * 1.08, 1.5, -0.55, 0, 0, 0, 0.05, 0.95, 0.3);
+          M4.mul(_m3, _m, _m2);
+          r.draw(game.cube, _m3);
+          M4.compose(_m2, s * 1.08, 1.5, -0.55, 0, 0, 0, 0.05, 0.3, 0.95);
+          M4.mul(_m3, _m, _m2);
+          r.draw(game.cube, _m3);
+        }
+        const strobe = Math.sin(game.time * 16) > 0;
+        r.setMaterial([1, 0.12, 0.10], car.siren && strobe ? 3.4 : 0.2, 0);
+        M4.compose(_m2, -0.4, 2.34, 0.8, 0, 0, 0, 0.3, 0.16, 0.24);
+        M4.mul(_m3, _m, _m2); r.draw(game.cube, _m3);
+        r.setMaterial([0.2, 0.4, 1.0], car.siren && !strobe ? 3.4 : 0.2, 0);
+        M4.compose(_m2, 0.4, 2.34, 0.8, 0, 0, 0, 0.3, 0.16, 0.24);
+        M4.mul(_m3, _m, _m2); r.draw(game.cube, _m3);
+        r.setMaterial([1, 1, 1], 0, 0);
+      }
+      // Engine smoke, then flame: rising translucent puffs off the bonnet.
+      if (dmg.engine > 0.4 && d < 200) {
+        const heat = clamp((dmg.engine - 0.4) / 0.5, 0, 1);
+        const fx2 = Math.sin(car.yaw), fz2 = Math.cos(car.yaw);
+        r.beginTranslucent();
+        for (let k = 0; k < 3; k++) {
+          const t = (game.time * (0.55 + k * 0.12) + k * 0.37) % 1;
+          const sway = Math.sin(game.time * 2.2 + k * 4) * 0.4;
+          const px2 = car.x + fx2 * 1.55 + sway * fz2;
+          const pz2 = car.z + fz2 * 1.55 - sway * fx2;
+          const size = 0.35 + t * (0.9 + heat * 0.9);
+          const g = 0.16 - t * 0.1;
+          r.setMaterial([g, g, g], 0, 0, (1 - t) * (0.30 + heat * 0.25));
+          M4.compose(_m2, px2, car.y + 0.95 + t * (1.1 + heat * 0.9), pz2, 0, 0, 0, size, size, size);
+          r.draw(game.body.ball, _m2);
+        }
+        if (dmg.engine > 0.8) {
+          const flick = 0.7 + Math.sin(game.time * 37) * 0.3;
+          r.setMaterial([1.0, 0.45, 0.12], 2.6 * flick, 0, 0.75);
+          M4.compose(_m2, car.x + fx2 * 1.5, car.y + 1.05, car.z + fz2 * 1.5,
+                     0, 0, 0, 0.4, 0.55 * flick, 0.4);
+          r.draw(game.body.ball, _m2);
+        }
+        r.endTranslucent();
+        r.setMaterial([1, 1, 1], 0, 0);
+      }
       // Nitro flame out of the back.
       if (car === game.car && game.nitro.active) {
         const flick = 0.75 + Math.sin(game.time * 47) * 0.25;
@@ -1592,7 +1727,7 @@ function drawHud() {
   }
   c.stroke();
 
-  for (const t of [...game.traffic, ...game.abandoned]) {
+  for (const t of [...game.traffic, ...(game.parked || []), ...game.abandoned]) {
     if (Math.abs(t.x - px) > 150 || Math.abs(t.z - pz) > 150) continue;
     c.fillStyle = `rgb(${t.color[0]*255|0},${t.color[1]*255|0},${t.color[2]*255|0})`;
     c.fillRect(t.x - 2.6, t.z - 2.6, 5.2, 5.2);
@@ -1659,7 +1794,7 @@ function drawHud() {
   const mm = Math.floor((game.clock % 1) * 60);
   c.textAlign = 'left';
   c.fillStyle = 'rgba(0,0,0,0.42)';
-  roundRect(c, 22, 22, 208, 92, 10); c.fill();
+  roundRect(c, 22, 22, 208, 108, 10); c.fill();
   c.fillStyle = '#fff';
   c.font = '700 20px system-ui, sans-serif';
   c.fillText(`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`, 38, 34);
@@ -1675,8 +1810,11 @@ function drawHud() {
   c.fillStyle = 'rgba(255,255,255,0.72)';
   c.fillText(`${game.fps.toFixed(0)} fps · ${inCar ? 'driving' : 'on foot'}`, 38, 60);
   c.fillText(`top ${game.stats.topSpeed.toFixed(0)} km/h · ${game.stats.hits} prangs`, 38, 76);
+  // The score that matters: how many people you have put in hospital.
+  c.fillStyle = '#ff8f6a';
+  c.fillText(`${game.stats.hospitalised} put in hospital`, 38, 92);
   c.fillStyle = 'rgba(255,255,255,0.45)';
-  c.fillText(`seed ${game.seed}`, 38, 93);
+  c.fillText(`seed ${game.seed}`, 38, 109);
 
   // --- time trial panel ---
   const tr = game.trial;

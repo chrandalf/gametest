@@ -112,26 +112,65 @@ function loft(b, sections, opt) {
   }
 }
 
-function buildCarMeshes(gl) {
-  const paint = new MeshBuilder();
-  paint.style(TEX.METAL, [1, 1, 1], -0.001);   // negative emissive = glossy material
-  loft(paint, CAR_SECTIONS, { steps: 4 });
-  paint.style(TEX.PLAIN, [0.13, 0.13, 0.15], 0);
-  paint.chamferBox(0, 0.52, 2.18, 0.90, 0.17, 0.14, 0.10, { perUnit: 1 });   // front bumper
-  paint.chamferBox(0, 0.52, -2.20, 0.88, 0.17, 0.13, 0.10, { perUnit: 1 });  // rear bumper
-  paint.style(TEX.PLATE, [1.35, 1.35, 1.32], 0.30);
-  paint.quad([-0.50, 0.30, 2.315], [0.50, 0.30, 2.315], [0.50, 0.55, 2.315], [-0.50, 0.55, 2.315], 1, 1);
-  paint.style(TEX.PLATE, [1.5, 1.24, 0.26], 0.34);   // rear plates are yellow here
-  paint.quad([0.50, 0.33, -2.335], [-0.50, 0.33, -2.335], [-0.50, 0.58, -2.335], [0.50, 0.58, -2.335], 1, 1);
-  // Wing mirrors — small, but their absence is very noticeable.
-  paint.style(TEX.METAL, [1, 1, 1], 0);
-  for (const s of [-1, 1]) {
-    paint.chamferBox(s * 1.02, 1.18, 0.42, 0.13, 0.07, 0.10, 0.05, { perUnit: 1 });
+// Crumple a finished builder in place: every vertex is shoved by a hash of
+// its position, biased hard toward the nose and tail, so the same body shell
+// comes out a second time as a wreck — stoved-in bonnet, rippled panels. One
+// mesh per body style covers every car, because the hash has no seed.
+function crumpleMesh(mb, amt) {
+  const fr = (v) => v - Math.floor(v);
+  for (let i = 0; i < mb.v.length; i += VERT_FLOATS) {
+    const x = mb.v[i], y = mb.v[i + 1], z = mb.v[i + 2];
+    const h = (n) => fr(Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + n) * 43758.5453) - 0.5;
+    const bias = 0.55 + 0.9 * Math.min(1, Math.abs(z) / 2.3);
+    mb.v[i]     += h(1) * amt * bias;
+    mb.v[i + 1] += h(2) * amt * 0.8 * bias;
+    mb.v[i + 2] += h(3) * amt * bias
+                 - Math.sign(z) * Math.max(0, Math.abs(z) - 1.85) * amt * 2.6;
   }
+}
 
-  const glass = new MeshBuilder();
-  glass.style(TEX.PLAIN, [0.11, 0.15, 0.21], -0.001);
-  loft(glass, CABIN_SECTIONS, { steps: 4 });
+// Front and rear number plates as their own little mesh, drawn per car with a
+// UV window into the 4x4 plate sheet — which is how every car gets its own
+// registration without every car getting its own geometry.
+function buildPlateMesh(gl, frontZ, rearZ, frontY, rearY) {
+  const b = new MeshBuilder();
+  b.style(TEX.PLATE, [1.35, 1.35, 1.32], 0.10);
+  b.quad([-0.50, frontY, frontZ], [0.50, frontY, frontZ],
+         [0.50, frontY + 0.25, frontZ], [-0.50, frontY + 0.25, frontZ], 1, 1);
+  b.style(TEX.PLATE, [1.5, 1.24, 0.26], 0.12);   // rear plates are yellow here
+  b.quad([0.50, rearY, rearZ], [-0.50, rearY, rearZ],
+         [-0.50, rearY + 0.25, rearZ], [0.50, rearY + 0.25, rearZ], 1, 1);
+  return b.upload(gl);
+}
+
+function buildCarMeshes(gl) {
+  const buildPaint = () => {
+    const paint = new MeshBuilder();
+    paint.style(TEX.METAL, [1, 1, 1], -0.001);   // negative emissive = glossy material
+    loft(paint, CAR_SECTIONS, { steps: 4 });
+    paint.style(TEX.PLAIN, [0.13, 0.13, 0.15], 0);
+    paint.chamferBox(0, 0.52, 2.18, 0.90, 0.17, 0.14, 0.10, { perUnit: 1 });   // front bumper
+    paint.chamferBox(0, 0.52, -2.20, 0.88, 0.17, 0.13, 0.10, { perUnit: 1 });  // rear bumper
+    // Wing mirrors — small, but their absence is very noticeable.
+    paint.style(TEX.METAL, [1, 1, 1], 0);
+    for (const s of [-1, 1]) {
+      paint.chamferBox(s * 1.02, 1.18, 0.42, 0.13, 0.07, 0.10, 0.05, { perUnit: 1 });
+    }
+    return paint;
+  };
+  const paint = buildPaint();
+  const paintWreck = buildPaint();
+  crumpleMesh(paintWreck, 0.075);
+
+  const buildGlass = () => {
+    const glass = new MeshBuilder();
+    glass.style(TEX.PLAIN, [0.11, 0.15, 0.21], -0.001);
+    loft(glass, CABIN_SECTIONS, { steps: 4 });
+    return glass;
+  };
+  const glass = buildGlass();
+  const glassWreck = buildGlass();
+  crumpleMesh(glassWreck, 0.05);
 
   const lights = new MeshBuilder();
   lights.style(TEX.PLAIN, [1.0, 0.96, 0.85], 0);
@@ -153,27 +192,34 @@ function buildCarMeshes(gl) {
 
   return {
     paint: paint.upload(gl),
+    paintWreck: paintWreck.upload(gl),
     glass: glass.upload(gl),
+    glassWreck: glassWreck.upload(gl),
     lights: lights.upload(gl),
     tail: tail.upload(gl),
     wheel: wheel.upload(gl),
+    plates: buildPlateMesh(gl, 2.315, -2.335, 0.30, 0.33),
   };
 }
 
 // The van. Boxier and taller than the cars, and carrying a certain novelty
 // advertising prop on the nose — a sight gag borrowed from The IT Crowd.
 function buildVanMeshes(gl) {
-  const paint = new MeshBuilder();
-  paint.style(TEX.METAL, [1, 1, 1], -0.001);
-  paint.chamferBox(0, 1.30, -0.55, 1.05, 0.92, 1.95, 0.38, { perUnit: 0.5 });   // box body
-  paint.chamferBox(0, 0.86, 1.62, 1.00, 0.50, 0.70, 0.30, { perUnit: 0.5 });    // stubby bonnet
-  paint.chamferBox(0, 1.34, 1.05, 1.02, 0.56, 0.30, 0.26, { perUnit: 0.5 });    // cab front
-  paint.style(TEX.PLAIN, [0.13, 0.13, 0.15], 0);
-  paint.chamferBox(0, 0.50, 2.22, 0.98, 0.18, 0.14, 0.10, { perUnit: 1 });      // front bumper
-  paint.chamferBox(0, 0.50, -2.42, 0.98, 0.18, 0.13, 0.10, { perUnit: 1 });     // rear bumper
-  paint.chamferBox(0, 0.30, 0, 0.86, 0.10, 2.1, 0.08, { perUnit: 1 });          // underbody
-  paint.style(TEX.PLATE, [1.5, 1.24, 0.26], 0.34);
-  paint.quad([0.45, 0.32, -2.46], [-0.45, 0.32, -2.46], [-0.45, 0.56, -2.46], [0.45, 0.56, -2.46], 1, 1);
+  const buildPaint = () => {
+    const paint = new MeshBuilder();
+    paint.style(TEX.METAL, [1, 1, 1], -0.001);
+    paint.chamferBox(0, 1.30, -0.55, 1.05, 0.92, 1.95, 0.38, { perUnit: 0.5 });   // box body
+    paint.chamferBox(0, 0.86, 1.62, 1.00, 0.50, 0.70, 0.30, { perUnit: 0.5 });    // stubby bonnet
+    paint.chamferBox(0, 1.34, 1.05, 1.02, 0.56, 0.30, 0.26, { perUnit: 0.5 });    // cab front
+    paint.style(TEX.PLAIN, [0.13, 0.13, 0.15], 0);
+    paint.chamferBox(0, 0.50, 2.22, 0.98, 0.18, 0.14, 0.10, { perUnit: 1 });      // front bumper
+    paint.chamferBox(0, 0.50, -2.42, 0.98, 0.18, 0.13, 0.10, { perUnit: 1 });     // rear bumper
+    paint.chamferBox(0, 0.30, 0, 0.86, 0.10, 2.1, 0.08, { perUnit: 1 });          // underbody
+    return paint;
+  };
+  const paint = buildPaint();
+  const paintWreck = buildPaint();
+  crumpleMesh(paintWreck, 0.085);
 
   const glass = new MeshBuilder();
   glass.style(TEX.PLAIN, [0.11, 0.15, 0.21], -0.001);
@@ -200,8 +246,10 @@ function buildVanMeshes(gl) {
   for (const s of [-1, 1]) tail.chamferBox(s * 0.82, 0.90, -2.44, 0.16, 0.16, 0.05, 0.04, { perUnit: 1 });
 
   return {
-    paint: paint.upload(gl), glass: glass.upload(gl), prop: prop.upload(gl),
+    paint: paint.upload(gl), paintWreck: paintWreck.upload(gl),
+    glass: glass.upload(gl), glassWreck: glass.upload(gl), prop: prop.upload(gl),
     lights: lights.upload(gl), tail: tail.upload(gl),
+    plates: buildPlateMesh(gl, 2.33, -2.46, 0.52, 0.32),
   };
 }
 
@@ -285,6 +333,12 @@ class Vehicle {
     this.halfLen = 2.30; this.halfWid = 0.95;
     // Spin left over from an impact, in radians per second.
     this.yawKick = 0;
+    // Seconds of lost grip after a heavy shunt: a car that has just been hit
+    // slides where the impulse sent it instead of gripping instantly.
+    this.skid = 0;
+    // Which of the sixteen registrations this car wears.
+    Vehicle.plateCounter = ((Vehicle.plateCounter || 0) + 7) & 15;
+    this.plate = Vehicle.plateCounter;
     this.crashImpulse = 0;
     this.y = 0; this.vy = 0; this.surfaceY = 0;
     this.airborne = false;
@@ -415,8 +469,11 @@ class Vehicle {
     const nrx = nfz, nrz = -nfx;
 
     // Lateral grip. Tyres scrub sideways motion away almost at once; only the
-    // handbrake lets the tail step out and hold a slide.
-    const grip = (handbrake ? 1.8 : 17.0) * (1 - dmg.wheels * 0.55);
+    // handbrake lets the tail step out and hold a slide — and a car that has
+    // just been shunted has no grip at all until it stops sliding, which is
+    // what lets an impact actually throw it rather than shoving it a foot.
+    if (this.skid > 0) this.skid = Math.max(0, this.skid - dt);
+    const grip = ((handbrake || this.skid > 0) ? 1.8 : 17.0) * (1 - dmg.wheels * 0.55);
     vr += yawRate * vf * dt * (handbrake ? 0.9 : 0.12);
     vr *= Math.exp(-grip * dt);
     if (handbrake) vf -= vf * 1.2 * dt;
@@ -641,6 +698,13 @@ class TrafficCar extends Vehicle {
       this.drive(dt, 0, 0, true, world.city);
       return;
     }
+    // Just been hit: no braking, no steering. The driver is carried wherever
+    // the impulse sent them until the tyres bite again — which is the whole
+    // difference between shunting a car and shoving a wall.
+    if (this.skid > 0) {
+      this.drive(dt, 0, 0, false, world.city);
+      return;
+    }
     const dx = this.target.x - this.x, dz = this.target.z - this.z;
     const dist = Math.hypot(dx, dz);
     if (dist < 7) this.pickNext();
@@ -669,7 +733,8 @@ class TrafficCar extends Vehicle {
     }
 
     // Signals. Amber is treated as red unless the car is too close to stop.
-    if (world.lights) {
+    // An ambulance on a shout goes through on blues.
+    if (world.lights && !this.ignoreLights) {
       const stop = world.lights.stopLineFor(this.node.i, this.node.j, this.dir.x, this.dir.z);
       if (stop) {
         const toLine = (stop.x - this.x) * Math.sin(this.yaw) +
@@ -760,6 +825,10 @@ class Pedestrian {
     // The pavement has a height now, so "the floor" is wherever they stand.
     const floor = world.city && world.city.groundY ? world.city.groundY(this.x, this.z) : 0;
     if (this.knocked > 0) {
+      // Hit hard enough and they do not get up: they lie where they landed
+      // until the ambulance comes for them. That is what the hospital count
+      // is made of.
+      if (this.downed) this.knocked = Math.max(this.knocked, 0.5);
       this.knocked -= dt;
       this.y += this.vy * dt;
       this.vy -= GRAVITY * dt;
@@ -835,7 +904,10 @@ class Pedestrian {
   knock(vx, vz) {
     if (this.knocked > 0) return;
     this.knocked = 2.2 + this.rand();
-    this.vx = vx * 0.55; this.vz = vz * 0.55; this.vy = 4 + Math.hypot(vx, vz) * 0.12;
+    const impact = Math.hypot(vx, vz);
+    // A glancing bump is a bruise; anything over a jog is a stretcher case.
+    if (impact > 6.5) this.downed = true;
+    this.vx = vx * 0.55; this.vz = vz * 0.55; this.vy = 4 + impact * 0.12;
   }
 }
 
