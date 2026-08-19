@@ -364,6 +364,8 @@ class Vehicle {
   // protects. `nx, nz` is the outward surface normal of whatever was hit, so
   // the dot with the nose tells us where it landed.
   takeHit(force, nx, nz, what) {
+    // Armour plate, power-ups, plot armour: whatever scales what gets through.
+    if (this.damageScale !== undefined) force *= this.damageScale;
     if (force <= 0.02) return;
     const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
     const along = -(nx * fx + nz * fz);          // +1 nose-on, -1 rear-ended
@@ -473,6 +475,18 @@ class Vehicle {
     // just been shunted has no grip at all until it stops sliding, which is
     // what lets an impact actually throw it rather than shoving it a foot.
     if (this.skid > 0) this.skid = Math.max(0, this.skid - dt);
+    // Oil slicks: drive over one and the tyres have nothing to say for a
+    // moment — the car goes light and the tail wanders on its own.
+    if (typeof game !== 'undefined' && game.slicks && game.slicks.length && !this.airborne) {
+      for (const s of game.slicks) {
+        const sdx = this.x - s.x, sdz = this.z - s.z;
+        if (sdx * sdx + sdz * sdz < s.r * s.r) {
+          this.skid = Math.max(this.skid, 0.35);
+          if (Math.abs(vf) > 6) this.yawKick += Math.sin(this.x * 12.9 + this.z * 7.7) * 0.09;
+          break;
+        }
+      }
+    }
     const grip = ((handbrake || this.skid > 0) ? 1.8 : 17.0) * (1 - dmg.wheels * 0.55);
     vr += yawRate * vf * dt * (handbrake ? 0.9 : 0.12);
     vr *= Math.exp(-grip * dt);
@@ -691,6 +705,12 @@ class TrafficCar extends Vehicle {
 
   update(dt, world) {
     this.world = world;
+    // The freeze pickup: every AI driver slams the brakes and sits there.
+    if (typeof game !== 'undefined' && game.power && game.power.freeze > 0 &&
+        !this.isPlayer && !this.ambulance) {
+      this.drive(dt, 0, 0, true, world.city);
+      return;
+    }
     // Written off. It stops where it is and becomes an obstacle, which is what
     // a written-off car does and what makes a pile-up build on itself.
     if (this.wreckage > 0.7) {

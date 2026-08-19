@@ -33,9 +33,14 @@ node tools/bundle.js            # writes dist/nightfall-city.html (~105 KB)
 | `A` / `D` | steer |
 | `Space` | handbrake (breaks traction — you can drift) |
 | `Shift` | boost, or sprint on foot |
-| `F` | get out of the car / get into the nearest one |
+| `F` | get out of the car / get into the nearest one (parked cars count) |
+| `J` | missions: race, wreck the gang, stop the armoured car, hospital rush |
+| `K` | street race on the city circuit |
+| `E` | hold to repair — fast and half price on a petrol station forecourt |
+| `Q` | drop an oil slick (collect an oil drum first) |
+| `Y` | toggle the neon synthwave look / plain daylight |
 | `C` | camera: chase, wide, bonnet |
-| `R` | respawn on the nearest road |
+| `R` | recovery crane to the nearest road (costs credits) |
 | `T` | skip four hours |
 | `G` | start / cancel a time trial across the city |
 | ramps | hit one to launch — `A`/`D` for barrel rolls, `W`/`S` for flips |

@@ -174,6 +174,13 @@ class CommuterCar extends TrafficCar {
 
   update(dt, world) {
     this.world = world;
+    // The freeze pickup stops commuters mid-manoeuvre too. Not the ambulance:
+    // freezing the ambulance would be a step too mean even for this game.
+    if (typeof game !== 'undefined' && game.power && game.power.freeze > 0 &&
+        !this.isPlayer && !this.ambulance) {
+      this.drive(dt, 0, 0, true, world.city);
+      return;
+    }
     this.phaseTime += dt;
     const spot = this.toSpot;
 

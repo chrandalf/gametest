@@ -10,7 +10,12 @@ const game = {
   camMode: 0,          // 0 chase, 1 far, 2 bonnet
   fps: 0,
   shake: 0,
-  stats: { hits: 0, knocked: 0, topSpeed: 0, hospitalised: 0 },
+  stats: { hits: 0, knocked: 0, topSpeed: 0, hospitalised: 0, flattened: 0 },
+  // Pickup powers currently running (seconds left), and the oil-drum count.
+  power: { oil: 0, ram: 0, freeze: 0, magnet: 0, big: 0, star: 0 },
+  slicks: [],          // oil on the road: { x, z, r, life }
+  missionTarget: null, // where the mission compass points
+  retro: true,         // the synthwave look; Y toggles it
   run: { active: false, score: 0, best: 0, timeLeft: 0, target: null, streak: 0, message: '', messageT: 0 },
   trial: { active: false, phase: 'idle', route: [], idx: 0, t: 0, countdown: 0, best: null, last: null },
   tyreLoad: 0,
@@ -89,6 +94,7 @@ function start() {
 
   game.recorder = new Recorder();
   game.hudVisible = true;
+  game.missions = new MissionControl();
 
   const mf = document.getElementById('mapfile');
   if (mf) mf.addEventListener('change', (ev) => {
@@ -129,6 +135,11 @@ function bindInput() {
     if (e.code === 'KeyM') buildWorld((Math.random() * 0xffffffff) >>> 0);
     if (e.code === 'KeyN') document.getElementById('mapfile').click();
     if (e.code === 'KeyK') startRace();
+    if (e.code === 'KeyJ') game.missions.toggle();
+    if (e.code === 'KeyY') {
+      game.retro = !game.retro;
+      say(game.retro ? 'STYLE: NEON NIGHTS' : 'STYLE: PLAIN DAYLIGHT');
+    }
     if (e.code === 'KeyB' && game.isMap) location.reload();
     if (e.code === 'BracketRight') game.recorder.adjustExposure(0.06);
     if (e.code === 'BracketLeft') game.recorder.adjustExposure(-0.06);
@@ -461,10 +472,16 @@ function resolveVehicleCollisions(all, onPlayer) {
       const bite = Math.abs(vRel) / 26;
       const force = bite * bite * 1.15;
       if (force > 0.02) {
-        a.takeHit(force * (2 * b.mass / (a.mass + b.mass)), -nx, -nz,
+        // A ram plate or a star scales up what its owner dishes out.
+        a.takeHit(force * (2 * b.mass / (a.mass + b.mass)) * (b.attackScale || 1), -nx, -nz,
                   b === onPlayer ? 'the player' : b.van ? 'a van' : 'another car');
-        b.takeHit(force * (2 * a.mass / (a.mass + b.mass)), nx, nz,
+        b.takeHit(force * (2 * a.mass / (a.mass + b.mass)) * (a.attackScale || 1), nx, nz,
                   a === onPlayer ? 'the player' : a.van ? 'a van' : 'another car');
+      }
+      // The disco star: whatever the player touches gets launched, hard.
+      if (onPlayer && game.power.star > 0) {
+        if (a === onPlayer) { b.vx += nx * 11; b.vz += nz * 11; b.skid = Math.max(b.skid, 1.4); }
+        if (b === onPlayer) { a.vx -= nx * 11; a.vz -= nz * 11; a.skid = Math.max(a.skid, 1.4); }
       }
       if (onPlayer && (a === onPlayer || b === onPlayer)) {
         const strength = Math.min(1, Math.abs(vRel) / 18);
@@ -651,15 +668,28 @@ function update(dt) {
   // player takes down in the same instant counts as one shot, which is what
   // makes a whole queue at a crossing worth going for.
   let splatted = 0;
+  const magnetOn = p.inCar && game.power.magnet > 0;
   for (const ped of game.peds) {
     if (Math.hypot(ped.x - px, ped.z - pz) > 200) continue;
     ped.update(dt, world);
     if (ped.knocked > 0) continue;
+    // The magnet: everyone nearby is dragged toward the car, flailing against
+    // it the whole way. There is no dignified response to a pedestrian magnet.
+    if (magnetOn) {
+      const mdx = car.x - ped.x, mdz = car.z - ped.z;
+      const md = Math.hypot(mdx, mdz);
+      if (md > 2 && md < 38) {
+        const pull = clamp(52 / md, 2, 10) * dt;
+        ped.x += (mdx / md) * pull;
+        ped.z += (mdz / md) * pull;
+      }
+    }
     for (const v of all) {
-      if (Math.hypot(v.x - ped.x, v.z - ped.z) < 2.3 && v.speed > 2.5) {
+      if (Math.hypot(v.x - ped.x, v.z - ped.z) < 2.3 * (v.bodyScale || 1) && v.speed > 2.5) {
         ped.knock(v.vx, v.vz);
         if (v === car) {
           game.stats.knocked++;
+          if (ped.downed) game.stats.flattened++;
           game.shake = Math.min(1, game.shake + 0.25);
           playThud(0.4);
           splatted++;
@@ -720,6 +750,9 @@ function update(dt) {
   }
 
   game.credits += game.stunts.collectCredits();
+  updatePowers(dt);
+  if (game.pickups) game.pickups.update(dt, { x: px, z: pz }, p.inCar);
+  game.missions.update(dt);
   updateSensor(dt);
   updateRepair(dt);
   if (car.lastHitT > 0) car.lastHitT -= dt;
@@ -834,6 +867,9 @@ function loadMapWorld(json, label) {
   game.abandoned = [];
   game.parked = [];
   game.life = null;
+  game.pickups = null;
+  game.slicks = [];
+  if (game.missions && game.missions.m) { game.missions.cleanup(); game.missions.m = null; }
   game.snipers = new Snipers(gl, world, game.rand);
   game.skids = new SkidMarks(gl, 460);
 
@@ -963,6 +999,10 @@ function buildWorld(seed) {
   // The census: who lives where, works where, and parks what where.
   game.life = new CityLife(city, rand);
   console.log('census:', JSON.stringify(game.life.censusSummary));
+  // Toys on the tarmac, and a clean mission slate for the new town.
+  game.pickups = new Pickups(gl, city, rand);
+  game.slicks = [];
+  if (game.missions && game.missions.m) { game.missions.cleanup(); game.missions.m = null; }
   // The fleet a full rush hour is allowed to reach. Scaled by how much city
   // there is, so a map that came out mostly farmland stays quiet.
   game.population = new TrafficPopulation(city, rand, clamp(urbanCells.length * 2.4, 40, 190));
@@ -1216,9 +1256,24 @@ function environment() {
   let ambColor = mix3([0.46, 0.47, 0.52], [0.36, 0.32, 0.36], dusk);
   ambColor = mix3(ambColor, [0.36, 0.40, 0.55], night);
 
+  // The synthwave grade: every hour of the day pulled toward hot pink and
+  // deep violet, hardest at dusk and after dark. The banded sun and the
+  // scanlines live in the shaders; this is just the palette.
+  if (game.retro) {
+    sunColor = mix3(mix3([1.45, 0.95, 1.10], [1.65, 0.38, 0.80], dusk),
+                    [0.22, 0.14, 0.45], night);
+    skyColor = mix3(mix3([0.34, 0.24, 0.66], [0.42, 0.13, 0.60], dusk),
+                    [0.05, 0.03, 0.14], night);
+    fogColor = mix3(mix3([0.78, 0.42, 0.78], [0.92, 0.30, 0.62], dusk),
+                    [0.13, 0.05, 0.24], night);
+    ambColor = mix3(mix3([0.48, 0.42, 0.62], [0.44, 0.34, 0.60], dusk),
+                    [0.42, 0.35, 0.74], night);
+  }
+
   void day;
   return {
     sunDir, sunColor, skyColor, fogColor, ambColor, night,
+    retro: game.retro ? 1 : 0,
     fogDensity: (game.isMap ? 0.0011 : 1) * lerp(0.0026, 0.0034, night),
     time: game.time,
     lights: collectLights(night),
@@ -1241,12 +1296,27 @@ function collectLights(night) {
   }
   nearby.sort((a, b) => a.d - b.d);
   // Sodium orange, and enough of them at once that the pools overlap into a
-  // lit street instead of a line of isolated puddles.
+  // lit street instead of a line of isolated puddles. In neon mode the lamps
+  // alternate pink and cyan down the street instead, which is most of the
+  // synthwave look done in one line.
   for (let i = 0; i < Math.min(22, nearby.length); i++) {
     const L = nearby[i].L;
+    let col = [1.12, 0.86, 0.52];
+    if (game.retro) {
+      col = (((L.x * 7 + L.z * 13) | 0) % 2) ? [1.15, 0.35, 0.95] : [0.25, 0.70, 1.25];
+    }
     out.push({
       pos: [L.x, L.y, L.z], radius: 34,
-      color: [1.12 * intensity, 0.86 * intensity, 0.52 * intensity], dir: null,
+      color: [col[0] * intensity, col[1] * intensity, col[2] * intensity], dir: null,
+    });
+  }
+
+  // Neon underglow beneath the player's car after dark. Pure vanity. Kept.
+  if (game.retro && game.player.inCar) {
+    const c = game.car;
+    out.push({
+      pos: [c.x, (c.y || 0) + 0.25, c.z], radius: 9,
+      color: [1.3 * intensity, 0.25 * intensity, 1.1 * intensity], dir: null,
     });
   }
 
@@ -1299,6 +1369,10 @@ function render() {
   const m = game.mats;
   const cam = game.cam;
   const env = environment();
+
+  // Neon mode runs the bloom hotter: glow is the whole point.
+  r.bloomStrength = game.retro ? 1.15 : 0.8;
+  r.bloomThreshold = game.retro ? 1.3 : 1.5;
 
   const aspect = r.resize();
   M4.perspective(m.proj, cam.fov * Math.PI / 180, aspect, 0.25, 1200);
@@ -1408,8 +1482,15 @@ function drawActors(r, env, shadowPass) {
     const dmg = car.damage;
     const battered = car.wreckage > 0.42;
     if (!shadowPass) {
-      const dk = 1 - Math.min(0.55, dmg.body * 0.5 + car.wreckage * 0.15);
-      r.setMaterial([car.color[0] * dk, car.color[1] * dk * 0.97, car.color[2] * dk * 0.94], 0, 0);
+      if (car === game.car && game.power.star > 0) {
+        // Disco star: the paint job cycles the whole rainbow, glowing.
+        const h = game.time * 4;
+        r.setMaterial([0.65 + 0.45 * Math.sin(h), 0.65 + 0.45 * Math.sin(h + 2.09),
+                       0.65 + 0.45 * Math.sin(h + 4.19)], 0.4, 0);
+      } else {
+        const dk = 1 - Math.min(0.55, dmg.body * 0.5 + car.wreckage * 0.15);
+        r.setMaterial([car.color[0] * dk, car.color[1] * dk * 0.97, car.color[2] * dk * 0.94], 0, 0);
+      }
     }
     r.draw(battered ? M.paintWreck : M.paint, _m);
     if (car.van && !car.ambulance && !shadowPass) {
@@ -1454,6 +1535,20 @@ function drawActors(r, env, shadowPass) {
         M4.mul(_m3, _m, _m2); r.draw(game.cube, _m3);
         r.setMaterial([0.2, 0.4, 1.0], car.siren && !strobe ? 3.4 : 0.2, 0);
         M4.compose(_m2, 0.4, 2.34, 0.8, 0, 0, 0, 0.3, 0.16, 0.24);
+        M4.mul(_m3, _m, _m2); r.draw(game.cube, _m3);
+        r.setMaterial([1, 1, 1], 0, 0);
+      }
+      // The armoured car wears its plating where the windows should be.
+      if (car.armoured) {
+        r.setMaterial([0.46, 0.48, 0.53], 0.04, 0);
+        M4.compose(_m2, 0, 1.55, 1.30, 0, 0, 0, 1.8, 0.62, 0.08);
+        M4.mul(_m3, _m, _m2); r.draw(game.cube, _m3);
+        for (const s of [-1, 1]) {
+          M4.compose(_m2, s * 1.10, 1.35, -0.55, 0, 0, 0, 0.06, 1.4, 3.6);
+          M4.mul(_m3, _m, _m2); r.draw(game.cube, _m3);
+        }
+        r.setMaterial([0.95, 0.75, 0.1], 0.5, 0);
+        M4.compose(_m2, 0, 1.9, -2.42, 0, 0, 0, 1.6, 0.18, 0.05);
         M4.mul(_m3, _m, _m2); r.draw(game.cube, _m3);
         r.setMaterial([1, 1, 1], 0, 0);
       }
@@ -1529,6 +1624,22 @@ function drawActors(r, env, shadowPass) {
       r.draw(game.spriteMesh, null);
       r.setSpriteMode(false);
     }
+  }
+
+  // Pickups, spinning over the tarmac.
+  if (game.pickups) game.pickups.draw(r, cam.pos, game.time, shadowPass);
+
+  // Oil slicks: dark translucent pools, fading as they dry out.
+  if (!shadowPass && game.slicks.length) {
+    r.beginTranslucent();
+    for (const s of game.slicks) {
+      const y = game.city.groundY(s.x, s.z);
+      r.setMaterial([0.02, 0.02, 0.05], 0, 0, Math.min(0.7, s.life * 0.15));
+      M4.compose(_m, s.x, y + 0.07, s.z, 0, 0, 0, s.r, 0.05, s.r);
+      r.draw(game.body.ball, _m);
+    }
+    r.endTranslucent();
+    r.setMaterial([1, 1, 1], 0, 0);
   }
 
   // Sniper lasers.
@@ -1744,6 +1855,19 @@ function drawHud() {
     if (Math.abs(p.x - px) > 140 || Math.abs(p.z - pz) > 140) continue;
     c.fillRect(p.x - 1.2, p.z - 1.2, 2.4, 2.4);
   }
+  // Pickups sparkle cyan; the mission target pulses hot pink.
+  if (game.pickups) {
+    c.fillStyle = '#7adcff';
+    for (const it of game.pickups.items) {
+      if (Math.abs(it.x - px) > 150 || Math.abs(it.z - pz) > 150) continue;
+      c.beginPath(); c.arc(it.x, it.z, 3.4, 0, 6.284); c.fill();
+    }
+  }
+  if (game.missionTarget) {
+    const t = game.missionTarget;
+    c.fillStyle = '#ff5ad1';
+    c.beginPath(); c.arc(t.x, t.z, 6 + Math.sin(game.time * 6) * 2, 0, 6.284); c.fill();
+  }
   c.restore();
 
   // Player arrow (always pointing up).
@@ -1861,9 +1985,47 @@ function drawHud() {
     c.textAlign = 'left';
   }
 
+  // --- mission panel: label, objective, clock and a hot pink compass ---
+  const mi = game.missions && game.missions.m;
+  if (mi && mi.type !== 'race') {
+    c.textAlign = 'center';
+    c.fillStyle = 'rgba(0,0,0,0.5)';
+    roundRect(c, W/2 - 175, 8, 350, 52, 10); c.fill();
+    c.fillStyle = '#ff5ad1';
+    c.font = '700 12px system-ui, sans-serif';
+    c.fillText(mi.label, W/2, 14);
+    c.fillStyle = '#fff';
+    c.font = '700 17px system-ui, sans-serif';
+    c.fillText(`${mi.progress || mi.goal}`, W/2, 30);
+    c.fillStyle = mi.timeLeft < 15 ? '#ff5a4d' : 'rgba(255,255,255,0.7)';
+    c.font = '700 12px system-ui, sans-serif';
+    c.fillText(`${Math.max(0, Math.ceil(mi.timeLeft))}s`, W/2, 47);
+    if (game.missionTarget) {
+      const camYaw = Math.atan2(game.cam.target[0] - game.cam.pos[0],
+                                game.cam.target[2] - game.cam.pos[2]);
+      const t = game.missionTarget;
+      const bearing = Math.atan2(t.x - px, t.z - pz) - camYaw;
+      c.save();
+      c.translate(W/2, 116);
+      c.fillStyle = 'rgba(0,0,0,0.42)';
+      c.beginPath(); c.arc(0, 0, 34, 0, 6.284); c.fill();
+      c.rotate(bearing);
+      c.fillStyle = '#ff5ad1';
+      c.beginPath();
+      c.moveTo(0, -22); c.lineTo(13, 12); c.lineTo(0, 5); c.lineTo(-13, 12);
+      c.closePath(); c.fill();
+      c.restore();
+      c.textAlign = 'center';
+      c.fillStyle = 'rgba(255,255,255,0.85)';
+      c.font = '600 13px system-ui, sans-serif';
+      c.fillText(`${Math.round(Math.hypot(t.x - px, t.z - pz))} m`, W/2, 156);
+    }
+    c.textAlign = 'left';
+  }
+
   // --- objective compass, score and timer ---
   const run = game.run;
-  if (run.target && !tr.active && tr.phase !== 'done') {
+  if (run.target && !tr.active && tr.phase !== 'done' && !mi) {
     const camYaw = Math.atan2(game.cam.target[0] - game.cam.pos[0],
                               game.cam.target[2] - game.cam.pos[2]);
     const bearing = Math.atan2(run.target.x - px, run.target.z - pz) - camYaw;
@@ -1922,6 +2084,31 @@ function drawHud() {
     c.globalAlpha = 1;
   }
   c.textAlign = 'left';
+
+  // --- running powers ---
+  if (game.player.inCar) {
+    const P = game.power;
+    const chips = [];
+    if (P.star > 0) chips.push(['★ ' + Math.ceil(P.star), '#ffd34d']);
+    if (P.big > 0) chips.push(['BIG ' + Math.ceil(P.big), '#ff6a5a']);
+    if (P.ram > 0) chips.push(['RAM ' + Math.ceil(P.ram), '#9fb6ff']);
+    if (P.freeze > 0) chips.push(['FREEZE ' + Math.ceil(P.freeze), '#7adcff']);
+    if (P.magnet > 0) chips.push(['MAGNET ' + Math.ceil(P.magnet), '#ff8f8f']);
+    if (P.oil > 0) chips.push(['OIL ×' + P.oil + ' (Q)', '#d8c66a']);
+    if (chips.length) {
+      c.font = '700 11px system-ui, sans-serif';
+      let cx2 = W - 26;
+      for (const [label, col] of chips) {
+        const tw = c.measureText(label).width + 16;
+        cx2 -= tw + 6;
+        c.fillStyle = 'rgba(0,0,0,0.5)';
+        roundRect(c, cx2, H - 202, tw, 20, 6); c.fill();
+        c.fillStyle = col;
+        c.textAlign = 'left';
+        c.fillText(label, cx2 + 8, H - 197);
+      }
+    }
+  }
 
   // --- nitro ---
   if (game.player.inCar) {
@@ -2111,7 +2298,8 @@ function drawHud() {
       'E — repair (hold; fast & half price at a petrol station)   R — recover',
       'C — camera   T — skip time   P — pause',
       'V — record video   U — hide HUD   [ ] — clip brightness',
-      'G — time trial   K — street race   M — new map (new seed)   N — map file',
+      'J — MISSIONS (they get harder)   K — street race   G — time trial',
+      'Q — drop oil (find a drum)   Y — neon / daylight   M — new map   N — map file',
       'Click the window for mouse look. H hides this.',
     ];
     const bw = 340, bh = lines.length * 19 + 26;

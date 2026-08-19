@@ -228,6 +228,7 @@ uniform vec3 uSkyColor;
 uniform vec3 uFogColor;
 uniform float uNight;
 uniform float uTime;
+uniform float uRetro;
 out vec4 fragColor;
 
 float hash(vec2 p) {
@@ -246,9 +247,23 @@ void main() {
 
   // Sun disc plus a wide bloom, warmed near the horizon.
   float sd = max(dot(dir, uSunDir), 0.0);
-  col += uSunColor * pow(sd, 380.0) * 9.0;
+  col += uSunColor * pow(sd, 380.0) * 9.0 * (1.0 - uRetro * 0.75);
   col += uSunColor * pow(sd, 12.0) * 0.35;
   col += vec3(1.0, 0.5, 0.2) * pow(sd, 3.0) * 0.16 * (1.0 - smoothstep(0.0, 0.35, uSunDir.y));
+
+  // The synthwave sun: a huge disc, banded with dark stripes across its lower
+  // half, running gold at the top into hot pink at the bottom. The whole
+  // eighties in one circle.
+  if (uRetro > 0.5) {
+    float disc = smoothstep(0.9930, 0.9942, sd);
+    float dy = dir.y - uSunDir.y;
+    float stripes = smoothstep(-0.2, 0.4, sin(dy * 150.0 - uTime * 0.35));
+    float cut = mix(1.0, stripes, smoothstep(0.03, -0.03, dy));
+    vec3 sunCol = mix(vec3(1.65, 0.22, 0.62), vec3(1.7, 1.15, 0.30),
+                      smoothstep(-0.09, 0.07, dy));
+    col += sunCol * disc * cut * 1.65;
+    col += vec3(0.95, 0.20, 0.60) * pow(sd, 9.0) * 0.40;
+  }
 
   // Stars fade in after dusk.
   if (uNight > 0.02 && h > 0.0) {
@@ -256,7 +271,9 @@ void main() {
     float s = hash(g);
     float star = smoothstep(0.9965, 1.0, s) * uNight * h;
     star *= 0.6 + 0.4 * sin(uTime * 2.5 + s * 60.0);
-    col += vec3(star * 1.6);
+    // Neon nights get tinted stars: half pink, half cyan.
+    vec3 starCol = mix(vec3(1.0), s > 0.998 ? vec3(1.2, 0.5, 1.1) : vec3(0.5, 1.0, 1.2), uRetro);
+    col += starCol * star * 1.6;
   }
 
   // Soft horizon-hugging haze band.
@@ -318,6 +335,8 @@ uniform sampler2D uBloom;
 uniform float uBloomStrength;
 uniform float uExposure;
 uniform float uNight;
+uniform float uRetro;
+uniform float uVpH;
 out vec4 fragColor;
 
 // Narkowicz ACES approximation: the filmic shoulder is what stops bright sky
@@ -336,8 +355,16 @@ void main() {
   // Grade: cool the shadows, warm the highlights, then a soft vignette.
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c = mix(c * vec3(0.94, 0.98, 1.10), c * vec3(1.06, 1.01, 0.94), smoothstep(0.15, 0.85, l));
-  c = mix(vec3(l), c, 1.14);                         // a little extra saturation
+  c = mix(vec3(l), c, 1.14 + uRetro * 0.14);         // extra saturation; neon gets more
   c = clamp((c - 0.5) * 1.09 + 0.5, 0.0, 1.0);       // gentle S-curve on top
+
+  // CRT scanlines: faint, but they soften every hard polygon edge in the
+  // frame, which is precisely the job the eighties look is here to do.
+  if (uRetro > 0.5) {
+    c *= 1.0 - 0.05 * (0.5 + 0.5 * sin(vUv.y * uVpH * 3.14159));
+    // Shadows lean violet instead of black.
+    c = mix(c, c * vec3(1.02, 0.94, 1.10) + vec3(0.012, 0.0, 0.02), 1.0 - smoothstep(0.0, 0.4, l));
+  }
   vec2 d = vUv - 0.5;
   float vig = smoothstep(0.85, 0.28, dot(d, d) * 2.0);
   c *= mix(1.0, vig, 0.42 + uNight * 0.18);
@@ -672,6 +699,8 @@ class Renderer {
     gl.uniform1f(this.compositeProg.u.uBloomStrength, this.hdr ? this.bloomStrength : this.bloomStrength * 0.5);
     gl.uniform1f(this.compositeProg.u.uExposure, this.exposure);
     gl.uniform1f(this.compositeProg.u.uNight, env.night);
+    gl.uniform1f(this.compositeProg.u.uRetro, env.retro || 0);
+    gl.uniform1f(this.compositeProg.u.uVpH, t.h);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     gl.activeTexture(gl.TEXTURE0);
@@ -695,6 +724,7 @@ class Renderer {
     gl.uniform3fv(p.u.uFogColor, env.fogColor);
     gl.uniform1f(p.u.uNight, env.night);
     gl.uniform1f(p.u.uTime, env.time);
+    gl.uniform1f(p.u.uRetro, env.retro || 0);
     gl.bindVertexArray(this.emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.depthMask(true);
