@@ -45,11 +45,25 @@ class MusicPlayer {
     a.volume = 0.30 * (game.musicVol === undefined ? 1 : game.musicVol);
     a.addEventListener('ended', () => this.play(this.idx + 1, false));
     a.addEventListener('error', () => this.skipFrom(this.idx, quiet));
+    this.wire(a, src);
     const p = a.play();
     if (p && p.catch) p.catch(() => { /* gesture policy; start() retries */ this.started = false; });
     this.audio = a;
     this.failed = 0;
     if (!quiet) say(`♪ ${MUSIC_TRACKS[this.idx].name}`);
+  }
+
+  // Route the element through the game's audio graph so recordings hear it.
+  // Skipped on file:// — a null-origin element source outputs silence there,
+  // and audible-but-unrecordable beats silent either way.
+  wire(a, src) {
+    const au = game.audio;
+    if (!au || !au.musicBus || typeof au.ctx.createMediaElementSource !== 'function') return;
+    const safe = (src && src.startsWith('data:')) || location.protocol.startsWith('http');
+    if (!safe) return;
+    try {
+      au.ctx.createMediaElementSource(a).connect(au.musicBus);
+    } catch (e) { /* element keeps its direct output */ }
   }
 
   // A missing file is the normal case for a fresh clone with no music in it;

@@ -78,14 +78,22 @@ class Recorder {
       return;
     }
 
-    // Mix in the engine audio if the sound is already running.
+    // Favour smoothness over per-frame detail when the encoder has to choose:
+    // this is a driving game, the whole frame moves.
+    for (const track of stream.getVideoTracks()) {
+      if ('contentHint' in track) track.contentHint = 'motion';
+    }
+
+    // Mix in the game audio if the sound is already running: the engine bus
+    // and the music bus both feed the tap, so clips carry the soundtrack.
     this.audioTap = null;
     const audio = game.audio;
     if (audio && audio.ctx && typeof audio.ctx.createMediaStreamDestination === 'function') {
       try {
         const dest = audio.ctx.createMediaStreamDestination();
         audio.master.connect(dest);
-        this.audioTap = { dest, master: audio.master };
+        if (audio.musicBus) audio.musicBus.connect(dest);
+        this.audioTap = { dest, master: audio.master, musicBus: audio.musicBus };
         for (const track of dest.stream.getAudioTracks()) stream.addTrack(track);
       } catch (e) { /* silent clip is better than no clip */ }
     }
@@ -94,14 +102,14 @@ class Recorder {
     // there; a local recording keeps the higher rate and cleaner dark areas.
     const hosted = !!((typeof window !== 'undefined' && window.claude) ||
                       (typeof claude !== 'undefined' ? claude : null));
-    const bitrate = hosted ? 8000000 : 14000000;
+    const bitrate = hosted ? 8000000 : 20000000;
     const mime = REC_MIME_CANDIDATES.find(
       (m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m));
     let rec;
     try {
-      rec = new MediaRecorder(stream, mime
-        ? { mimeType: mime, videoBitsPerSecond: bitrate }
-        : { videoBitsPerSecond: bitrate });
+      const opts = { videoBitsPerSecond: bitrate, audioBitsPerSecond: 160000 };
+      if (mime) opts.mimeType = mime;
+      rec = new MediaRecorder(stream, opts);
     } catch (e) {
       this.note('Could not start the recorder: ' + e.message, 5);
       return;
@@ -146,6 +154,9 @@ class Recorder {
     for (const t of this.stream.getTracks()) t.stop();
     if (this.audioTap) {
       try { this.audioTap.master.disconnect(this.audioTap.dest); } catch (e) { /* gone */ }
+      if (this.audioTap.musicBus) {
+        try { this.audioTap.musicBus.disconnect(this.audioTap.dest); } catch (e) { /* gone */ }
+      }
       this.audioTap = null;
     }
     this.note('Saving clip…', 6);
@@ -174,7 +185,7 @@ class Recorder {
     const blob = new Blob(this.chunks, { type });
     this.chunks = [];
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    const name = `nightfall-city-${stamp}.webm`;
+    const name = `neon-drive-${stamp}.webm`;
     const mb = (blob.size / 1048576).toFixed(1);
 
     if (this.lastUrl) URL.revokeObjectURL(this.lastUrl);

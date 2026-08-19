@@ -291,14 +291,23 @@ function updateRepair(dt) {
 // ---------------------------------------------------------------- audio ----
 
 function startAudio() {
-  if (game.music) game.music.start();
-  if (game.audio) { if (game.audio.ctx.state === 'suspended') game.audio.ctx.resume(); return; }
+  if (game.audio) {
+    if (game.audio.ctx.state === 'suspended') game.audio.ctx.resume();
+    if (game.music) game.music.start();
+    return;
+  }
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return;
   const ctx = new Ctx();
   const master = ctx.createGain();
   master.gain.value = 0.28;
   master.connect(ctx.destination);
+  // The music rides its own bus through the same context, so the recorder
+  // can tap it — an <audio> element outside the graph is inaudible to a
+  // MediaStream tap, which is why clips used to come out without the tunes.
+  const musicBus = ctx.createGain();
+  musicBus.gain.value = 1;
+  musicBus.connect(ctx.destination);
 
   // The engine: two sawtooths a hair apart (the beat between them is the
   // growl), a square an octave down for the block, all driven through a
@@ -356,7 +365,8 @@ function startAudio() {
   skidSrc.connect(skidFilter); skidFilter.connect(skidGain); skidGain.connect(master);
   skidSrc.start();
 
-  game.audio = { ctx, master, osc, osc2, sub, filter, gain, skidGain, skidFilter };
+  game.audio = { ctx, master, musicBus, osc, osc2, sub, filter, gain, skidGain, skidFilter };
+  if (game.music) game.music.start();
 }
 
 function updateAudio(dt) {
