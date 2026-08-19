@@ -89,7 +89,10 @@ class ArmouredCar extends CommuterCar {
   }
 }
 
-const MISSION_ORDER = ['race', 'wreck', 'chase', 'blood'];
+// The mission chain is the fight against the city's NPCs — the street race
+// has its own menu entry, so it is not dealt out as a job. Level 1 opens
+// with a small gang; the armoured car and the hospital rush rotate in after.
+const MISSION_ORDER = ['wreck', 'chase', 'blood'];
 
 // Engine stages, unlocked by mission level. `max` is what the engine pulls
 // to on its own; `boost` is where the turbo runs out. Stock turbo is 200 km/h

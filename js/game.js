@@ -2007,7 +2007,11 @@ function drawHud() {
   c.save();
   c.clip();
   c.translate(cx, cy);
-  c.rotate(pyaw);          // rotate the world so the player always faces up
+  // Rotate the world so the player always faces up. The angle is NEGATED
+  // because the y-flip in the scale below mirrors rotation direction: with
+  // +yaw here the map turned the opposite way to the steering wheel, which
+  // is exactly as disorienting as it sounds.
+  c.rotate(-pyaw);
   c.scale(scale, -scale);
   c.translate(-px, -pz);
 
@@ -2113,7 +2117,7 @@ function drawHud() {
   c.fillStyle = 'rgba(255,255,255,0.8)';
   c.font = '600 12px system-ui, sans-serif';
   c.textAlign = 'center';
-  c.fillText('N', cx + Math.sin(pyaw) * (R - 11), cy - Math.cos(pyaw) * (R - 11) - 7);
+  c.fillText('N', cx - Math.sin(pyaw) * (R - 11), cy - Math.cos(pyaw) * (R - 11) - 7);
   c.restore();
 
   // --- speedometer ---
