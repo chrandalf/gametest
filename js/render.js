@@ -229,6 +229,7 @@ uniform vec3 uFogColor;
 uniform float uNight;
 uniform float uTime;
 uniform float uRetro;
+uniform vec3 uRetroSun;   // the banded sun: pinned just above the horizon
 out vec4 fragColor;
 
 float hash(vec2 p) {
@@ -252,17 +253,22 @@ void main() {
   col += vec3(1.0, 0.5, 0.2) * pow(sd, 3.0) * 0.16 * (1.0 - smoothstep(0.0, 0.35, uSunDir.y));
 
   // The synthwave sun: a huge disc, banded with dark stripes across its lower
-  // half, running gold at the top into hot pink at the bottom. The whole
-  // eighties in one circle.
+  // half, running gold at the top into hot pink at the bottom. It keys off
+  // its own direction — pinned just above the horizon — so it NEVER sets:
+  // at midnight it hangs there over the black skyline, which is the single
+  // most retrowave fact about the whole sky.
   if (uRetro > 0.5) {
-    float disc = smoothstep(0.9930, 0.9942, sd);
-    float dy = dir.y - uSunDir.y;
+    float sr = max(dot(dir, uRetroSun), 0.0);
+    float disc = smoothstep(0.9930, 0.9942, sr);
+    float dy = dir.y - uRetroSun.y;
     float stripes = smoothstep(-0.2, 0.4, sin(dy * 150.0 - uTime * 0.35));
     float cut = mix(1.0, stripes, smoothstep(0.03, -0.03, dy));
     vec3 sunCol = mix(vec3(1.65, 0.22, 0.62), vec3(1.7, 1.15, 0.30),
                       smoothstep(-0.09, 0.07, dy));
     col += sunCol * disc * cut * 1.65;
-    col += vec3(0.95, 0.20, 0.60) * pow(sd, 9.0) * 0.40;
+    col += vec3(0.95, 0.20, 0.60) * pow(sr, 9.0) * 0.40;
+    // After dark it gains the cyan halo of the arcade poster.
+    col += vec3(0.16, 0.80, 0.85) * pow(sr, 34.0) * (1.0 - disc) * 0.9 * uNight;
   }
 
   // Stars fade in after dusk.
@@ -709,7 +715,8 @@ class Renderer {
     gl.uniform1f(this.compositeProg.u.uBloomStrength, this.hdr ? this.bloomStrength : this.bloomStrength * 0.5);
     gl.uniform1f(this.compositeProg.u.uExposure, this.exposure);
     gl.uniform1f(this.compositeProg.u.uNight, env.night);
-    gl.uniform1f(this.compositeProg.u.uRetro, env.retro || 0);
+    gl.uniform1f(this.compositeProg.u.uRetro,
+                 env.retroFx === undefined ? (env.retro || 0) : env.retroFx);
     gl.uniform1f(this.compositeProg.u.uVpH, t.h);
     gl.uniform1f(this.compositeProg.u.uTime, env.time || 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -736,6 +743,7 @@ class Renderer {
     gl.uniform1f(p.u.uNight, env.night);
     gl.uniform1f(p.u.uTime, env.time);
     gl.uniform1f(p.u.uRetro, env.retro || 0);
+    gl.uniform3fv(p.u.uRetroSun, env.retroSun || env.sunDir);
     gl.bindVertexArray(this.emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.depthMask(true);

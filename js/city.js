@@ -900,7 +900,12 @@ class City {
             const pb = new MeshBuilder();
             const py = this.groundY(x, z);
             this.lift = py;
-            this.palm(pb, x, z, 0.8 + hash2(x * 3, z * 5, 9) * 0.5, 0);
+            // Palms and telegraph poles take turns down the lane.
+            if (hash2(x * 5, z * 7, 21) < 0.5) {
+              this.palm(pb, x, z, 0.8 + hash2(x * 3, z * 5, 9) * 0.5, 0);
+            } else {
+              this.utilityPole(pb, x, z, axis ? 1 : 0, axis ? 0 : 1);
+            }
             chunkAt(axis ? li : k, axis ? k : li).append(pb, 0, py, 0);
             this.lift = 0;
           }
@@ -1134,6 +1139,24 @@ class City {
           this.lift = py;
           this.palm(pb, pp[0], pp[1], 0.9 + ((t * 7 + k * 13) % 10) / 22, 0);
           chunkAt(m.alongX ? k : m.line, m.alongX ? m.line : k).append(pb, 0, py, 0);
+          this.lift = 0;
+        }
+      }
+
+      // Telegraph poles between the palms, arms spanning the driver's view —
+      // the other half of the silhouette skyline in every retrowave frame.
+      for (const t of [25, 55]) {
+        for (const side of [-1, 1]) {
+          const pp = P(a0 + t, line + side * (ROAD / 2 + 3.0));
+          if (this.onRoadSurface(pp[0], pp[1], 1.5)) continue;
+          const bi2 = clamp(Math.floor(pp[0] / CELL), 0, GRID - 2);
+          const bj2 = clamp(Math.floor(pp[1] / CELL), 0, GRID - 2);
+          if (this.zones.zoneAt(bi2, bj2) === Z.WATER) continue;
+          const ub = new MeshBuilder();
+          const py = this.groundY(pp[0], pp[1]);
+          this.lift = py;
+          this.utilityPole(ub, pp[0], pp[1], m.alongX ? 0 : 1, m.alongX ? 1 : 0);
+          chunkAt(m.alongX ? k : m.line, m.alongX ? m.line : k).append(ub, 0, py, 0);
           this.lift = 0;
         }
       }
@@ -1620,6 +1643,17 @@ class City {
     }
     const tr = 0.26 * scale;
     this.addCollider(x - tr, z - tr, x + tr, z + tr, y0 + h, 'a palm tree');
+  }
+
+  // A telegraph pole: creosote trunk, two crossarms. The wires are imagined —
+  // at dusk it is the silhouette that does the work, marching down the verge.
+  utilityPole(b, x, z, ax, az) {
+    b.style(TEX.BARK, [0.30, 0.24, 0.19], 0);
+    b.cylinder(x, 4.4, z, 0.13, 8.8, 6, { vRepeat: 3 });
+    for (const [hy, w] of [[7.6, 1.05], [8.3, 0.78]]) {
+      b.box(x, hy, z, Math.abs(ax) * w + 0.055, 0.06, Math.abs(az) * w + 0.055, { perUnit: 1 });
+    }
+    this.addCollider(x - 0.18, z - 0.18, x + 0.18, z + 0.18, 8.8, 'a telegraph pole');
   }
 
   bush(b, x, z, scale, baseY) {

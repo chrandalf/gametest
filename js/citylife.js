@@ -425,7 +425,8 @@ class CityLife {
       return best;
     };
 
-    const startHour = 9.5;   // the game clock at world build
+    const startHour = (typeof game !== 'undefined' && game.clock !== undefined)
+      ? game.clock : 9.5;    // deal people out for the hour the world starts at
     let withCar = 0, employed = 0;
     for (let hi = 0; hi < city.homes.length && this.people.length < CENSUS_CAP; hi++) {
       const h = city.homes[hi];

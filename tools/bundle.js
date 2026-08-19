@@ -2,7 +2,7 @@
 // Inlines every <script src> into index.html to produce one self-contained page
 // that can be emailed, dropped on a static host, or opened straight from disk.
 //
-//   node tools/bundle.js [outfile]      (default: dist/nightfall-city.html)
+//   node tools/bundle.js [outfile]      (default: dist/neon-drive.html)
 //
 // The output deliberately omits <!doctype>/<html>/<head>/<body>: browsers supply
 // them, and embedding hosts that wrap the file in their own skeleton stay happy.
@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const out = process.argv[2] || path.join(root, 'dist', 'nightfall-city.html');
+const out = process.argv[2] || path.join(root, 'dist', 'neon-drive.html');
 
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 

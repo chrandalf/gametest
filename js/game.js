@@ -3,7 +3,7 @@
 
 const game = {
   time: 0,
-  clock: 9.5,          // hours, drives the day/night cycle
+  clock: 21.4,         // hours; Neon Drive boots into the night, obviously
   dayLength: 300,      // real seconds for a full 24h
   paused: false,
   showHelp: true,
@@ -19,6 +19,9 @@ const game = {
   zoneOut: false,
   missionTarget: null, // where the mission compass points
   retro: true,         // the synthwave look; Y toggles it
+  crtFx: true,         // scanlines / grain / fringing, separable in options
+  musicVol: 1,
+  sfxVol: 1,
   run: { active: false, score: 0, best: 0, timeLeft: 0, target: null, streak: 0, message: '', messageT: 0 },
   trial: { active: false, phase: 'idle', route: [], idx: 0, t: 0, countdown: 0, best: null, last: null },
   tyreLoad: 0,
@@ -102,6 +105,7 @@ function start() {
   game.hudVisible = true;
   game.missions = new MissionControl();
   game.music = new MusicPlayer();
+  game.menu = new GameMenu();
 
   const mf = document.getElementById('mapfile');
   if (mf) mf.addEventListener('change', (ev) => {
@@ -128,6 +132,15 @@ function layout() {
 
 function bindInput() {
   addEventListener('keydown', (e) => {
+    // The menu eats every key while it is open, and Escape summons it.
+    if (game.menu && (game.menu.open || e.code === 'Escape')) {
+      if (game.menu.key(e.code)) {
+        keys[e.code] = false;
+        e.preventDefault();
+        startAudio();
+        return;
+      }
+    }
     if (e.repeat) { keys[e.code] = true; return; }
     keys[e.code] = true;
     if (e.code === 'KeyC') game.camMode = (game.camMode + 1) % 3;
@@ -326,6 +339,7 @@ function startAudio() {
 function updateAudio(dt) {
   const a = game.audio;
   if (!a) return;
+  a.master.gain.value = 0.28 * game.sfxVol;
   const car = game.car;
   const inCar = game.player.inCar;
   const sp = Math.abs(car.forwardSpeed);
@@ -1043,6 +1057,7 @@ function buildWorld(seed) {
   game.pickups = new Pickups(gl, city, rand);
   game.slicks = [];
   if (game.missions && game.missions.m) { game.missions.cleanup(); game.missions.m = null; }
+  if (game.menu) game.menu.focus = null;
   // The fleet a full rush hour is allowed to reach. Scaled by how much city
   // there is, so a map that came out mostly farmland stays quiet.
   game.population = new TrafficPopulation(city, rand, clamp(urbanCells.length * 2.4, 40, 190));
@@ -1303,19 +1318,31 @@ function environment() {
     sunColor = mix3(mix3([1.45, 0.95, 1.10], [1.65, 0.38, 0.80], dusk),
                     [0.22, 0.14, 0.45], night);
     skyColor = mix3(mix3([0.34, 0.24, 0.66], [0.42, 0.13, 0.60], dusk),
-                    [0.05, 0.03, 0.14], night);
+                    [0.030, 0.018, 0.085], night);
     // The horizon runs orange at dusk under the purple sky — the exact
     // gradient on every retrowave sleeve ever printed.
     fogColor = mix3(mix3([0.82, 0.44, 0.74], [1.00, 0.46, 0.32], dusk),
-                    [0.13, 0.05, 0.24], night);
+                    [0.09, 0.035, 0.17], night);
     ambColor = mix3(mix3([0.48, 0.42, 0.62], [0.44, 0.34, 0.60], dusk),
-                    [0.42, 0.35, 0.74], night);
+                    [0.30, 0.25, 0.55], night);
+  }
+
+  // Where the banded sun hangs. By day it is the sun; once the real one dips
+  // it stays pinned just over the horizon, drifting slowly along it through
+  // the night like the arcade cabinet art it is.
+  let retroSun = sunDir;
+  if (game.retro && sunDir[1] < 0.085) {
+    const rl = Math.hypot(sunDir[0], sunDir[2]) || 1;
+    const rx = sunDir[0] / rl, rz = sunDir[2] / rl;
+    const rlen = Math.hypot(rx, 0.085, rz);
+    retroSun = [rx / rlen, 0.085 / rlen, rz / rlen];
   }
 
   void day;
   return {
-    sunDir, sunColor, skyColor, fogColor, ambColor, night,
+    sunDir, sunColor, skyColor, fogColor, ambColor, night, retroSun,
     retro: game.retro ? 1 : 0,
+    retroFx: (game.retro && game.crtFx) ? 1 : 0,
     fogDensity: (game.isMap ? 0.0011 : 1) * lerp(0.0026, 0.0034, night),
     time: game.time,
     lights: collectLights(night),
@@ -1353,12 +1380,13 @@ function collectLights(night) {
     });
   }
 
-  // Neon underglow beneath the player's car after dark. Pure vanity. Kept.
+  // Neon underglow beneath the player's car after dark: teal, so it reads
+  // against the red tail bar the way the arcade original does. Pure vanity.
   if (game.retro && game.player.inCar) {
     const c = game.car;
     out.push({
       pos: [c.x, (c.y || 0) + 0.25, c.z], radius: 9,
-      color: [1.3 * intensity, 0.25 * intensity, 1.1 * intensity], dir: null,
+      color: [0.2 * intensity, 1.1 * intensity, 1.15 * intensity], dir: null,
     });
   }
 
@@ -1458,12 +1486,16 @@ function render() {
     drawn++;
   }
   // Road paint. Scene pass only — it was left out of the shadow pass on
-  // purpose, so a painted line lights like the road it is on and casts nothing.
+  // purpose, so a painted line lights like the road it is on and casts
+  // nothing. In neon mode the paint itself glows faintly after dark, which
+  // is what keeps the road readable under a black sky.
+  r.setMaterial([1, 1, 1], game.retro ? 0.22 * env.night : 0, 0);
   for (const chunk of game.city.decals) {
     if (!aabbInFrustum(game.frustum, chunk.min, chunk.max)) continue;
     r.draw(chunk, null);
     drawn++;
   }
+  r.setMaterial([1, 1, 1], 0, 0);
   game.chunksDrawn = drawn;
   drawActors(r, env, false);
   r.drawSky(env);
@@ -1929,6 +1961,18 @@ function drawHud() {
     if (Math.abs(b.x0 - px) > 150 || Math.abs(b.z0 - pz) > 150) continue;
     c.fillRect(b.x0, b.z0, b.x1 - b.x0, b.z1 - b.z0);
   }
+  // The race route, drawn right on the map so the track is unmissable.
+  if (game.race && game.race.circuit) {
+    const pts = game.race.circuit;
+    c.strokeStyle = 'rgba(90,240,255,0.9)';
+    c.lineWidth = 7;
+    c.beginPath();
+    c.moveTo(pts[0].x, pts[0].z);
+    for (const q of pts) c.lineTo(q.x, q.z);
+    c.closePath();
+    c.stroke();
+  }
+
   c.strokeStyle = 'rgba(210,220,235,0.55)';
   c.lineWidth = ROAD * 0.6;
   c.beginPath();
@@ -2021,12 +2065,13 @@ function drawHud() {
   grad.addColorStop(0, '#5ad1ff'); grad.addColorStop(0.6, '#ffd34d'); grad.addColorStop(1, '#ff5a4d');
   c.strokeStyle = grad;
   c.beginPath(); c.arc(0, 0, sc.r - 10, a0, a0 + (a1 - a0) * t); c.stroke();
-  c.fillStyle = '#fff';
-  c.font = '700 26px system-ui, sans-serif';
+  // Neon mode reads its dials in arcade cyan monospace.
+  c.fillStyle = game.retro ? '#7dfcf3' : '#fff';
+  c.font = game.retro ? '700 26px "Courier New", monospace' : '700 26px system-ui, sans-serif';
   c.textAlign = 'center';
   c.fillText(Math.round(shown), 0, -14);
-  c.font = '600 11px system-ui, sans-serif';
-  c.fillStyle = 'rgba(255,255,255,0.6)';
+  c.font = game.retro ? '700 11px "Courier New", monospace' : '600 11px system-ui, sans-serif';
+  c.fillStyle = game.retro ? 'rgba(125,252,243,0.7)' : 'rgba(255,255,255,0.6)';
   c.fillText('KM/H', 0, 16);
   c.restore();
 
@@ -2036,8 +2081,8 @@ function drawHud() {
   c.textAlign = 'left';
   c.fillStyle = 'rgba(0,0,0,0.42)';
   roundRect(c, 22, 22, 208, 108, 10); c.fill();
-  c.fillStyle = '#fff';
-  c.font = '700 20px system-ui, sans-serif';
+  c.fillStyle = game.retro ? '#7dfcf3' : '#fff';
+  c.font = game.retro ? '700 20px "Courier New", monospace' : '700 20px system-ui, sans-serif';
   c.fillText(`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`, 38, 34);
   if (game.city.zoneAtWorld) {
     const zi = ZONES[game.city.zoneAtWorld(px, pz)];
@@ -2465,6 +2510,16 @@ function frame(now) {
   const dt = Math.min(0.05, (now - game.last) / 1000);
   game.last = now;
   game.fps = lerp(game.fps, 1 / Math.max(dt, 1e-4), 0.06);
+
+  // Menu up: the world holds its breath while the camera drifts over town.
+  if (game.menu && game.menu.open) {
+    game.time += dt;
+    game.menu.updateCamera(dt);
+    render();
+    game.menu.draw(game.hctx, game.hud.width / game.hdpr, game.hud.height / game.hdpr);
+    requestAnimationFrame(frame);
+    return;
+  }
 
   if (!game.paused) update(dt);
   render();

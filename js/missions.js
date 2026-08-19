@@ -34,6 +34,18 @@ class HunterCar extends TrafficCar {
       super.update(dt, world);
       return;
     }
+    // Caught outside the ring: get back in before it cooks you. This is
+    // what makes the endgame converge — everyone still alive wants the same
+    // few streets.
+    if (game.zone && d > 170) {
+      const zc = game.zone;
+      if (Math.hypot(this.x - zc.x, this.z - zc.z) > zc.r * 0.8) {
+        const desired = Math.atan2(zc.x - this.x, zc.z - this.z);
+        const err = angDelta(this.yaw, desired);
+        this.drive(dt, 1, clamp(err * 2, -1, 1), false, world.city);
+        return;
+      }
+    }
     // Wedged on street furniture: back out and swing the nose.
     this.stuckT = this.speed < 1.2 ? this.stuckT + dt : 0;
     if (this.stuckT > 0.9) {
@@ -129,12 +141,20 @@ class MissionControl {
         game.traffic.push(h);
         hunters.push(h);
       }
+      // Early gangs pull their punches a little; by level ten they do not.
+      for (const h of hunters) {
+        h.maxSpeed = Math.min(27, 20 + L);
+        h.attackScale = Math.min(1.2, 0.55 + L * 0.06);
+      }
       const time = 90 + hunters.length * 35;
+      // The ring closes on a point clamped well inside the map, so the final
+      // circle is always over streets you can actually drive — never half
+      // over the river or hanging off the edge of the world.
+      const zx = clamp(player.x, CELL * 2, (GRID - 1) * CELL - CELL * 2);
+      const zz = clamp(player.z, CELL * 2, (GRID - 1) * CELL - CELL * 2);
       this.m = { type, hunters, total: hunters.length,
                  timeLeft: time,
-                 // The storm circle: it closes on this point for the whole
-                 // fight, herding everyone left alive into the same streets.
-                 zone: { x: player.x, z: player.z, r: 400, r0: 400, rMin: 70, total: time },
+                 zone: { x: zx, z: zz, r: 400, r0: 400, rMin: 80, total: time },
                  label: `MISSION ${L}: WRECK THE GANG`,
                  goal: `${hunters.length} hunters — stay inside the ring` };
     } else if (type === 'chase') {
@@ -223,7 +243,11 @@ class MissionControl {
   // traffic is simply swallowed — despawned the moment the wall passes it.
   updateZone(dt, m) {
     const z = m.zone;
-    z.r = z.rMin + (z.r0 - z.rMin) * clamp(m.timeLeft / z.total, 0, 1);
+    // The ring never closes to nothing: it shrinks for three quarters of the
+    // mission, then holds at a hundred-and-sixty-metre arena for the endgame.
+    // A circle that pinches to zero is not a climax, it is a cheap death.
+    const frac = clamp((m.timeLeft - 0.25 * z.total) / (0.75 * z.total), 0, 1);
+    z.r = z.rMin + (z.r0 - z.rMin) * frac;
     game.zone = z;
     const bite = (v) => {
       if (Math.hypot(v.x - z.x, v.z - z.z) < z.r) return false;

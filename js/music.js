@@ -42,7 +42,7 @@ class MusicPlayer {
     const src = this.srcFor(this.idx);
     if (!src) { this.skipFrom(this.idx, quiet); return; }
     const a = new Audio(src);
-    a.volume = 0.30;
+    a.volume = 0.30 * (game.musicVol === undefined ? 1 : game.musicVol);
     a.addEventListener('ended', () => this.play(this.idx + 1, false));
     a.addEventListener('error', () => this.skipFrom(this.idx, quiet));
     const p = a.play();
