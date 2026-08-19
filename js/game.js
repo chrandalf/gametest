@@ -22,6 +22,10 @@ const game = {
   crtFx: true,         // scanlines / grain / fringing, separable in options
   musicVol: 1,
   sfxVol: 1,
+  // How much of every hit the player's car actually takes. Hard is the game
+  // as designed; easy is a tenth of it and exists to be laughed at, not
+  // balanced around.
+  difficulty: 'normal',
   run: { active: false, score: 0, best: 0, timeLeft: 0, target: null, streak: 0, message: '', messageT: 0 },
   trial: { active: false, phase: 'idle', route: [], idx: 0, t: 0, countdown: 0, best: null, last: null },
   tyreLoad: 0,
@@ -106,6 +110,7 @@ function start() {
   game.missions = new MissionControl();
   game.music = new MusicPlayer();
   game.menu = new GameMenu();
+  syncSpeedStage(false);
 
   const mf = document.getElementById('mapfile');
   if (mf) mf.addEventListener('change', (ev) => {
@@ -295,21 +300,39 @@ function startAudio() {
   master.gain.value = 0.28;
   master.connect(ctx.destination);
 
+  // The engine: two sawtooths a hair apart (the beat between them is the
+  // growl), a square an octave down for the block, all driven through a
+  // tanh waveshaper — the distortion is what turns a buzzer into a V8 —
+  // then a resonant lowpass that opens with the revs.
   const osc = ctx.createOscillator();
   osc.type = 'sawtooth';
-  osc.frequency.value = 60;
+  osc.frequency.value = 55;
+  const osc2 = ctx.createOscillator();
+  osc2.type = 'sawtooth';
+  osc2.frequency.value = 55 * 1.013;
   const sub = ctx.createOscillator();
   sub.type = 'square';
-  sub.frequency.value = 30;
+  sub.frequency.value = 27.5;
+  const pre = ctx.createGain();
+  pre.gain.value = 1.6;
+  const shaper = ctx.createWaveShaper();
+  const curve = new Float32Array(512);
+  for (let i = 0; i < 512; i++) {
+    const x = (i / 255.5) - 1;
+    curve[i] = Math.tanh(x * 3.2);
+  }
+  shaper.curve = curve;
+  shaper.oversample = '2x';
   const filter = ctx.createBiquadFilter();
   filter.type = 'lowpass';
   filter.frequency.value = 700;
-  filter.Q.value = 4;
+  filter.Q.value = 3;
   const gain = ctx.createGain();
   gain.gain.value = 0.0;
-  osc.connect(filter); sub.connect(filter);
+  osc.connect(pre); osc2.connect(pre); sub.connect(pre);
+  pre.connect(shaper); shaper.connect(filter);
   filter.connect(gain); gain.connect(master);
-  osc.start(); sub.start();
+  osc.start(); osc2.start(); sub.start();
 
   // Tyre squeal: looping noise through a resonant bandpass.
   const noiseLen = 2;
@@ -333,7 +356,7 @@ function startAudio() {
   skidSrc.connect(skidFilter); skidFilter.connect(skidGain); skidGain.connect(master);
   skidSrc.start();
 
-  game.audio = { ctx, master, osc, sub, filter, gain, skidGain, skidFilter };
+  game.audio = { ctx, master, osc, osc2, sub, filter, gain, skidGain, skidFilter };
 }
 
 function updateAudio(dt) {
@@ -343,12 +366,23 @@ function updateAudio(dt) {
   const car = game.car;
   const inCar = game.player.inCar;
   const sp = Math.abs(car.forwardSpeed);
-  const rpm = 0.18 + Math.min(1, sp / 40) * 0.82;
-  const target = inCar ? 0.16 + rpm * 0.25 : 0.02;
+  // A fake gearbox: revs climb through each gear and drop on the shift.
+  // Speed-proportional pitch sounds like a hair dryer; this sounds like a car.
+  const GEARS = [7, 14, 22, 32, 46, 999];
+  let lo = 0, rpm = 0.16;
+  for (const hi of GEARS) {
+    if (sp < hi) { rpm = 0.24 + 0.76 * clamp((sp - lo) / (Math.min(hi, 64) - lo), 0, 1); break; }
+    lo = hi;
+  }
+  if (sp < 0.6) rpm = 0.15 + Math.sin(game.time * 9.5) * 0.012;   // idle lope
+  if (game.nitro.active) rpm = Math.min(1.1, rpm + 0.18);
+  const target = inCar ? 0.17 + rpm * 0.30 : 0.02;
   a.gain.gain.value += (target - a.gain.gain.value) * Math.min(1, dt * 6);
-  a.osc.frequency.value = 55 + rpm * 190;
-  a.sub.frequency.value = 27 + rpm * 95;
-  a.filter.frequency.value = 380 + rpm * 1500;
+  const f0 = 42 + rpm * 168;
+  a.osc.frequency.value = f0;
+  a.osc2.frequency.value = f0 * 1.013;
+  a.sub.frequency.value = f0 * 0.5;
+  a.filter.frequency.value = 240 + rpm * rpm * 2900;
 
   const squeal = inCar ? clamp((game.tyreLoad - 1.6) / 7, 0, 1) : 0;
   a.skidGain.gain.value += (squeal * 0.5 - a.skidGain.gain.value) * Math.min(1, dt * 12);
@@ -2060,7 +2094,9 @@ function drawHud() {
   c.lineWidth = 7; c.lineCap = 'round';
   c.strokeStyle = 'rgba(255,255,255,0.18)';
   c.beginPath(); c.arc(0, 0, sc.r - 10, a0, a1); c.stroke();
-  const t = clamp(shown / 220, 0, 1);
+  // The gauge is scaled to the engine you have actually unlocked.
+  const gaugeTop = game.speedCaps ? game.speedCaps.boost * 3.6 * 1.06 : 220;
+  const t = clamp(shown / gaugeTop, 0, 1);
   const grad = c.createLinearGradient(-sc.r, 0, sc.r, 0);
   grad.addColorStop(0, '#5ad1ff'); grad.addColorStop(0.6, '#ffd34d'); grad.addColorStop(1, '#ff5a4d');
   c.strokeStyle = grad;
@@ -2285,7 +2321,7 @@ function drawHud() {
     c.fillStyle = 'rgba(255,255,255,0.85)';
     c.font = '700 10px system-ui, sans-serif';
     c.textAlign = 'left';
-    c.fillText('NITRO  (shift)', bx + 8, by + 6);
+    c.fillText(`NITRO (shift) · ${game.speedCaps ? game.speedCaps.name : ''}`, bx + 8, by + 6);
   }
 
   // --- race ---

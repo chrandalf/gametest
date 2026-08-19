@@ -4,6 +4,9 @@
 // always one glittering down the street you happen to be on.
 'use strict';
 
+// Easy takes a tenth of every hit, normal takes half, hard takes the lot.
+const DIFFICULTY_SCALE = { easy: 0.1, normal: 0.5, hard: 1 };
+
 const PICKUP_REACH = 2.6;        // collect radius, widened by a grown car
 const PICKUP_COUNT = 9;          // live at once
 const PICKUP_NEAR = 60, PICKUP_FAR = 260, PICKUP_GONE = 330;
@@ -264,9 +267,10 @@ function updatePowers(dt) {
     if (P.big === 0) shrinkCar(game.grownCar || car);
   }
 
-  // How hard the player hits and how little they feel, from what is running.
+  // How hard the player hits and how little they feel: difficulty first,
+  // then whatever powers are running on top of it.
   car.attackScale = 1;
-  car.damageScale = 1;
+  car.damageScale = DIFFICULTY_SCALE[game.difficulty] || 1;
   if (P.ram > 0) { car.attackScale *= 2.6; car.damageScale *= 0.45; }
   if (P.big > 0) { car.attackScale *= 1.5; car.damageScale *= 0.6; }
   if (P.star > 0) { car.attackScale *= 2.2; car.damageScale = 0; }

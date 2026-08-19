@@ -91,6 +91,27 @@ class ArmouredCar extends CommuterCar {
 
 const MISSION_ORDER = ['race', 'wreck', 'chase', 'blood'];
 
+// Engine stages, unlocked by mission level. `max` is what the engine pulls
+// to on its own; `boost` is where the turbo runs out. Stock turbo is 200 km/h
+// on the nose; the last stage is monstrous and takes seven wins to reach.
+const SPEED_STAGES = [
+  { max: 47, boost: 55.6, name: 'STOCK' },
+  { max: 54, boost: 65, name: 'STAGE II TURBO' },
+  { max: 61, boost: 73, name: 'STAGE III TURBO' },
+  { max: 69, boost: 82, name: 'GHOST DRIVETRAIN' },
+];
+
+// Level 1-2: stock. 3-4: stage two. 5-6: stage three. 7+: the ghost.
+function syncSpeedStage(announce) {
+  const stage = Math.min(SPEED_STAGES.length - 1, ((game.missions.level - 1) / 2) | 0);
+  const prev = game.speedCaps;
+  game.speedCaps = SPEED_STAGES[stage];
+  if (announce && prev && prev !== game.speedCaps) {
+    say(`ENGINE UNLOCKED — ${game.speedCaps.name}: ${Math.round(game.speedCaps.boost * 3.6)} km/h on boost`);
+    playChime(3);
+  }
+}
+
 // Junctions in a distance band from a point, for spawning gangs and targets.
 function junctionsInRing(city, x, z, near, far) {
   const out = [];
@@ -215,6 +236,7 @@ class MissionControl {
     say(`MISSION ${this.level} COMPLETE — +${reward} cr`);
     playChime(3);
     this.level++;
+    syncSpeedStage(true);
     this.cleanup();
     this.m = null;
   }
@@ -251,8 +273,11 @@ class MissionControl {
     game.zone = z;
     const bite = (v) => {
       if (Math.hypot(v.x - z.x, v.z - z.z) < z.r) return false;
+      // The ring respects the difficulty setting for the player, so easy
+      // mode is forgiving out here too — hunters always take the full burn.
+      const rate = 0.055 * (v === game.car ? (DIFFICULTY_SCALE[game.difficulty] || 1) : 1);
       for (const key of ['engine', 'steering', 'wheels', 'body']) {
-        v.damage[key] = Math.min(1, v.damage[key] + dt * 0.055);
+        v.damage[key] = Math.min(1, v.damage[key] + dt * rate);
       }
       if (v.wreckage > 0.985) v.wrecked = true;
       return true;

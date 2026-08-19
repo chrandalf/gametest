@@ -442,10 +442,23 @@ class Vehicle {
     // wanders, wrecked wheels will not hold the road. This is the whole point
     // of tracking it — the gauge only confirms what the car is already doing.
     const dmg = this.damage;
-    const MAX = 46 * (1 - dmg.engine * 0.45);
+    // The player's car carries whatever engine stage the missions have
+    // unlocked; everyone else drives the stock tune. Stock turbo tops out at
+    // 200 km/h — the upgrades are the reason to keep winning jobs.
+    const caps = (typeof game !== 'undefined' && game.speedCaps && game.car === this)
+      ? game.speedCaps : null;
+    const MAX = (caps ? caps.max : 46) * (1 - dmg.engine * 0.45);
     const powerCurve = 1 - clamp(Math.abs(vf) / MAX, 0, 1) * 0.75;
-    if (throttle > 0) vf += throttle * 26 * (1 - dmg.engine * 0.62) * powerCurve * dt;
-    if (nitro) vf += 34 * dt * (1 - clamp(Math.abs(vf) / 78, 0, 1));
+    const power = caps ? 26 * caps.max / 47 : 26;   // upgrades pull harder too
+    if (throttle > 0) vf += throttle * power * (1 - dmg.engine * 0.62) * powerCurve * dt;
+    if (nitro) {
+      // The turbo is a shove and a limiter, not an asymptote: it hauls the
+      // car all the way to its rated speed and holds it there. Stock rating
+      // is 200 km/h; the stages raise it.
+      const boostCap = caps ? caps.boost : 60;
+      vf += (20 + boostCap * 0.4) * dt;
+      if (vf > boostCap) vf = boostCap;
+    }
     else if (throttle < 0) {
       // Brake first, then reverse.
       if (vf > 0.5) vf -= 34 * dt;
@@ -453,8 +466,9 @@ class Vehicle {
     }
     this.braking = throttle < 0 && vf > 0.5;
 
-    // Drag + rolling resistance.
-    vf -= vf * Math.abs(vf) * 0.0016 * dt * 60 / 60 * 1.0;
+    // Drag + rolling resistance. The turbo cheats the air a little, or the
+    // quadratic term would stall it well short of its own speed cap.
+    vf -= vf * Math.abs(vf) * 0.0016 * (nitro ? 0.4 : 1) * dt;
     vf -= vf * 0.5 * dt;
     if (Math.abs(vf) < 0.05 && throttle === 0) vf = 0;
 

@@ -34,8 +34,10 @@ class GameMenu {
   // Attract camera home: over the tallest part of town.
   focusPoint() {
     if (!this.focus) {
-      const blk = game.city.zones.findBlock
-        ? (game.city.zones.findBlock([Z.DOWNTOWN, Z.HIGHST], game.rand) || { bi: 8, bj: 8 })
+      const zf = game.city.zones.findBlock ? game.city.zones : null;
+      const blk = zf
+        ? (zf.findBlock([Z.DOWNTOWN], game.rand) ||
+           zf.findBlock([Z.HIGHST], game.rand) || { bi: 8, bj: 8 })
         : { bi: 8, bj: 8 };
       this.focus = { x: roadCenter(blk.bi) + CELL / 2, z: roadCenter(blk.bj) + CELL / 2 };
     }
@@ -45,6 +47,10 @@ class GameMenu {
   items() {
     if (this.screen === 'options') {
       return [
+        { id: 'difficulty', label: `DIFFICULTY  <  ${game.difficulty.toUpperCase()}  >`,
+          hint: game.difficulty === 'easy' ? 'your car takes a tenth of every hit'
+              : game.difficulty === 'normal' ? 'your car takes half of every hit'
+              : 'the game as designed — it earns the name' },
         { id: 'style', label: `STYLE  <  ${game.retro ? 'NEON NIGHTS' : 'PLAIN DAYLIGHT'}  >` },
         { id: 'crt', label: `CRT EFFECTS  <  ${game.crtFx ? 'ON' : 'OFF'}  >`,
           hint: 'scanlines, grain and colour fringing' },
@@ -93,7 +99,12 @@ class GameMenu {
   }
 
   adjust(id, dir) {
-    if (id === 'style') { game.retro = !game.retro; }
+    if (id === 'difficulty') {
+      const order = ['easy', 'normal', 'hard'];
+      const i = order.indexOf(game.difficulty);
+      game.difficulty = order[(i + dir + order.length) % order.length];
+    }
+    else if (id === 'style') { game.retro = !game.retro; }
     else if (id === 'crt') { game.crtFx = !game.crtFx; }
     else if (id === 'music') { game.music.toggle(); }
     else if (id === 'track') { game.music.next(); }
@@ -130,18 +141,34 @@ class GameMenu {
     }
   }
 
-  // The camera drift behind the title: a slow orbit over downtown.
+  // The camera behind the title: down at street level in the thick of town,
+  // looking straight at the giant sun between the buildings — the poster
+  // shot, held, with a slow drift so it breathes.
   updateCamera(dt) {
-    this.attract += dt * 0.04;
+    this.attract += dt;
     const f = this.focusPoint();
     const cam = game.cam;
-    // High and wide, so the orbit clears every rooftop on the skyline.
-    const R = 290;
-    cam.pos[0] = f.x + Math.cos(this.attract) * R;
-    cam.pos[1] = 135 + Math.sin(this.attract * 0.7) * 20;
-    cam.pos[2] = f.z + Math.sin(this.attract) * R;
-    cam.target[0] = f.x; cam.target[1] = 20; cam.target[2] = f.z;
-    cam.fov = 54;
+    // Horizontal direction of the pinned sun.
+    const az = (game.clock / 24) * Math.PI * 2 + 0.6;
+    const ce = Math.cos((game.clock - 6) / 12 * Math.PI);
+    let sx = Math.cos(az) * Math.abs(ce), sz = Math.sin(az) * Math.abs(ce);
+    const sl = Math.hypot(sx, sz) || 1;
+    sx /= sl; sz /= sl;
+    // Stand in the middle of a downtown street and look straight down the
+    // canyon toward the sun's side: the road corridor guarantees an open
+    // sightline to the horizon, and the towers frame the disc on both sides.
+    const alongX = Math.abs(sx) >= Math.abs(sz);
+    const dir = (alongX ? Math.sign(sx) : Math.sign(sz)) || 1;
+    const li = clamp(Math.round((alongX ? f.z : f.x) / CELL), 1, GRID - 2);
+    const lane = roadCenter(li) + 3.2;
+    const a = (alongX ? f.x : f.z) - dir * 30 + Math.sin(this.attract * 0.05) * 22;
+    const px = alongX ? a : lane, pz = alongX ? lane : a;
+    const gy = game.city.groundY(px, pz);
+    cam.pos[0] = px; cam.pos[1] = gy + 3.6; cam.pos[2] = pz;
+    cam.target[0] = px + (alongX ? dir * 90 : 0);
+    cam.target[1] = gy + 9;
+    cam.target[2] = pz + (alongX ? 0 : dir * 90);
+    cam.fov = 58;
   }
 
   draw(c, W, H) {
@@ -190,6 +217,8 @@ class GameMenu {
       c.font = '600 12px "Courier New", monospace';
       c.fillStyle = 'rgba(255,255,255,0.45)';
       c.fillText('best played loud', W / 2, H * 0.62 + 34);
+      c.fillStyle = 'rgba(255,255,255,0.35)';
+      c.fillText('music from EPIDEMIC SOUND · used under licence · X skips tracks', W / 2, H - 26);
       return;
     }
 

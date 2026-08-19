@@ -1400,7 +1400,7 @@ class City {
     const fIdx = height > 55 ? (rand() < 0.6 ? 4 : 0)
                : height > 30 ? ((rand() * 3) | 0)
                : (rand() < 0.5 ? 2 : 1);
-    const fac = FACADES[fIdx];
+    let fac = FACADES[fIdx];
 
     const floors = Math.max(2, Math.round(height / FLOOR_H));
     const totalH = floors * FLOOR_H;
@@ -1425,9 +1425,21 @@ class City {
     const roundTower = downtown > 0.5 && height > 45 && Math.abs(w - d) < Math.min(w, d) * 0.45 && rand() < 0.34;
     if (roundTower) {
       const rad = Math.min(w, d) / 2;
+      if (!this.roundTowers) this.roundTowers = [];
+      this.roundTowers.push({ x: cx, z: cz, r: rad, h: totalH });
+      // All-glass on a curve read as see-through at night — nothing but lit
+      // windows floating on sky. The dense TOWER facade plus a concrete ring
+      // every few floors gives the drum a solid body at any hour.
+      fac = FACADES[4];
+      b.style(fac.layer, tint, 0);
       b.cylinder(cx, base + shopH + bodyH/2, cz, rad, bodyH, 24,
                  { uRepeat: Math.max(2, Math.round(2 * Math.PI * rad / (fac.cols * FLOOR_H) * fac.cols / 2)),
-                   vRepeat: uvV });
+                   vRepeat: Math.max(1, Math.round(bodyH / (fac.rows * FLOOR_H))) });
+      b.style(TEX.CONCRETE, tint, 0);
+      const ringGap = FLOOR_H * (height > 70 ? 6 : 4);
+      for (let y = shopH + ringGap; y < totalH - 1.2; y += ringGap) {
+        b.cylinder(cx, base + y, cz, rad + 0.16, 0.34, 24, { uRepeat: 10, vRepeat: 1 });
+      }
       b.style(TEX.ROOF, [1, 1, 1], 0);
       b.cylinder(cx, base + totalH + 0.12, cz, rad * 1.02, 0.24, 24, { uRepeat: 6, vRepeat: 1 });
       b.style(fac.layer, tint, 0);

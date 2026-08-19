@@ -50,6 +50,23 @@ node tools/bundle.js            # writes dist/nightfall-city.html (~105 KB)
 | `P` / `H` | pause / hide help |
 | click | pointer-lock mouse look |
 
+## Music
+
+The soundtrack is five tracks from [Epidemic Sound](https://www.epidemicsound.com),
+used under the repository owner's Epidemic Sound licence and re-encoded to
+96 kbps for the single-file build:
+
+- *RISE* — Ballpoint
+- *Neon City Funk* — Paper Twins
+- *1984 Lasers* — OTE
+- *Space Worm* — AGST
+- *Born in the 80s* — Falcon Dives
+
+They are **not** freely licensed with this repository. If you fork or
+redistribute the game, confirm your own Epidemic Sound licence covers it, or
+replace the audio: drop your own numbered MP3s into `assets/music/`
+(`0.mp3`, `1.mp3`, …) and update the track list in `js/music.js`.
+
 ## Recording
 
 Press `V`. The game composites the WebGL view and the HUD canvas into an

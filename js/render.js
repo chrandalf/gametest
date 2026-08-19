@@ -259,16 +259,18 @@ void main() {
   // most retrowave fact about the whole sky.
   if (uRetro > 0.5) {
     float sr = max(dot(dir, uRetroSun), 0.0);
-    float disc = smoothstep(0.9930, 0.9942, sr);
+    // Genuinely enormous: about twenty degrees across, so it towers over
+    // the skyline the way it does on every cassette sleeve.
+    float disc = smoothstep(0.9860, 0.9880, sr);
     float dy = dir.y - uRetroSun.y;
-    float stripes = smoothstep(-0.2, 0.4, sin(dy * 150.0 - uTime * 0.35));
-    float cut = mix(1.0, stripes, smoothstep(0.03, -0.03, dy));
+    float stripes = smoothstep(-0.2, 0.4, sin(dy * 92.0 - uTime * 0.3));
+    float cut = mix(1.0, stripes, smoothstep(0.05, -0.045, dy));
     vec3 sunCol = mix(vec3(1.65, 0.22, 0.62), vec3(1.7, 1.15, 0.30),
-                      smoothstep(-0.09, 0.07, dy));
+                      smoothstep(-0.15, 0.11, dy));
     col += sunCol * disc * cut * 1.65;
-    col += vec3(0.95, 0.20, 0.60) * pow(sr, 9.0) * 0.40;
+    col += vec3(0.95, 0.20, 0.60) * pow(sr, 6.0) * 0.26;
     // After dark it gains the cyan halo of the arcade poster.
-    col += vec3(0.16, 0.80, 0.85) * pow(sr, 34.0) * (1.0 - disc) * 0.9 * uNight;
+    col += vec3(0.16, 0.80, 0.85) * pow(sr, 20.0) * (1.0 - disc) * 0.9 * uNight;
   }
 
   // Stars fade in after dusk.
