@@ -2154,7 +2154,7 @@ function drawHud() {
   const mm = Math.floor((game.clock % 1) * 60);
   c.textAlign = 'left';
   c.fillStyle = 'rgba(0,0,0,0.42)';
-  roundRect(c, 22, 22, 208, 108, 10); c.fill();
+  roundRect(c, 22, 22, 208, game.stunts.score > 0 ? 118 : 108, 10); c.fill();
   c.fillStyle = game.retro ? '#7dfcf3' : '#fff';
   c.font = game.retro ? '700 20px "Courier New", monospace' : '700 20px system-ui, sans-serif';
   c.fillText(`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`, 38, 34);
@@ -2261,7 +2261,9 @@ function drawHud() {
 
   // --- objective compass, score and timer ---
   const run = game.run;
-  if (run.target && !tr.active && tr.phase !== 'done' && !mi) {
+  // The courier compass yields to anything with its own top-centre panel —
+  // during a race it used to bleed through behind the STREET RACE header.
+  if (run.target && !tr.active && tr.phase !== 'done' && !mi && !game.race) {
     const camYaw = Math.atan2(game.cam.target[0] - game.cam.pos[0],
                               game.cam.target[2] - game.cam.pos[2]);
     const bearing = Math.atan2(run.target.x - px, run.target.z - pz) - camYaw;
@@ -2421,7 +2423,7 @@ function drawHud() {
     c.textAlign = 'left';
     c.fillStyle = 'rgba(255,255,255,0.75)';
     c.font = '600 12px system-ui, sans-serif';
-    c.fillText(`stunt points ${game.stunts.score}`, 38, 92);
+    c.fillText(`stunt points ${game.stunts.score}`, 38, 125);
   }
   // --- what you just hit ---
   // The complaint this answers: you stop dead and have no idea why. Naming
@@ -2577,9 +2579,13 @@ function roundRect(c, x, y, w, h, r) {
 // ----------------------------------------------------------------- loop ----
 
 function frame(now) {
-  const dt = Math.min(0.05, (now - game.last) / 1000);
+  // Measure the fps from the *raw* frame gap, before the sim cap clamps it:
+  // dt tops out at 0.05, so an fps derived from it can never read below 20,
+  // which is exactly the range where the number matters.
+  const raw = (now - game.last) / 1000;
+  const dt = Math.min(0.05, raw);
   game.last = now;
-  game.fps = lerp(game.fps, 1 / Math.max(dt, 1e-4), 0.06);
+  game.fps = lerp(game.fps, 1 / Math.max(raw, 1e-4), 0.06);
 
   // Menu up: the world holds its breath while the camera drifts over town.
   if (game.menu && game.menu.open) {

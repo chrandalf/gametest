@@ -42,9 +42,11 @@ if (fs.existsSync(charDir)) {
     sheets.push(`  ${Number(m[1])}: "data:image/png;base64,${data}"`);
   }
 }
-const spriteBlob = sheets.length
-  ? `<script>\nwindow.CHARACTER_SHEET_SRC = {\n${sheets.join(',\n')}\n};\n</script>\n`
-  : '';
+// Always emitted, even empty: the loader treats its presence as "everything
+// is inlined", so a bundle with no sheets stops probing assets/characters/
+// on disk and filling the console with eight 404s at every boot.
+const spriteBlob =
+  `<script>\nwindow.CHARACTER_SHEET_SRC = {\n${sheets.join(',\n')}\n};\n</script>\n`;
 
 const scripts = sources.map((src) => {
   const code = fs.readFileSync(path.join(root, src), 'utf8');
@@ -80,7 +82,11 @@ const musicBlob = music.length
       `  ${t.id}: "data:audio/mpeg;base64,${t.b64}"`).join(',\n')}\n};\n</script>\n`
   : '';
 
-const bundle = `<title>${title}</title>
+// No <head> wrapper, but the charset must still be declared: opened straight
+// from disk with no server headers, a browser left to guess the encoding
+// turns every em-dash and midpoint in the HUD into mojibake.
+const bundle = `<meta charset="utf-8">
+<title>${title}</title>
 <style>
 ${style.trim()}
 </style>

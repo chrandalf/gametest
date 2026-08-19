@@ -78,8 +78,15 @@ class Racer extends Vehicle {
     const straight = 1 - Math.min(1, Math.abs(err) * 1.4);
     const throttle = brakeZone ? (this.speed > 18 ? -0.6 : 0.25)
                    : Math.abs(err) > 1.5 ? 0.45 : 1;
-    const boost = !brakeZone && straight > 0.75 && this.speed < 40 * this.skill;
-    this.drive(dt, throttle * this.skill, steer, false, world.city, boost);
+    const pace = this.pace || 1;
+    const boost = !brakeZone && straight > 0.75 && pace > 0.97 &&
+                  this.speed < 40 * this.skill * pace;
+    // The band has to bite top speed, not just throttle — a half-open tap
+    // still fills the same bath on a long straight. Under pace 1 the racer
+    // lifts above a proportional ceiling; at the floor that is ~105 km/h.
+    let thr = throttle * this.skill * pace;
+    if (pace < 1 && this.speed > 45 * pace) thr = Math.min(thr, -0.1);
+    this.drive(dt, thr, steer, false, world.city, boost);
   }
 }
 
@@ -142,6 +149,22 @@ class Race {
     if (this.state !== 'running') return;
 
     this.time += dt;
+    // Rubber band, the arcade way. The field's raw pace laps a mid player —
+    // the AI corners on rails and boosts on every straight for free — and
+    // running 5th for three laps with no way back is a race nobody restarts.
+    // Gap is measured in gates: a racer well ahead of the player breathes
+    // (and loses the free boost), one well behind pushes a little. The factor
+    // is gentle enough that a clean lap still beats the band.
+    const p = this.player;
+    p.x = car.x; p.z = car.z;
+    const pp = raceProgress(p, this.circuit);
+    for (const r of this.racers) {
+      const gap = (raceProgress(r, this.circuit) - pp) / 100;
+      // Steep enough to matter: the AI's raw pace comes from perfect lines,
+      // so a mild trim reads as no trim at all. Two gates clear costs them
+      // a tenth; eight or more and they sit at the floor until you catch up.
+      r.pace = clamp(1 - gap * 0.05, 0.55, 1.06);
+    }
     for (const r of this.racers) {
       if (!r.finished) {
         r.update(dt, world);
@@ -153,9 +176,7 @@ class Race {
     }
 
     // Player progress against the same gates.
-    const p = this.player;
     if (!p.finished) {
-      p.x = car.x; p.z = car.z;
       const t = this.circuit[p.wp % this.circuit.length];
       if (Math.hypot(t.x - car.x, t.z - car.z) < 26) {
         p.wp++;
