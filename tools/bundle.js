@@ -52,15 +52,44 @@ const scripts = sources.map((src) => {
   return `<script>\n// ---- ${src} ----\n${code.replace(/<\/script>/gi, '<\\/script>')}\n</script>`;
 }).join('\n');
 
+// The soundtrack, inlined the same way. Licensed audio the owner dropped in
+// assets/music travels inside the page; if it would push the page past the
+// 16 MB artifact ceiling, tracks are dropped largest-first until it fits.
+const MAX_PAGE = 15.6 * 1024 * 1024;
+const musicDir = path.join(root, 'assets', 'music');
+let music = [];
+if (fs.existsSync(musicDir)) {
+  for (const f of fs.readdirSync(musicDir).sort()) {
+    const m = f.match(/^(\d+)\.mp3$/i);
+    if (!m) continue;
+    const raw = fs.readFileSync(path.join(musicDir, f));
+    music.push({ id: Number(m[1]), b64: raw.toString('base64') });
+  }
+}
+const baseSize = () =>
+  music.reduce((s, t) => s + t.b64.length + 60, 0);
+let dropped = 0;
+while (music.length && baseSize() > MAX_PAGE - 800 * 1024) {
+  music.sort((a, b) => a.b64.length - b.b64.length);
+  music.pop();
+  dropped++;
+}
+music.sort((a, b) => a.id - b.id);
+const musicBlob = music.length
+  ? `<script>\nwindow.MUSIC_SRC = {\n${music.map((t) =>
+      `  ${t.id}: "data:audio/mpeg;base64,${t.b64}"`).join(',\n')}\n};\n</script>\n`
+  : '';
+
 const bundle = `<title>${title}</title>
 <style>
 ${style.trim()}
 </style>
 ${body.trim()}
-${spriteBlob}${scripts}
+${spriteBlob}${musicBlob}${scripts}
 `;
 
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, bundle);
-console.log(`${path.relative(root, out)}  ${(bundle.length / 1024).toFixed(0)} KB  ` +
-            `(${sources.length} scripts, ${sheets.length} character sheets inlined)`);
+console.log(`${path.relative(root, out)}  ${(bundle.length / 1024 / 1024).toFixed(2)} MB  ` +
+            `(${sources.length} scripts, ${sheets.length} character sheets, ` +
+            `${music.length} music tracks inlined${dropped ? `, ${dropped} dropped for size` : ''})`);

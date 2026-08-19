@@ -129,10 +129,14 @@ class MissionControl {
         game.traffic.push(h);
         hunters.push(h);
       }
+      const time = 90 + hunters.length * 35;
       this.m = { type, hunters, total: hunters.length,
-                 timeLeft: 90 + hunters.length * 35,
+                 timeLeft: time,
+                 // The storm circle: it closes on this point for the whole
+                 // fight, herding everyone left alive into the same streets.
+                 zone: { x: player.x, z: player.z, r: 400, r0: 400, rMin: 70, total: time },
                  label: `MISSION ${L}: WRECK THE GANG`,
-                 goal: `${hunters.length} hunters are coming for you` };
+                 goal: `${hunters.length} hunters — stay inside the ring` };
     } else if (type === 'chase') {
       // The armoured car starts a few streets away and runs for the edge of
       // the map farthest from the player.
@@ -210,11 +214,52 @@ class MissionControl {
     for (const h of (m.hunters || []).concat(m.escorts || [])) h.noRetire = false;
     if (m.target) m.target.noRetire = false;
     game.missionTarget = null;
+    game.zone = null;
+    game.zoneOut = false;
+  }
+
+  // The shrinking ring, for missions that carry one. Outside it everything
+  // burns: the player and the hunters take steady damage, and bystander
+  // traffic is simply swallowed — despawned the moment the wall passes it.
+  updateZone(dt, m) {
+    const z = m.zone;
+    z.r = z.rMin + (z.r0 - z.rMin) * clamp(m.timeLeft / z.total, 0, 1);
+    game.zone = z;
+    const bite = (v) => {
+      if (Math.hypot(v.x - z.x, v.z - z.z) < z.r) return false;
+      for (const key of ['engine', 'steering', 'wheels', 'body']) {
+        v.damage[key] = Math.min(1, v.damage[key] + dt * 0.055);
+      }
+      if (v.wreckage > 0.985) v.wrecked = true;
+      return true;
+    };
+    game.zoneOut = bite(game.car);
+    if (game.zoneOut && (game.zoneSayT || 0) <= 0) {
+      game.zoneSayT = 4;
+      say('OUTSIDE THE RING — GET BACK IN');
+      playThud(0.35);
+    }
+    game.zoneSayT = Math.max(0, (game.zoneSayT || 0) - dt);
+    for (const h of m.hunters || []) if (h.wreckage <= 0.7) bite(h);
+    // Swallow the bystanders, out of the player's sight.
+    for (let k = game.traffic.length - 1; k >= 0; k--) {
+      const t = game.traffic[k];
+      if (t.noRetire || t.isPlayer || t.ambulance) continue;
+      if (Math.hypot(t.x - z.x, t.z - z.z) > z.r + 15 &&
+          Math.hypot(t.x - game.car.x, t.z - game.car.z) > 70) {
+        game.traffic.splice(k, 1);
+      }
+    }
   }
 
   update(dt) {
     const m = this.m;
     if (!m) return;
+    // Getting wrecked fails any job — the ring is how it usually happens.
+    if (game.car.wrecked && game.player.inCar) {
+      return this.fail('MISSION FAILED — your car is scrap');
+    }
+    if (m.zone) this.updateZone(dt, m);
 
     if (m.type === 'race') {
       const r = game.race;

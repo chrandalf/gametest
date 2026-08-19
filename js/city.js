@@ -878,6 +878,36 @@ class City {
     this.buildMotorway(chunkAt, paintAt);
     this.buildBridges(chunkAt);
 
+    // Palms along the country lanes as well: the countryside is kept sparse
+    // now, and a lane between two fields lined with the odd palm reads as a
+    // postcard rather than an overgrown verge.
+    for (let axis = 0; axis < 2; axis++) {
+      for (let li = 0; li < GRID; li++) {
+        for (let k = 0; k < GRID - 1; k++) {
+          if (!this.edgeOpen(axis, li, k)) continue;
+          if (segRank(axis, li, k) > 1) continue;
+          for (const t of [22, 62]) {
+            if (hash2(axis * 91 + li * 7, k * 17 + t, this.seed ^ 0xba1a) < 0.5) continue;
+            const along = roadCenter(k) + t;
+            const side = hash2(li + t, k * 3, this.seed ^ 0x77) < 0.5 ? -1 : 1;
+            const across = roadCenter(li) + this.bowAt(along, li, axis) +
+                           side * (this.roadHalf(1) + 3.5);
+            const x = axis ? across : along, z = axis ? along : across;
+            if (this.onRoadSurface(x, z, 2)) continue;
+            const bi2 = clamp(Math.floor(x / CELL), 0, GRID - 2);
+            const bj2 = clamp(Math.floor(z / CELL), 0, GRID - 2);
+            if (this.zones.zoneAt(bi2, bj2) === Z.WATER) continue;
+            const pb = new MeshBuilder();
+            const py = this.groundY(x, z);
+            this.lift = py;
+            this.palm(pb, x, z, 0.8 + hash2(x * 3, z * 5, 9) * 0.5, 0);
+            chunkAt(axis ? li : k, axis ? k : li).append(pb, 0, py, 0);
+            this.lift = 0;
+          }
+        }
+      }
+    }
+
     // --- street furniture, thinning out as the streets get quieter ---
     for (let i = 0; i < GRID; i++) {
       for (let j = 0; j < GRID; j++) {
@@ -1088,6 +1118,24 @@ class City {
                          Math.max(P(r0, line - CENTRAL_RES)[1], P(r1, line + CENTRAL_RES)[1]),
                          1.3, 'the central reservation');
         this.lift = 0;
+      }
+
+      // Palms down both verges, evenly spaced — the straight road lined with
+      // palm silhouettes is the single most retrowave image there is.
+      for (const t of [11, 40, 69]) {
+        for (const side of [-1, 1]) {
+          const pp = P(a0 + t, line + side * (ROAD / 2 + 4.5));
+          if (this.onRoadSurface(pp[0], pp[1], 2)) continue;
+          const bi2 = clamp(Math.floor(pp[0] / CELL), 0, GRID - 2);
+          const bj2 = clamp(Math.floor(pp[1] / CELL), 0, GRID - 2);
+          if (this.zones.zoneAt(bi2, bj2) === Z.WATER) continue;
+          const pb = new MeshBuilder();
+          const py = this.groundY(pp[0], pp[1]);
+          this.lift = py;
+          this.palm(pb, pp[0], pp[1], 0.9 + ((t * 7 + k * 13) % 10) / 22, 0);
+          chunkAt(m.alongX ? k : m.line, m.alongX ? m.line : k).append(pb, 0, py, 0);
+          this.lift = 0;
+        }
       }
 
       // A sign gantry every few cells, which is what says "motorway" at a
@@ -1529,6 +1577,49 @@ class City {
     // this is a proper impact — as far as the car is concerned it is a bollard.
     const tr = 0.30 * scale;
     this.addCollider(x - tr, z - tr, x + tr, z + tr, y0 + h, 'a tree');
+  }
+
+  // A palm: leaning ringed trunk, a crown of drooping fronds. Botanically
+  // indefensible at this latitude, but this is a retrowave city and the
+  // silhouette against the banded sun is the whole point.
+  palm(b, x, z, scale, baseY) {
+    const rand = this.rand;
+    const y0 = baseY === undefined ? 0 : baseY;
+    const h = (6.0 + rand() * 2.6) * scale;
+    const la = rand() * Math.PI * 2;
+    const lean = 0.16 + rand() * 0.22;
+    const lx = Math.cos(la) * lean, lz = Math.sin(la) * lean;
+    b.style(TEX.BARK, [0.92, 0.82, 0.66], 0);
+    const SEG = 5;
+    let px = x, pz = z;
+    for (let s = 0; s < SEG; s++) {
+      const r = 0.20 * scale * (1 - s * 0.09);
+      b.cylinder(px, y0 + (s + 0.5) * h / SEG, pz, r, h / SEG + 0.2, 6, { vRepeat: 1 });
+      px += lx * h / SEG * (0.3 + s * 0.25);
+      pz += lz * h / SEG * (0.3 + s * 0.25);
+    }
+    const topY = y0 + h;
+    b.style(TEX.LEAVES, [0.38, 0.66, 0.40], 0);
+    const n = 7;
+    for (let k = 0; k < n; k++) {
+      const a = k / n * Math.PI * 2 + rand() * 0.5;
+      const dx = Math.cos(a), dz = Math.sin(a);
+      const L = (2.4 + rand() * 0.9) * scale;
+      const w = 0.34 * scale;
+      const wx = -dz * w, wz = dx * w;
+      const mx = px + dx * L * 0.5, mz = pz + dz * L * 0.5, my = topY + L * 0.17;
+      const tx2 = px + dx * L, tz2 = pz + dz * L, ty = topY - L * 0.5;
+      // Each blade twice, once per winding: a single-sided frond vanishes
+      // the moment you look up at it, which is the only way anyone ever
+      // looks at a palm tree.
+      const blade = (p0, p1, p2, p3) => { b.quad(p0, p1, p2, p3, 1, 1); b.quad(p1, p0, p3, p2, 1, 1); };
+      blade([px - wx, topY, pz - wz], [px + wx, topY, pz + wz],
+            [mx + wx * 0.7, my, mz + wz * 0.7], [mx - wx * 0.7, my, mz - wz * 0.7]);
+      blade([mx - wx * 0.7, my, mz - wz * 0.7], [mx + wx * 0.7, my, mz + wz * 0.7],
+            [tx2 + wx * 0.15, ty, tz2 + wz * 0.15], [tx2 - wx * 0.15, ty, tz2 - wz * 0.15]);
+    }
+    const tr = 0.26 * scale;
+    this.addCollider(x - tr, z - tr, x + tr, z + tr, y0 + h, 'a palm tree');
   }
 
   bush(b, x, z, scale, baseY) {

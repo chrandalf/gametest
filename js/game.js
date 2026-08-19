@@ -14,6 +14,9 @@ const game = {
   // Pickup powers currently running (seconds left), and the oil-drum count.
   power: { oil: 0, ram: 0, freeze: 0, magnet: 0, big: 0, star: 0 },
   slicks: [],          // oil on the road: { x, z, r, life }
+  bursts: [],          // pickup collection flashes: { x, y, z, t, color }
+  zone: null,          // the shrinking mission ring
+  zoneOut: false,
   missionTarget: null, // where the mission compass points
   retro: true,         // the synthwave look; Y toggles it
   run: { active: false, score: 0, best: 0, timeLeft: 0, target: null, streak: 0, message: '', messageT: 0 },
@@ -61,6 +64,9 @@ function start() {
   game.skids = new SkidMarks(gl, 460);
   game.stunts = new StuntTracker();
   game.markerBeam = buildMarkerMesh(gl, 1.5, 1.35, 70);
+  // Unit ring for the mission storm circle, scaled out to whatever radius
+  // the ring has shrunk to. Thin-walled so it reads as a curtain of light.
+  game.zoneMesh = buildMarkerMesh(gl, 1.0, 0.99, 1.0);
 
   // Sprite people. Any hand-drawn sheets that were inlined at build time take
   // over from the painted ones, character for character.
@@ -95,6 +101,7 @@ function start() {
   game.recorder = new Recorder();
   game.hudVisible = true;
   game.missions = new MissionControl();
+  game.music = new MusicPlayer();
 
   const mf = document.getElementById('mapfile');
   if (mf) mf.addEventListener('change', (ev) => {
@@ -140,6 +147,8 @@ function bindInput() {
       game.retro = !game.retro;
       say(game.retro ? 'STYLE: NEON NIGHTS' : 'STYLE: PLAIN DAYLIGHT');
     }
+    if (e.code === 'KeyX') game.music.next();
+    if (e.code === 'KeyO') game.music.toggle();
     if (e.code === 'KeyB' && game.isMap) location.reload();
     if (e.code === 'BracketRight') game.recorder.adjustExposure(0.06);
     if (e.code === 'BracketLeft') game.recorder.adjustExposure(-0.06);
@@ -264,6 +273,7 @@ function updateRepair(dt) {
 // ---------------------------------------------------------------- audio ----
 
 function startAudio() {
+  if (game.music) game.music.start();
   if (game.audio) { if (game.audio.ctx.state === 'suspended') game.audio.ctx.resume(); return; }
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return;
@@ -714,6 +724,36 @@ function update(dt) {
     break;
   }
   game.headOnCool = Math.max(0, (game.headOnCool || 0) - dt);
+
+  // The countryside is not a rally stage. Off the tarmac in open country the
+  // ground is OutRun treacle: it slows the car hard, drags it gently back
+  // toward the road, and rattles the camera — but it is never a wall, never
+  // does damage, and a three-and-a-half-metre verge is free, so clipping a
+  // corner costs nothing. That is the whole trick to a hard boundary that
+  // does not feel like one.
+  if (p.inCar && !game.isMap && !car.airborne && !game.drown) {
+    const bi = clamp(Math.floor(car.x / CELL), 0, GRID - 2);
+    const bj = clamp(Math.floor(car.z / CELL), 0, GRID - 2);
+    const zone = game.city.zones.zoneAt(bi, bj);
+    if ((zone === Z.WILD || zone === Z.FARM) &&
+        !game.city.onRoadSurface(car.x, car.z, 3.5)) {
+      const k = Math.exp(-4.0 * dt);
+      car.vx *= k; car.vz *= k;
+      const rp = roadPointNear(game.city, car.x, car.z);
+      if (rp) {
+        const rdx = rp.x - car.x, rdz = rp.z - car.z;
+        const rd = Math.hypot(rdx, rdz) || 1;
+        car.vx += (rdx / rd) * 7 * dt;
+        car.vz += (rdz / rd) * 7 * dt;
+      }
+      game.shake = Math.min(0.3, game.shake + car.speed * 0.0035 * dt * 60);
+      if ((game.roughSayT || 0) <= 0) {
+        game.roughSayT = 7;
+        say('ROUGH GROUND — keep to the roads out here');
+      }
+    }
+    game.roughSayT = Math.max(0, (game.roughSayT || 0) - dt);
+  }
 
   // Into the river. The bank is a slope, not a wall, so this is a real way to
   // lose a delivery — you get fished out a few seconds later.
@@ -1264,7 +1304,9 @@ function environment() {
                     [0.22, 0.14, 0.45], night);
     skyColor = mix3(mix3([0.34, 0.24, 0.66], [0.42, 0.13, 0.60], dusk),
                     [0.05, 0.03, 0.14], night);
-    fogColor = mix3(mix3([0.78, 0.42, 0.78], [0.92, 0.30, 0.62], dusk),
+    // The horizon runs orange at dusk under the purple sky — the exact
+    // gradient on every retrowave sleeve ever printed.
+    fogColor = mix3(mix3([0.82, 0.44, 0.74], [1.00, 0.46, 0.32], dusk),
                     [0.13, 0.05, 0.24], night);
     ambColor = mix3(mix3([0.48, 0.42, 0.62], [0.44, 0.34, 0.60], dusk),
                     [0.42, 0.35, 0.74], night);
@@ -1487,6 +1529,10 @@ function drawActors(r, env, shadowPass) {
         const h = game.time * 4;
         r.setMaterial([0.65 + 0.45 * Math.sin(h), 0.65 + 0.45 * Math.sin(h + 2.09),
                        0.65 + 0.45 * Math.sin(h + 4.19)], 0.4, 0);
+      } else if (game.power.freeze > 0 && car !== game.car && !car.ambulance) {
+        // Frozen solid, and it looks it: iced-over paint with a cold sheen.
+        r.setMaterial([car.color[0] * 0.35 + 0.55, car.color[1] * 0.35 + 0.65,
+                       car.color[2] * 0.35 + 0.85], 0.10, 0);
       } else {
         const dk = 1 - Math.min(0.55, dmg.body * 0.5 + car.wreckage * 0.15);
         r.setMaterial([car.color[0] * dk, car.color[1] * dk * 0.97, car.color[2] * dk * 0.94], 0, 0);
@@ -1588,6 +1634,44 @@ function drawActors(r, env, shadowPass) {
         r.draw(game.body.ball, _m3);
         r.endTranslucent();
       }
+
+      // The player's running powers are worn, not just listed on the HUD.
+      if (car === game.car) {
+        const P = game.power;
+        if (P.ram > 0) {
+          // A glowing prow on the nose: the thing that is about to hit you.
+          r.beginTranslucent();
+          const rp = 0.8 + Math.sin(game.time * 9) * 0.2;
+          r.setMaterial([1.0, 0.45, 0.10], 1.6 * rp, 0, 0.55);
+          M4.compose(_m2, 0, 0.52, 2.42, 0, 0, 0, 0.95, 0.28, 0.35);
+          M4.mul(_m3, _m, _m2);
+          r.draw(game.cube, _m3);
+          r.endTranslucent();
+        }
+        if (P.magnet > 0) {
+          // The field: a slowly turning crimson ring around the car.
+          r.beginTranslucent();
+          r.setMaterial([1.0, 0.2, 0.2], 1.1, 0, 0.30 + Math.sin(game.time * 5) * 0.1);
+          M4.compose(_m2, car.x, car.y + 0.35, car.z, game.time * 1.4, 0, 0, 2.3, 0.14, 2.3);
+          r.draw(game.marker, _m2);
+          r.endTranslucent();
+        }
+        if (P.star > 0) {
+          // Orbiting sparks to go with the rainbow paint.
+          r.beginTranslucent();
+          for (let k = 0; k < 6; k++) {
+            const a = game.time * 4 + k * 1.047;
+            const hh = game.time * 4 + k;
+            r.setMaterial([0.7 + 0.5 * Math.sin(hh), 0.7 + 0.5 * Math.sin(hh + 2.09),
+                           0.7 + 0.5 * Math.sin(hh + 4.19)], 3.0, 0, 0.85);
+            M4.compose(_m2, car.x + Math.cos(a) * 2.5,
+                       car.y + 0.9 + Math.sin(game.time * 7 + k) * 0.5,
+                       car.z + Math.sin(a) * 2.5, 0, 0, 0, 0.17, 0.17, 0.17);
+            r.draw(game.body.ball, _m2);
+          }
+          r.endTranslucent();
+        }
+      }
       r.setMaterial([1, 1, 1], 0, 0);
     }
 
@@ -1629,6 +1713,33 @@ function drawActors(r, env, shadowPass) {
   // Pickups, spinning over the tarmac.
   if (game.pickups) game.pickups.draw(r, cam.pos, game.time, shadowPass);
 
+  // The storm ring: a curtain of hot pink light, closing all mission long.
+  if (!shadowPass && game.zone) {
+    const z = game.zone;
+    const pulse = 0.75 + Math.sin(game.time * 3.2) * 0.25;
+    r.beginTranslucent();
+    r.setMaterial([1.0, 0.16, 0.70], 1.5 * pulse, 0, 0.28);
+    M4.compose(_m, z.x, game.city.groundY(z.x, z.z) - 3, z.z, 0, 0, 0, z.r, 60, z.r);
+    r.draw(game.zoneMesh, _m);
+    r.endTranslucent();
+    r.setMaterial([1, 1, 1], 0, 0);
+  }
+
+  // Pickup collection bursts: an expanding shell of the toy's own colour,
+  // so what you just drove through is never a mystery.
+  if (!shadowPass && game.bursts.length) {
+    r.beginTranslucent();
+    for (const bu of game.bursts) {
+      const t = bu.t / 0.7;
+      const rad = 0.8 + t * 15;
+      r.setMaterial(bu.color, 2.0 * (1 - t), 0, 0.5 * (1 - t));
+      M4.compose(_m, bu.x, bu.y, bu.z, 0, 0, 0, rad, rad * 0.75, rad);
+      r.draw(game.body.ball, _m);
+    }
+    r.endTranslucent();
+    r.setMaterial([1, 1, 1], 0, 0);
+  }
+
   // Oil slicks: dark translucent pools, fading as they dry out.
   if (!shadowPass && game.slicks.length) {
     r.beginTranslucent();
@@ -1661,11 +1772,11 @@ function drawActors(r, env, shadowPass) {
     const car = game.car;
     car.modelMatrix(_m);
     if (!shadowPass) r.setMaterial([1, 1, 1], 0, 0);
-    // Nodding dog on the parcel shelf.
-    M4.compose(_m2, 0, 1.02, -1.30, 0, 0, 0, 1, 1, 1);
+    // Nodding dog on the parcel shelf — set lower now the roofline is a wedge.
+    M4.compose(_m2, 0, 0.88, -1.05, 0, 0, 0, 1, 1, 1);
     M4.mul(_m3, _m, _m2);
     r.draw(game.dogMeshes.body, _m3);
-    M4.compose(_m2, 0, 1.02 + 0.20, -1.30 - 0.02, game.dog.yawAngle, game.dog.angle, 0, 1, 1, 1);
+    M4.compose(_m2, 0, 0.88 + 0.20, -1.05 - 0.02, game.dog.yawAngle, game.dog.angle, 0, 1, 1, 1);
     M4.mul(_m3, _m, _m2);
     r.draw(game.dogMeshes.head, _m3);
     // Toilet roll trailing out of the back door.
@@ -1867,6 +1978,12 @@ function drawHud() {
     const t = game.missionTarget;
     c.fillStyle = '#ff5ad1';
     c.beginPath(); c.arc(t.x, t.z, 6 + Math.sin(game.time * 6) * 2, 0, 6.284); c.fill();
+  }
+  // The storm ring, so you can see where safe is before the wall arrives.
+  if (game.zone) {
+    c.strokeStyle = 'rgba(255,60,190,0.9)';
+    c.lineWidth = 4;
+    c.beginPath(); c.arc(game.zone.x, game.zone.z, game.zone.r, 0, 6.284); c.stroke();
   }
   c.restore();
 
@@ -2288,6 +2405,12 @@ function drawHud() {
     c.fillStyle = `rgba(190,20,20,${(game.snipers.hitFlash * 0.28).toFixed(3)})`;
     c.fillRect(0, 0, W, H);
   }
+  // Outside the mission ring: the screen itself tells you you are dying.
+  if (game.zoneOut) {
+    const a = 0.16 + Math.sin(game.time * 8) * 0.08;
+    c.fillStyle = `rgba(255,40,150,${a.toFixed(3)})`;
+    c.fillRect(0, 0, W, H);
+  }
 
   // --- help ---
   if (game.showHelp) {
@@ -2300,6 +2423,7 @@ function drawHud() {
       'V — record video   U — hide HUD   [ ] — clip brightness',
       'J — MISSIONS (they get harder)   K — street race   G — time trial',
       'Q — drop oil (find a drum)   Y — neon / daylight   M — new map   N — map file',
+      'X — next track   O — music on / off',
       'Click the window for mouse look. H hides this.',
     ];
     const bw = 340, bh = lines.length * 19 + 26;

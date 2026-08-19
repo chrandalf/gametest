@@ -391,23 +391,26 @@ const ZONE_BUILDERS = {};
 // Open country: woodland, rough grass, boulders and the odd track.
 ZONE_BUILDERS[Z.WILD] = (city, b, ctx) => {
   const { x0, z0, x1, z1, rand } = ctx;
-  const n = 14 + ((rand() * 12) | 0);
+  // Kept sparse on purpose: dense woodland out here cost real frame time and
+  // read as clutter, and the country is out of bounds to drive through now
+  // anyway — a handful of trees sells "open land" from the road just as well.
+  const n = 5 + ((rand() * 4) | 0);
   for (let i = 0; i < n; i++) {
     const x = lerp(x0 + 3, x1 - 3, rand()), z = lerp(z0 + 3, z1 - 3, rand());
     // A lane through the woods bends off its grid line and into the block, so
     // where the tarmac ends up has to be checked, not assumed.
     if (city.onRoadSurface(x, z, 2.5)) continue;
-    if (rand() < 0.22) city.bush(b, x, z, 0.7 + rand() * 0.8, ctx.groundAt(x, z));
+    if (rand() < 0.2) city.bush(b, x, z, 0.7 + rand() * 0.8, ctx.groundAt(x, z));
     else city.tree(b, x, z, 0.9 + rand() * 0.9, ctx.groundAt(x, z));
   }
-  for (let i = 0; i < 3; i++) {
-    if (rand() > 0.5) continue;
+  if (rand() < 0.4) {
     const x = lerp(x0 + 4, x1 - 4, rand()), z = lerp(z0 + 4, z1 - 4, rand());
-    if (city.onRoadSurface(x, z, 3.5)) continue;
-    const r = 0.8 + rand() * 1.6;
-    b.style(TEX.CONCRETE, [0.55, 0.54, 0.50], 0);
-    b.sphere(x, ctx.groundAt(x, z) + r * 0.35, z, r, 7, 4, 0.5);
-    city.addCollider(x - r*0.7, z - r*0.7, x + r*0.7, z + r*0.7, r * 0.7, 'a boulder');
+    if (!city.onRoadSurface(x, z, 3.5)) {
+      const r = 0.8 + rand() * 1.6;
+      b.style(TEX.CONCRETE, [0.55, 0.54, 0.50], 0);
+      b.sphere(x, ctx.groundAt(x, z) + r * 0.35, z, r, 7, 4, 0.5);
+      city.addCollider(x - r*0.7, z - r*0.7, x + r*0.7, z + r*0.7, r * 0.7, 'a boulder');
+    }
   }
 };
 
@@ -472,12 +475,12 @@ ZONE_BUILDERS[Z.FARM] = (city, b, ctx) => {
       }
     }
   }
-  // A tree or two in the hedge line.
-  for (let i = 0; i < 3; i++) {
-    if (rand() < 0.45) continue;
+  // At most one tree in the hedge line: fields read as fields, not scrub.
+  if (rand() < 0.5) {
     const tx = lerp(x0 + 4, x1 - 4, rand()), tz = lerp(z0 + 4, z1 - 4, rand());
-    if (city.onRoadSurface(tx, tz, 2.5)) continue;
-    city.tree(b, tx, tz, 1.0 + rand() * 0.5, ctx.groundAt(tx, tz));
+    if (!city.onRoadSurface(tx, tz, 2.5)) {
+      city.tree(b, tx, tz, 1.0 + rand() * 0.5, ctx.groundAt(tx, tz));
+    }
   }
 };
 

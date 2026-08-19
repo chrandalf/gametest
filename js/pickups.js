@@ -177,6 +177,14 @@ const _pickM = M4.create();
 
 // ------------------------------------------------------------- the effects --
 
+// The colour each toy bursts in when collected, so the flash says what you
+// just picked up before the HUD does.
+const BURST_COLORS = {
+  wrench: [0.3, 1.0, 0.4], cash: [0.3, 1.0, 0.4], can: [1.0, 0.35, 0.2],
+  oil: [0.25, 0.22, 0.3], ram: [1.0, 0.55, 0.15], freeze: [0.55, 0.85, 1.0],
+  magnet: [1.0, 0.3, 0.3], big: [1.0, 0.3, 0.2], star: [1.0, 0.9, 0.3],
+};
+
 // Timed powers live on game.power; the rest are instant.
 function applyPickup(type) {
   const car = game.car;
@@ -184,6 +192,8 @@ function applyPickup(type) {
   const info = PICKUP_TYPES.find((t) => t.key === type);
   say(info ? info.name : type.toUpperCase());
   playChime(type === 'star' ? 3 : type === 'big' ? 2 : 1);
+  game.bursts.push({ x: car.x, y: car.y + 1.1, z: car.z, t: 0,
+                     color: BURST_COLORS[type] || [1, 1, 1] });
 
   switch (type) {
     case 'wrench':
@@ -261,10 +271,14 @@ function updatePowers(dt) {
   if (P.big > 0) { car.attackScale *= 1.5; car.damageScale *= 0.6; }
   if (P.star > 0) { car.attackScale *= 2.2; car.damageScale = 0; }
 
-  // Oil slicks age out.
+  // Oil slicks age out; collection bursts flash and are gone.
   for (let k = game.slicks.length - 1; k >= 0; k--) {
     game.slicks[k].life -= dt;
     if (game.slicks[k].life <= 0) game.slicks.splice(k, 1);
+  }
+  for (let k = game.bursts.length - 1; k >= 0; k--) {
+    game.bursts[k].t += dt;
+    if (game.bursts[k].t > 0.7) game.bursts.splice(k, 1);
   }
 
   // Drop a slick behind the rear bumper.
@@ -273,7 +287,9 @@ function updatePowers(dt) {
     P.oil--;
     game.oilCool = 0.45;
     const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
-    game.slicks.push({ x: car.x - fx * 3.4, z: car.z - fz * 3.4, r: 2.6, life: 26 });
+    const sx2 = car.x - fx * 3.4, sz2 = car.z - fz * 3.4;
+    game.slicks.push({ x: sx2, z: sz2, r: 2.6, life: 26 });
+    game.bursts.push({ x: sx2, y: car.y + 0.5, z: sz2, t: 0.25, color: BURST_COLORS.oil });
     say(P.oil > 0 ? `OIL AWAY — ${P.oil} left` : 'OIL AWAY — drum empty');
   }
 }

@@ -337,6 +337,7 @@ uniform float uExposure;
 uniform float uNight;
 uniform float uRetro;
 uniform float uVpH;
+uniform float uTime;
 out vec4 fragColor;
 
 // Narkowicz ACES approximation: the filmic shoulder is what stops bright sky
@@ -346,7 +347,13 @@ vec3 aces(vec3 x) {
 }
 
 void main() {
-  vec3 scene = texture(uScene, vUv).rgb;
+  // Chromatic aberration toward the corners — the VHS fringe. Zero offset
+  // in the plain style, so the extra taps collapse to the same texel.
+  vec2 cc = vUv - 0.5;
+  vec2 ab = cc * dot(cc, cc) * uRetro * 0.014;
+  vec3 scene = vec3(texture(uScene, vUv + ab).r,
+                    texture(uScene, vUv).g,
+                    texture(uScene, vUv - ab).b);
   vec3 bloom = texture(uBloom, vUv).rgb;
   vec3 c = scene + bloom * uBloomStrength;
   c *= uExposure;
@@ -358,10 +365,13 @@ void main() {
   c = mix(vec3(l), c, 1.14 + uRetro * 0.14);         // extra saturation; neon gets more
   c = clamp((c - 0.5) * 1.09 + 0.5, 0.0, 1.0);       // gentle S-curve on top
 
-  // CRT scanlines: faint, but they soften every hard polygon edge in the
-  // frame, which is precisely the job the eighties look is here to do.
+  // CRT scanlines and film grain: faint, but they soften every hard polygon
+  // edge in the frame, which is precisely the job the eighties look is
+  // here to do.
   if (uRetro > 0.5) {
-    c *= 1.0 - 0.05 * (0.5 + 0.5 * sin(vUv.y * uVpH * 3.14159));
+    c *= 1.0 - 0.065 * (0.5 + 0.5 * sin(vUv.y * uVpH * 3.14159));
+    float gr = fract(sin(dot(vUv * 941.7 + fract(uTime * 7.0), vec2(12.9898, 78.233))) * 43758.5453);
+    c += (gr - 0.5) * 0.04;
     // Shadows lean violet instead of black.
     c = mix(c, c * vec3(1.02, 0.94, 1.10) + vec3(0.012, 0.0, 0.02), 1.0 - smoothstep(0.0, 0.4, l));
   }
@@ -701,6 +711,7 @@ class Renderer {
     gl.uniform1f(this.compositeProg.u.uNight, env.night);
     gl.uniform1f(this.compositeProg.u.uRetro, env.retro || 0);
     gl.uniform1f(this.compositeProg.u.uVpH, t.h);
+    gl.uniform1f(this.compositeProg.u.uTime, env.time || 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     gl.activeTexture(gl.TEXTURE0);

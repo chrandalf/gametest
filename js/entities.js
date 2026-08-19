@@ -7,33 +7,35 @@ const GRAVITY = 9.81;
 
 // ------------------------------------------------------------- geometry -----
 
-// The body is a lofted shell: a series of cross-sections down the length of the
-// car, each a rounded rectangle, skinned together with smooth normals. That is
-// what gives it a waistline, tapered nose and curved roof instead of a stack of
-// boxes. Sections are (z, halfWidth, yBottom, yTop, cornerRound).
+// The body is a lofted shell: a series of cross-sections down the length of
+// the car, skinned together with smooth normals. Sections are (z, halfWidth,
+// yBottom, yTop, cornerRound).
+//
+// The profile is a proper eighties wedge — one straight line from the blade
+// of the nose up over the scuttle, a low flat roof, and a tall kamm tail cut
+// off dead square. Corner radii are kept tight: this body is all creases,
+// which is exactly what a DeLorean or an Esprit is.
 const CAR_SECTIONS = [
-  [-2.30, 0.60, 0.46, 0.86, 0.30],
-  [-2.10, 0.83, 0.38, 0.99, 0.34],
-  [-1.70, 0.94, 0.34, 1.06, 0.32],
-  [-1.20, 0.97, 0.33, 1.10, 0.30],
-  [-0.55, 0.98, 0.33, 1.12, 0.30],
-  [ 0.10, 0.97, 0.33, 1.10, 0.30],
-  [ 0.75, 0.94, 0.34, 1.05, 0.30],
-  [ 1.35, 0.90, 0.36, 0.99, 0.32],
-  [ 1.85, 0.83, 0.40, 0.93, 0.34],
-  [ 2.18, 0.66, 0.48, 0.84, 0.30],
-  [ 2.30, 0.50, 0.56, 0.78, 0.20],
+  [-2.30, 0.86, 0.42, 0.96, 0.10],   // kamm tail: tall, flat, abrupt
+  [-2.05, 0.93, 0.36, 1.01, 0.10],
+  [-1.45, 0.97, 0.33, 1.05, 0.10],
+  [-0.60, 0.98, 0.33, 1.03, 0.10],
+  [ 0.20, 0.97, 0.33, 0.97, 0.10],
+  [ 0.95, 0.94, 0.33, 0.86, 0.09],   // the wedge line dives at the scuttle
+  [ 1.60, 0.88, 0.34, 0.74, 0.08],   // ...but clears the front wheel arch
+  [ 2.05, 0.78, 0.36, 0.56, 0.06],
+  [ 2.30, 0.62, 0.40, 0.48, 0.04],   // blade nose
 ];
 
-// The greenhouse (cabin) sits on top, narrower and swept back.
+// The greenhouse: low, angular, the windscreen raked to carry the bonnet
+// line straight up to the roof.
 const CABIN_SECTIONS = [
-  [-1.62, 0.62, 1.06, 1.16, 0.08],
-  [-1.45, 0.78, 1.06, 1.38, 0.16],
-  [-1.00, 0.83, 1.08, 1.50, 0.18],
-  [-0.30, 0.84, 1.09, 1.53, 0.18],
-  [ 0.25, 0.82, 1.08, 1.50, 0.18],
-  [ 0.62, 0.78, 1.06, 1.38, 0.16],
-  [ 0.80, 0.66, 1.04, 1.16, 0.08],
+  [-1.60, 0.72, 0.98, 1.05, 0.04],
+  [-1.42, 0.82, 0.98, 1.25, 0.05],
+  [-0.75, 0.86, 1.00, 1.31, 0.06],
+  [ 0.05, 0.84, 0.99, 1.27, 0.06],
+  [ 0.75, 0.74, 0.90, 1.03, 0.05],
+  [ 1.10, 0.64, 0.83, 0.89, 0.04],
 ];
 
 // One ring of a rounded-rectangle cross-section, walked anticlockwise.
@@ -149,12 +151,24 @@ function buildCarMeshes(gl) {
     paint.style(TEX.METAL, [1, 1, 1], -0.001);   // negative emissive = glossy material
     loft(paint, CAR_SECTIONS, { steps: 4 });
     paint.style(TEX.PLAIN, [0.13, 0.13, 0.15], 0);
-    paint.chamferBox(0, 0.52, 2.18, 0.90, 0.17, 0.14, 0.10, { perUnit: 1 });   // front bumper
-    paint.chamferBox(0, 0.52, -2.20, 0.88, 0.17, 0.13, 0.10, { perUnit: 1 });  // rear bumper
+    paint.chamferBox(0, 0.40, 2.28, 0.86, 0.11, 0.11, 0.06, { perUnit: 1 });   // front blade bumper
+    paint.chamferBox(0, 0.46, -2.36, 0.88, 0.13, 0.10, 0.06, { perUnit: 1 });  // rear bumper
+    // Louvres over the engine deck — the single most DeLorean thing a car
+    // can wear. Slats step down toward the tail.
+    paint.style(TEX.PLAIN, [0.10, 0.10, 0.12], 0);
+    for (let k = 0; k < 5; k++) {
+      paint.box(0, 1.06 - k * 0.015, -1.62 - k * 0.15, 0.78, 0.017, 0.055, { perUnit: 1 });
+    }
+    // Grid dividers over the tail lamp bar, so it reads as a bank of cells.
+    for (const s of [-1, 1]) {
+      for (let k = 0; k < 3; k++) {
+        paint.box(s * (0.16 + k * 0.24), 0.80, -2.355, 0.022, 0.14, 0.02, { perUnit: 1 });
+      }
+    }
     // Wing mirrors — small, but their absence is very noticeable.
     paint.style(TEX.METAL, [1, 1, 1], 0);
     for (const s of [-1, 1]) {
-      paint.chamferBox(s * 1.02, 1.18, 0.42, 0.13, 0.07, 0.10, 0.05, { perUnit: 1 });
+      paint.chamferBox(s * 1.00, 1.06, 0.72, 0.12, 0.06, 0.09, 0.04, { perUnit: 1 });
     }
     return paint;
   };
@@ -172,16 +186,18 @@ function buildCarMeshes(gl) {
   const glassWreck = buildGlass();
   crumpleMesh(glassWreck, 0.05);
 
+  // Wide rectangular lamps set low in the nose, in the pop-up position.
   const lights = new MeshBuilder();
   lights.style(TEX.PLAIN, [1.0, 0.96, 0.85], 0);
   for (const s of [-1, 1]) {
-    lights.chamferBox(s * 0.50, 0.74, 2.14, 0.22, 0.09, 0.06, 0.05, { perUnit: 1 });
+    lights.chamferBox(s * 0.44, 0.49, 2.22, 0.25, 0.055, 0.05, 0.03, { perUnit: 1 });
   }
 
+  // The full-width tail bar across the kamm tail — the eighties rear end.
   const tail = new MeshBuilder();
   tail.style(TEX.PLAIN, [0.95, 0.12, 0.10], 0);
   for (const s of [-1, 1]) {
-    tail.chamferBox(s * 0.56, 0.82, -2.20, 0.21, 0.09, 0.05, 0.04, { perUnit: 1 });
+    tail.chamferBox(s * 0.455, 0.80, -2.335, 0.40, 0.115, 0.045, 0.03, { perUnit: 1 });
   }
 
   const wheel = new MeshBuilder();
@@ -198,7 +214,7 @@ function buildCarMeshes(gl) {
     lights: lights.upload(gl),
     tail: tail.upload(gl),
     wheel: wheel.upload(gl),
-    plates: buildPlateMesh(gl, 2.315, -2.335, 0.30, 0.33),
+    plates: buildPlateMesh(gl, 2.395, -2.355, 0.33, 0.44),
   };
 }
 
@@ -310,8 +326,8 @@ function buildBodyMeshes(gl) {
 // -------------------------------------------------------------- vehicle -----
 
 const WHEELS = [
-  [ 0.88, 0.40,  1.38, true],
-  [-0.88, 0.40,  1.38, true],
+  [ 0.88, 0.38,  1.30, true],
+  [-0.88, 0.38,  1.30, true],
   [ 0.88, 0.40, -1.42, false],
   [-0.88, 0.40, -1.42, false],
 ];

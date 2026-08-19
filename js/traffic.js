@@ -156,5 +156,25 @@ class TrafficPopulation {
       else break;
     }
     if (gone) for (let k = list.length - 1; k >= 0; k--) if (!list[k]) list.splice(k, 1);
+
+    // Break up clots. A dozen cars wedged nose to tail in one junction eats
+    // the frame and reads as a bug, so anything jammed in a crowd out of the
+    // player's sight is quietly removed — the spawner will deal it back in
+    // somewhere useful on the next tick.
+    let culled = 0;
+    for (let a = 0; a < list.length && culled < 4; a++) {
+      const c = list[a];
+      if (!c || c.noRetire || c.isPlayer) continue;
+      if (Math.hypot(c.x - player.x, c.z - player.z) < 110) continue;
+      if (c.speed > 3) continue;
+      let crowd = 0;
+      for (let b = 0; b < list.length; b++) {
+        if (b === a || !list[b]) continue;
+        const o = list[b];
+        if ((o.x - c.x) ** 2 + (o.z - c.z) ** 2 < 22 * 22) crowd++;
+      }
+      if (crowd >= 5) { list[a] = null; culled++; }
+    }
+    if (culled) for (let k = list.length - 1; k >= 0; k--) if (!list[k]) list.splice(k, 1);
   }
 }
