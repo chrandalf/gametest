@@ -26,6 +26,7 @@ const game = {
   // as designed; easy is a tenth of it and exists to be laughed at, not
   // balanced around.
   difficulty: 'normal',
+  trafficMode: 'normal',   // none | low | normal | high
   run: { active: false, score: 0, best: 0, timeLeft: 0, target: null, streak: 0, message: '', messageT: 0 },
   trial: { active: false, phase: 'idle', route: [], idx: 0, t: 0, countdown: 0, best: null, last: null },
   tyreLoad: 0,
@@ -857,7 +858,6 @@ function update(dt) {
   updateRun(dt);
   updateTrial(dt);
   game.stunts.tick(dt);
-  game.snipers.update(dt, { x: px, z: pz });
   updateCamera(dt);
   updateAudio(dt);
 }
@@ -968,7 +968,6 @@ function loadMapWorld(json, label) {
   game.pickups = null;
   game.slicks = [];
   if (game.missions && game.missions.m) { game.missions.cleanup(); game.missions.m = null; }
-  game.snipers = new Snipers(gl, world, game.rand);
   game.skids = new SkidMarks(gl, 460);
 
   const spawn = world.roadNodes.length
@@ -1009,7 +1008,8 @@ function buildWorld(seed) {
     for (let j = 0; j < GRID; j++) if (city.roadRank(i, j) >= 3) urbanCells.push([i, j]);
   }
   game.traffic = [];
-  const wanted = clamp(Math.round(urbanCells.length * 0.55), 8, 40);
+  const bootMult = { none: 0, low: 0.35, normal: 1, high: 1.8 }[game.trafficMode] ?? 1;
+  const wanted = Math.round(clamp(Math.round(urbanCells.length * 0.55), 8, 40) * bootMult);
   for (let n = 0; n < wanted && urbanCells.length; n++) {
     const [i, j] = urbanCells[(rand() * urbanCells.length) | 0];
     const horiz = rand() < 0.5;
@@ -1091,7 +1091,8 @@ function buildWorld(seed) {
     knot = rand() < 0.55 ? { x, z } : null;
   }
 
-  game.snipers = new Snipers(gl, city, rand);
+  // The rooftop snipers are gone: they were a fun ambush once and a drain on
+  // patience ever after. The class stays in action.js should anyone miss them.
   game.skids = new SkidMarks(gl, 460);
   game.lights = new TrafficLights(city);
   // The census: who lives where, works where, and parks what where.
@@ -1829,12 +1830,35 @@ function drawActors(r, env, shadowPass) {
     r.setMaterial([1, 1, 1], 0, 0);
   }
 
-  // Sniper lasers.
-  if (!shadowPass && game.snipers.mesh.count) {
-    r.beginTranslucent();
-    r.setMaterial([1, 1, 1], 1.2, 0, 0.75);
-    r.draw(game.snipers.mesh, null);
-    r.endTranslucent();
+  // Speed streaks: dashes of light lying on the tarmac either side of the
+  // car, world-anchored so they whip past, and they only exist at all above
+  // about 110 km/h — the faster you go the longer and brighter they draw,
+  // which is most of what "feels fast" means in an arcade game.
+  if (!shadowPass && game.player.inCar) {
+    const pc = game.car;
+    const sp = pc.speed;
+    const vis = clamp((sp - 30) / 14, 0, 1);
+    if (vis > 0.03 && !pc.airborne) {
+      const dx = pc.vx / sp, dz = pc.vz / sp;
+      const yaw = Math.atan2(dx, dz);
+      const along = pc.x * dx + pc.z * dz;
+      const SPACING = 12;
+      const len = 1.6 + sp * 0.075;
+      r.beginTranslucent();
+      r.setMaterial([0.65, 1.05, 1.15], 1.7, 0, 0.42 * vis);
+      for (const off of [-5.4, -2.7, 2.7, 5.4]) {
+        for (let k = 0; k < 6; k++) {
+          const a = (Math.floor(along / SPACING) + k - 1) * SPACING + (off > 0 ? 6 : 0);
+          const wx = pc.x + dx * (a - along) - dz * off;
+          const wz = pc.z + dz * (a - along) + dx * off;
+          const wy = game.city.groundY(wx, wz) + 0.13;
+          M4.compose(_m, wx, wy, wz, yaw, 0, 0, 0.09, 0.02, len);
+          r.draw(game.cube, _m);
+        }
+      }
+      r.endTranslucent();
+      r.setMaterial([1, 1, 1], 0, 0);
+    }
   }
 
   // Skid marks lie flat on the road, under everything else.
@@ -2491,10 +2515,6 @@ function drawHud() {
     c.fillStyle = '#ffd34d';
     c.font = '800 20px system-ui, sans-serif';
     c.fillText('AIRBORNE', W/2, H * 0.36);
-  }
-  if (game.snipers.hitFlash > 0.01) {
-    c.fillStyle = `rgba(190,20,20,${(game.snipers.hitFlash * 0.28).toFixed(3)})`;
-    c.fillRect(0, 0, W, H);
   }
   // Outside the mission ring: the screen itself tells you you are dying.
   if (game.zoneOut) {

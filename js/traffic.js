@@ -13,6 +13,9 @@ const LIGHT_CYCLE = 14;        // seconds for a full green/green cycle
 // The fleet lives in a ring around the player: near enough to meet, far enough
 // that nothing pops into existence in the mirror.
 const SPAWN_NEAR = 95, SPAWN_FAR = 300, RETIRE_FAR = 380;
+// The traffic dial in the options menu. Commuters, mission cars and the
+// ambulance are not ambient traffic and ignore it.
+const TRAFFIC_MULT = { none: 0, low: 0.35, normal: 1, high: 1.8 };
 const AMBER = 2.6;             // seconds of amber at the end of each green
 
 // Junction signals. Only the busiest junctions are signalled; quieter ones are
@@ -99,7 +102,9 @@ class TrafficPopulation {
   }
 
   target(hour) {
-    return Math.round(clamp(trafficDemand(hour) * this.max, 4, this.max));
+    const mult = TRAFFIC_MULT[typeof game !== 'undefined' ? game.trafficMode : 'normal'];
+    if (mult === 0) return 0;
+    return Math.min(240, Math.round(clamp(trafficDemand(hour) * this.max, 4, this.max) * mult));
   }
 
   // Called a few times a second, not every frame.

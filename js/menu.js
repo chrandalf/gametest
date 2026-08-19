@@ -51,6 +51,8 @@ class GameMenu {
           hint: game.difficulty === 'easy' ? 'your car takes a tenth of every hit'
               : game.difficulty === 'normal' ? 'your car takes half of every hit'
               : 'the game as designed — it earns the name' },
+        { id: 'traffic', label: `TRAFFIC  <  ${game.trafficMode.toUpperCase()}  >`,
+          hint: 'ambient cars on the road — commuters and mission cars stay' },
         { id: 'style', label: `STYLE  <  ${game.retro ? 'NEON NIGHTS' : 'PLAIN DAYLIGHT'}  >` },
         { id: 'crt', label: `CRT EFFECTS  <  ${game.crtFx ? 'ON' : 'OFF'}  >`,
           hint: 'scanlines, grain and colour fringing' },
@@ -103,6 +105,11 @@ class GameMenu {
       const order = ['easy', 'normal', 'hard'];
       const i = order.indexOf(game.difficulty);
       game.difficulty = order[(i + dir + order.length) % order.length];
+    }
+    else if (id === 'traffic') {
+      const order = ['none', 'low', 'normal', 'high'];
+      const i = order.indexOf(game.trafficMode);
+      game.trafficMode = order[(i + dir + order.length) % order.length];
     }
     else if (id === 'style') { game.retro = !game.retro; }
     else if (id === 'crt') { game.crtFx = !game.crtFx; }
