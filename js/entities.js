@@ -715,17 +715,47 @@ class Vehicle {
   }
 
   collide(city) {
-    const p = { x: this.x, z: this.z };
-    const hit = city.resolveCircle(p, this.radius, this.y);
+    // Three circles along the car's axis instead of one fat one. The old
+    // single circle was 1.7 m — three-quarters of a metre of phantom fender
+    // past each flank, which is how you "hit" a lamp post you drove cleanly
+    // past. Nose and tail circles keep the length; the waist circle is barely
+    // wider than the body.
+    const fx0 = Math.sin(this.yaw), fz0 = Math.cos(this.yaw);
+    let hit = null, hitOff = 0;
+    for (const [off, r] of [[1.35, 1.0], [0, 1.05], [-1.35, 1.0]]) {
+      const p = { x: this.x + fx0 * off, z: this.z + fz0 * off };
+      const h = city.resolveCircle(p, r, this.y);
+      if (h) {
+        this.x += p.x - (this.x + fx0 * off);
+        this.z += p.z - (this.z + fz0 * off);
+        if (!hit || Math.abs(off) < Math.abs(hitOff)) { hit = h; hitOff = off; }
+      }
+    }
     if (hit) {
       const before = this.speed;
-      this.x = p.x; this.z = p.z;
       const vn = this.vx * hit.nx + this.vz * hit.nz;
       if (vn < 0) {
-        // Reflect a little, kill most of the energy.
-        this.vx -= hit.nx * vn * 1.25;
-        this.vz -= hit.nz * vn * 1.25;
-        this.vx *= 0.55; this.vz *= 0.55;
+        // A lamp post is not a wall: hit one properly and it goes down while
+        // the car barely shrugs — the post's job now is to fall over.
+        if (hit.post && !hit.post.state && -vn > 7) {
+          hit.post.state = 1;
+          hit.post.t = 0;
+          const sp = Math.max(this.speed, 1e-3);
+          hit.post.fallYaw = Math.atan2(this.vx / sp, this.vz / sp);
+          hit.post.col.gone = true;
+          this.vx *= 0.93; this.vz *= 0.93;
+          this.crashImpulse = Math.max(this.crashImpulse, 0.35);
+          this.takeHit(0.05, hit.nx, hit.nz, hit.what);
+          if (typeof game !== 'undefined' && this === game.car && game.stunts) {
+            game.stunts.felledPosts = (game.stunts.felledPosts || 0) + 1;
+          }
+          return;
+        }
+        // Reflect barely at all, kill most of the energy: walls should stop
+        // the car dead-ish, not ping it back into the road.
+        this.vx -= hit.nx * vn * 1.06;
+        this.vz -= hit.nz * vn * 1.06;
+        this.vx *= 0.6; this.vz *= 0.6;
         // A scrape leaves the car moving sideways; the tyres bite immediately,
         // so cut what is left of the lateral component rather than sliding on.
         const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
@@ -733,6 +763,11 @@ class Vehicle {
         const vlat = (this.vx * fz - this.vz * fx) * 0.35;
         this.vx = fx * vfwd + fz * vlat;
         this.vz = fz * vfwd - fx * vlat;
+        // An off-centre nose or tail hit slews the car a little.
+        if (hitOff !== 0) {
+          this.yawKick = clamp(this.yawKick +
+            (hit.nx * fz0 - hit.nz * fx0) * Math.sign(hitOff) * Math.min(2.2, -vn * 0.09), -4, 4);
+        }
         this.crashImpulse = Math.max(this.crashImpulse, Math.min(1, before / 22));
         // How hard it landed, and on which face. A gentle kerb scrape is not
         // damage; anything from a walking pace upwards starts to be.

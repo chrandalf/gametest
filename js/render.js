@@ -300,8 +300,26 @@ void main() {
     col += starCol * star * 1.6;
   }
 
+  // Retro mountains: two ridgelines of layered sine peaks ringing the whole
+  // horizon, drawn after the sun so it sets behind them — the missing
+  // backdrop that made the open country feel like the edge of the world.
+  if (uRetro > 0.5) {
+    float az = atan(dir.x, dir.z);
+    float r1 = sin(az * 3.1) * 0.5 + sin(az * 7.3 + 1.7) * 0.3 + sin(az * 13.7 + 4.2) * 0.2;
+    float h1 = 0.040 + (r1 * 0.5 + 0.5) * 0.085;
+    float r2 = sin(az * 4.7 + 2.9) * 0.5 + sin(az * 9.1 + 0.6) * 0.35;
+    float h2 = 0.016 + (r2 * 0.5 + 0.5) * 0.045;
+    float dayGlow = 0.55 + 0.45 * (1.0 - uNight);
+    // The silhouette fills all the way down — gating it at the horizon left
+    // a bright band of raw sky glowing underneath the mountain bases.
+    float m1 = smoothstep(h1 + 0.004, h1 - 0.004, h);
+    float m2 = smoothstep(h2 + 0.004, h2 - 0.004, h);
+    col = mix(col, vec3(0.145, 0.06, 0.27) * dayGlow, m1);
+    col = mix(col, vec3(0.075, 0.03, 0.15) * dayGlow, m2);
+  }
+
   // Soft horizon-hugging haze band.
-  col = mix(col, uFogColor, smoothstep(0.16, 0.0, abs(h)) * 0.55);
+  col = mix(col, uFogColor, smoothstep(0.16, 0.0, abs(h)) * 0.55 * (1.0 - uRetro * 0.5));
 
   // Alpha 0: the sky is never wet ground, whatever the streak pass thinks.
   fragColor = vec4(col, 0.0);

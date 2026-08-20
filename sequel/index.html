@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon Drive 2 — tech demo</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05010f;
+    font-family: system-ui, sans-serif; }
+  canvas { width: 100%; height: 100%; display: block; outline: none; }
+  #title { position: fixed; top: 18px; left: 22px; color: #ff5ad1;
+    font-weight: 800; letter-spacing: 3px; font-size: 15px; opacity: 0.9;
+    text-shadow: 0 0 12px rgba(255, 90, 209, 0.6); }
+  #title small { display: block; color: #7dfcf3; font-weight: 600;
+    letter-spacing: 1px; font-size: 10px; margin-top: 3px; }
+  #hud { position: fixed; right: 26px; bottom: 22px; color: #7dfcf3;
+    font-weight: 800; font-size: 26px; text-shadow: 0 0 10px rgba(125, 252, 243, 0.5); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="title">NEON DRIVE // 2
+  <small>Babylon.js engine experiment · W/S speed · A/D lane</small></div>
+<div id="hud"></div>
+<script src="vendor/babylon.js"></script>
+<script src="main.js"></script>
+</body>
+</html>

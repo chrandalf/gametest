@@ -88,6 +88,7 @@ class City {
     this.water = [];
     this.bridges = [];
     this.lights = [];         // street lamp positions, used for night point lights
+    this.lampPosts = [];      // the posts themselves: dynamic, knock-downable
     // The civic ledger: everything the population hangs off. Homes have doors
     // and room for a family, workplaces have jobs, parking spots have a yaw to
     // park at. The census joins them up into people.
@@ -194,6 +195,7 @@ class City {
   resolveCircle(pos, r, aboveY) {
     let hit = null;
     for (const c of this.query(pos.x, pos.z, r)) {
+      if (c.gone) continue;   // a felled lamp post no longer stops anyone
       if (aboveY !== undefined && c.top <= aboveY + 0.4) continue;   // driving on it
       if (c.poly) {
         const [bx, bz, dist] = closestOnPoly(pos.x, pos.z, c.poly);
@@ -207,7 +209,7 @@ class City {
         ox /= ol; oz /= ol;
         pos.x = bx + ox * r;
         pos.z = bz + oz * r;
-        hit = { nx: ox, nz: oz, what: c.what };
+        hit = { nx: ox, nz: oz, what: c.what, post: c.post || null };
         continue;
       }
       const cx = clamp(pos.x, c.x0, c.x1);
@@ -227,7 +229,7 @@ class City {
       const nx = dx / d, nz = dz / d;
       pos.x = cx + nx * r;
       pos.z = cz + nz * r;
-      hit = { nx, nz, what: c.what };
+      hit = { nx, nz, what: c.what, post: c.post || null };
     }
     return hit;
   }
@@ -816,6 +818,36 @@ class City {
         }
       }
     }
+    // The synthwave floor: rural blocks get a violet neon grid, the single
+    // most recognisable texture in the genre. It lives in the neon meshes,
+    // so classic mode never sees it and it glows hardest after dark.
+    for (let bi = 0; bi < GRID - 1; bi++) {
+      for (let bj = 0; bj < GRID - 1; bj++) {
+        if (!this.isBlockRoot(bi, bj) || !this.isRural(bi, bj)) continue;
+        if (this.zones.zoneAt(bi, bj) === Z.WATER) continue;
+        const bb = this.blockBounds(bi, bj);
+        const nb = neonAt(bi, bj);
+        nb.style(TEX.PLAIN, [0.48, 0.14, 0.80], 0.5);
+        const gStep = 10.6, gw = 0.10;
+        for (let gx = bb.x0 + 4; gx < bb.x1 - 2; gx += gStep) {
+          for (let gz = bb.z0; gz < bb.z1 - 0.5; gz += 6) {
+            const gz1 = Math.min(gz + 6, bb.z1);
+            const ya = this.groundY(gx, gz) + 0.09, yb = this.groundY(gx, gz1) + 0.09;
+            nb.quad([gx - gw, ya, gz], [gx + gw, ya, gz],
+                    [gx + gw, yb, gz1], [gx - gw, yb, gz1], 1, 1);
+          }
+        }
+        for (let gz = bb.z0 + 4; gz < bb.z1 - 2; gz += gStep) {
+          for (let gx = bb.x0; gx < bb.x1 - 0.5; gx += 6) {
+            const gx1 = Math.min(gx + 6, bb.x1);
+            const ya = this.groundY(gx, gz) + 0.09, yb = this.groundY(gx1, gz) + 0.09;
+            nb.quad([gx, ya, gz - gw], [gx1, yb, gz - gw],
+                    [gx1, yb, gz + gw], [gx, ya, gz + gw], 1, 1);
+          }
+        }
+      }
+    }
+
     // Junction patches, wide enough for the widest road that meets there.
     for (let i = 0; i < GRID; i++) {
       for (let j = 0; j < GRID; j++) {
@@ -1750,18 +1782,23 @@ class City {
   }
 
   streetLight(b, x, z, dirX, dirZ) {
+    // No geometry into the chunk any more: lamp posts are dynamic props now,
+    // drawn each frame from this list — which is what lets one fall over
+    // when a car takes it out. `b` stays in the signature for the callers.
+    void b;
     const h = 7.5;
-    b.style(TEX.METAL, [0.32, 0.34, 0.36], 0);
-    b.cylinder(x, SIDEWALK_H + h/2, z, 0.15, h, 6, { vRepeat: 3 });
-    const ax = x + dirX * 1.4, az = z + dirZ * 1.4;
-    b.box((x + ax)/2, SIDEWALK_H + h, (z + az)/2,
-          Math.abs(dirX) * 0.8 + 0.12, 0.12, Math.abs(dirZ) * 0.8 + 0.12, { perUnit: 1 });
-    b.style(TEX.PLAIN, [1.0, 0.93, 0.75], 0.9);
-    b.chamferBox(ax, SIDEWALK_H + h - 0.22, az, 0.42, 0.16, 0.42, 0.12, { perUnit: 1 });
+    const post = { x, z, dirX, dirZ, h,
+                   baseY: SIDEWALK_H + this.lift,
+                   state: 0,          // 0 standing, 1 falling, 2 down
+                   t: 0, fallYaw: 0 };
     // Tight to the pole. A metre-wide box round a 30 cm lamp post is an
     // invisible clip you feel but cannot see.
     this.addCollider(x - 0.22, z - 0.22, x + 0.22, z + 0.22, SIDEWALK_H + h, 'a lamp post');
-    this.lights.push({ x: ax, y: SIDEWALK_H + h - 0.4 + this.lift, z: az });
+    post.col = this.colliders[this.colliders.length - 1];
+    post.col.post = post;
+    this.lampPosts.push(post);
+    const ax = x + dirX * 1.4, az = z + dirZ * 1.4;
+    this.lights.push({ x: ax, y: SIDEWALK_H + h - 0.4 + this.lift, z: az, post });
   }
 
   // ------------------------------------------------------------- routing ---

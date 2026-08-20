@@ -536,8 +536,14 @@ function resolveVehicleCollisions(all, onPlayer) {
       const jt = clamp(-vt / imSum, -0.5 * jn, 0.5 * jn);
 
       const Jx = nx * jn + tx * jt, Jz = nz * jn + tz * jt;
-      a.vx -= Jx * ima; a.vz -= Jz * ima;
-      b.vx += Jx * imb; b.vz += Jz * imb;
+      // Arcade bias: the protagonist gives more than they get. The car the
+      // player hits takes the impulse harder, and the player's own recoil is
+      // trimmed — momentum stops balancing, and the game feels better for it.
+      let biasA = 1, biasB = 1;
+      if (onPlayer === a) { biasA = 0.7; biasB = 1.35; }
+      else if (onPlayer === b) { biasB = 0.7; biasA = 1.35; }
+      a.vx -= Jx * ima * biasA; a.vz -= Jz * ima * biasA;
+      b.vx += Jx * imb * biasB; b.vz += Jz * imb * biasB;
 
       // Spin. The contact sits on the line between them, so how far off each
       // car's centre it lands is what decides whether it shoves or slews.
@@ -880,6 +886,7 @@ function update(dt) {
   updateSensor(dt);
   updateRepair(dt);
   updateFlight(dt);
+  updateLampPosts(dt);
   if (car.lastHitT > 0) car.lastHitT -= dt;
   updateRun(dt);
   updateTrial(dt);
@@ -1436,6 +1443,7 @@ function collectLights(night) {
 
   const nearby = [];
   for (const L of game.city.lights) {
+    if (L.post && L.post.state !== 0) continue;   // a felled post lights nothing
     const d = (L.x - cam[0]) ** 2 + (L.z - cam[2]) ** 2;
     if (d > 150 * 150) continue;
     nearby.push({ d, L });
@@ -1664,8 +1672,92 @@ function drawFlares(r, env) {
 
 const _m = M4.create(), _m2 = M4.create(), _m3 = M4.create();
 
+// ---- lamp posts: dynamic and knock-downable ------------------------------
+// The posts left the baked chunks so that a car can put one on the ground.
+// Standing posts near the player live in one DynamicMesh, rebuilt when the
+// camera strays or a post is mid-fall; a downed post stays where it fell,
+// dark, and its collider and street light die with it.
+
+function updateLampPosts(dt) {
+  for (const p of game.city.lampPosts) {
+    if (p.state === 1) {
+      p.t += dt * 1.5;
+      if (p.t >= 1) { p.t = 1; p.state = 2; }
+      game.lampMeshDirty = true;
+    }
+  }
+}
+
+// A square-section strut from a base point along a direction — the one shape
+// the MeshBuilder lacks, and exactly what a tilting pole is.
+function emitStrut(b, x, y, z, dx, dy, dz, len, r) {
+  let ux = -dz, uz = dx;
+  const ul = Math.hypot(ux, uz) || 1;
+  ux = (ul < 1e-4 ? 1 : ux / ul) * r; uz = (ul < 1e-4 ? 0 : uz / ul) * r;
+  const vx = dy * uz / r * r, vy = (dz * ux - dx * uz) / r * r, vz = -dy * ux / r * r;
+  const vl = Math.hypot(vx, vy, vz) || 1;
+  const wx = vx / vl * r, wy = vy / vl * r, wz = vz / vl * r;
+  const tx = x + dx * len, ty = y + dy * len, tz = z + dz * len;
+  const q = (ax, ay, az, bx2, by2, bz2) => {
+    b.quad([x + ax, y + ay, z + az], [x + bx2, y + by2, z + bz2],
+           [tx + bx2, ty + by2, tz + bz2], [tx + ax, ty + ay, tz + az], 1, 3);
+    b.quad([tx + ax, ty + ay, tz + az], [tx + bx2, ty + by2, tz + bz2],
+           [x + bx2, y + by2, z + bz2], [x + ax, y + ay, z + az], 1, 3);
+  };
+  q(ux + wx, wy, uz + wz, -ux + wx, wy, -uz + wz);
+  q(-ux + wx, wy, -uz + wz, -ux - wx, -wy, -uz - wz);
+  q(-ux - wx, -wy, -uz - wz, ux - wx, -wy, uz - wz);
+  q(ux - wx, -wy, uz - wz, ux + wx, wy, uz + wz);
+}
+
+function emitPost(b, p) {
+  const ang = p.state === 0 ? 0 : 1.5 * p.t * p.t;   // gravity does the easing
+  const sa = Math.sin(ang), ca = Math.cos(ang);
+  const dx = Math.sin(p.fallYaw) * sa, dy = ca, dz = Math.cos(p.fallYaw) * sa;
+  b.style(TEX.METAL, [0.32, 0.34, 0.36], 0);
+  emitStrut(b, p.x, p.baseY, p.z, dx, dy, dz, p.h, 0.14);
+  const tipX = p.x + dx * p.h, tipY = p.baseY + dy * p.h, tipZ = p.z + dz * p.h;
+  if (p.state === 0) {
+    // Standing: the arm reaches over the road and carries the lantern.
+    emitStrut(b, tipX, tipY - 0.06, tipZ, p.dirX, 0, p.dirZ, 1.4, 0.09);
+    b.style(TEX.PLAIN, [1.0, 0.93, 0.75], 0.9);
+    b.chamferBox(tipX + p.dirX * 1.4, tipY - 0.24, tipZ + p.dirZ * 1.4,
+                 0.42, 0.16, 0.42, 0.12, { perUnit: 1 });
+  } else {
+    // Felled: the lantern hangs dark off the broken end.
+    b.style(TEX.PLAIN, [0.35, 0.33, 0.30], 0);
+    b.chamferBox(tipX, Math.max(tipY - 0.1, p.baseY + 0.2), tipZ,
+                 0.42, 0.16, 0.42, 0.12, { perUnit: 1 });
+  }
+}
+
+function drawLampPosts(r) {
+  const cam = game.cam.pos;
+  if (!game.lampMesh) {
+    game.lampMesh = new DynamicMesh(r.gl, 20000, 30000);
+    game.lampBuilder = new MeshBuilder();
+    game.lampAnchor = null;
+  }
+  const moved = !game.lampAnchor ||
+    Math.hypot(cam[0] - game.lampAnchor[0], cam[2] - game.lampAnchor[1]) > 25;
+  if (moved || game.lampMeshDirty) {
+    game.lampMeshDirty = false;
+    game.lampAnchor = [cam[0], cam[2]];
+    const b = game.lampBuilder;
+    b.reset();
+    for (const p of game.city.lampPosts) {
+      const d2 = (p.x - cam[0]) ** 2 + (p.z - cam[2]) ** 2;
+      if (d2 > 340 * 340) continue;
+      emitPost(b, p);
+    }
+    game.lampMesh.update(b);
+  }
+  if (game.lampMesh.count) r.draw(game.lampMesh, null);
+}
+
 function drawActors(r, env, shadowPass) {
   const cam = game.cam;
+  drawLampPosts(r);
 
   // Signal heads. Three lenses on a post at each corner of a signalled
   // junction, lit for the phase the traffic on that axis is being given.
