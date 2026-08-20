@@ -31,6 +31,9 @@ const game = {
   trial: { active: false, phase: 'idle', route: [], idx: 0, t: 0, countdown: 0, best: null, last: null },
   tyreLoad: 0,
   nitro: { charge: 1, active: false },
+  // Wings from a wings ramp: seconds of powered flight left. Land before it
+  // reaches zero or the wings fold mid-air and the fall is yours.
+  flight: { t: 0, total: 20 },
   sensor: { dist: Infinity, rev: false, timer: 0 },
   credits: 500,        // earned by mayhem, spent on repairs and recovery
   repairSpend: 0,
@@ -270,6 +273,28 @@ function atStation() {
   }
   return null;
 }
+// The wings countdown. Touching down with time on the clock is a clean
+// landing; running the clock out mid-air folds the wings and hurts.
+function updateFlight(dt) {
+  const fl = game.flight;
+  if (fl.t <= 0) return;
+  const car = game.car;
+  if (!game.player.inCar) { fl.t = 0; return; }   // bailed out mid-air, somehow
+  if (!car.airborne) {
+    fl.t = 0;
+    say('CLEAN LANDING — wings away');
+    return;
+  }
+  fl.t -= dt;
+  if (fl.t <= 0) {
+    fl.t = 0;
+    say('THE WINGS FOLD — out of time');
+    car.takeHit(0.5, Math.sin(car.yaw), Math.cos(car.yaw), 'the sky');
+    car.crashImpulse = 1;
+    car.vx *= 0.6; car.vz *= 0.6;
+  }
+}
+
 function updateRepair(dt) {
   const car = game.car;
   game.repairing = false;
@@ -854,6 +879,7 @@ function update(dt) {
   game.missions.update(dt);
   updateSensor(dt);
   updateRepair(dt);
+  updateFlight(dt);
   if (car.lastHitT > 0) car.lastHitT -= dt;
   updateRun(dt);
   updateTrial(dt);
@@ -1708,6 +1734,21 @@ function drawActors(r, env, shadowPass) {
       r.setMaterial([1, 1, 1], 0, 0);
       r.draw(M.prop, _m);
     }
+    // The wings themselves, while the flight clock runs: white blades off
+    // the flanks with pink tip lights, gone the moment the car touches down.
+    if (car === game.car && game.flight.t > 0 && !shadowPass) {
+      r.setMaterial([0.92, 0.94, 0.98], 0.15, 0);
+      for (const sd of [-1, 1]) {
+        M4.compose(_m2, sd * 1.75, 0.88, -0.35, 0, 0, sd * -0.14, 1.55, 0.055, 0.55);
+        M4.mul(_m3, _m, _m2); r.draw(game.cube, _m3);
+      }
+      r.setMaterial([1.45, 0.30, 0.95], 0.9, 0);
+      for (const sd of [-1, 1]) {
+        M4.compose(_m2, sd * 2.45, 1.06, -0.45, 0, 0, 0, 0.09, 0.26, 0.30);
+        M4.mul(_m3, _m, _m2); r.draw(game.cube, _m3);
+      }
+      r.setMaterial([1, 1, 1], 0, 0);
+    }
 
     if (!shadowPass) {
       // Its own registration, front and back, out of the 4x4 plate sheet.
@@ -2450,6 +2491,20 @@ function drawHud() {
     c.font = '700 10px system-ui, sans-serif';
     c.textAlign = 'left';
     c.fillText(`NITRO (shift) · ${game.speedCaps ? game.speedCaps.name : ''}`, bx + 8, by + 6);
+  }
+
+  // --- wings countdown, front and centre while it matters ---
+  if (game.flight.t > 0) {
+    const fl = game.flight;
+    const urgent = fl.t < 6;
+    c.textAlign = 'center';
+    c.font = '800 22px system-ui, sans-serif';
+    c.fillStyle = urgent && Math.sin(game.time * 10) > 0 ? '#ff4d4d' : '#ff5ad1';
+    c.fillText(`WINGS ${fl.t.toFixed(1)}s`, W / 2, H - 118);
+    c.font = '600 12px system-ui, sans-serif';
+    c.fillStyle = 'rgba(255,255,255,0.8)';
+    c.fillText(urgent ? 'LAND. NOW.' : 'W climb · S dive · land before zero',
+               W / 2, H - 96);
   }
 
   // --- race ---

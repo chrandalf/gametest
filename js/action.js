@@ -10,18 +10,20 @@ class RampSet {
     this.ramps = [];
   }
 
-  add(x, z, yaw, length, width, height, base) {
-    this.ramps.push({ x, z, yaw, length, width, height, base: base || 0 });
+  add(x, z, yaw, length, width, height, base, kind) {
+    this.ramps.push({ x, z, yaw, length, width, height, base: base || 0,
+                      kind: kind || 'plain' });
   }
 
   // Build the visible wedges into a chunk mesh and register the triggers. The
   // wedge is built about y=0; `base` is the height of the road under it, and
   // is reported back through heightAt so the car rides the right one.
-  emit(b, x, z, yaw, length, width, height, base) {
-    this.add(x, z, yaw, length, width, height, base);
+  emit(b, x, z, yaw, length, width, height, base, kind) {
+    this.add(x, z, yaw, length, width, height, base, kind);
     const c = Math.cos(yaw), s = Math.sin(yaw);
     const P = (lx, ly, lz) => [x + lx * c + lz * s, ly, z - lx * s + lz * c];
     const hw = width / 2, hl = length / 2;
+    const deckY = (lz) => height * (0.5 + lz / (2 * hl)) + 0.03;
     // Both windings, for the thin panels a driver sees from either side.
     const dq = (p0, p1, p2, p3, u, v) => { b.quad(p0, p1, p2, p3, u, v)
                                             .quad(p3, p2, p1, p0, u, v); };
@@ -41,9 +43,29 @@ class RampSet {
       b.style(TEX.PLAIN, i % 2 ? [1.25, 0.85, 0.12] : [0.07, 0.07, 0.08], i % 2 ? 0.45 : 0);
       b.quad(P(x0, 0, hl), P(x1, 0, hl), P(x1, height, hl), P(x0, height, hl), 1, 1);
     }
-    // Neon guard rails up both edges of the deck, in the road-edging cyan:
-    // they mark the ramp at night and make the run-up read as a lane.
-    b.style(TEX.PLAIN, [0.30, 0.95, 1.40], 1.0);
+    // Boost decks wear green go-faster chevrons pointing up the slope —
+    // the universal arcade sign for "hit this flat out".
+    if (kind === 'boost') {
+      b.style(TEX.PLAIN, [0.25, 1.30, 0.35], 0.9);
+      for (let lz = -hl + 1.1; lz < hl - 0.9; lz += 1.4) {
+        for (const sd of [-1, 1]) {
+          dq(P(sd * (hw - 0.5), deckY(lz), lz), P(sd * 0.15, deckY(lz + 0.55), lz + 0.55),
+             P(sd * 0.15, deckY(lz + 0.85), lz + 0.85), P(sd * (hw - 0.5), deckY(lz + 0.3), lz + 0.3), 1, 1);
+        }
+      }
+    }
+    // A wings ramp hangs a white wing pair over the lip — you can see the
+    // prize from down the street, which is the whole invitation.
+    if (kind === 'wings') {
+      b.style(TEX.PLAIN, [1.0, 1.0, 1.05], 0.9);
+      for (const sd of [-1, 1]) {
+        dq(P(sd * 0.15, height + 1.65, hl - 0.3), P(sd * 1.55, height + 2.45, hl - 0.3),
+           P(sd * 1.55, height + 2.15, hl - 0.3), P(sd * 0.15, height + 1.35, hl - 0.3), 1, 1);
+      }
+    }
+    // Neon guard rails up both edges of the deck: cyan like the road edging,
+    // pink on a wings ramp so the two read as different offers at night.
+    b.style(TEX.PLAIN, kind === 'wings' ? [1.45, 0.30, 0.95] : [0.30, 0.95, 1.40], 1.0);
     for (const sd of [-1, 1]) {
       dq(P(sd * hw, height + 0.34, hl), P(sd * hw, 0.40, -hl),
          P(sd * hw, 0.28, -hl), P(sd * hw, height + 0.22, hl), 3, 1);
@@ -61,7 +83,6 @@ class RampSet {
     dq(P(-hw + 0.2, height * 0.45, hl - 0.45), P(hw - 0.2, height * 0.45, hl - 0.45),
        P(hw - 0.2, height * 0.32, hl - 0.45), P(-hw + 0.2, height * 0.32, hl - 0.45), 3, 1);
     // Painted arrow up the middle of the deck, laid flush along the slope.
-    const deckY = (lz) => height * (0.5 + lz / (2 * hl)) + 0.03;
     b.style(TEX.MARK, [1.0, 0.75, 0.1], 0.35);
     b.quad(P(-0.35, deckY(hl * 0.1), hl * 0.1), P(0.35, deckY(hl * 0.1), hl * 0.1),
            P(0, deckY(hl * 0.55), hl * 0.55), P(0, deckY(hl * 0.55), hl * 0.55), 1, 1);

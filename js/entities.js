@@ -592,12 +592,40 @@ class Vehicle {
       this.onRamp = null;
       if (this.y > (launched.base || 0) + 0.25 && vf > 6) {
         this.airborne = true;
-        this.vy = Math.abs(vf) * launched.slope * 1.35;   // m/s straight up
+        const kind = launched.ramp && launched.ramp.kind;
+        let vyMul = 1.35;
+        if (kind === 'boost') {
+          // The green chevrons: a hard shove off the lip — more speed and a
+          // much steeper launch. Scaled so a slow car still gets the ride.
+          const k = clamp(64 / Math.max(this.speed, 8), 1.15, 1.6);
+          this.vx *= k; this.vz *= k; vf *= k;
+          vyMul = 2.0;
+        }
+        this.vy = Math.abs(vf) * launched.slope * vyMul;   // m/s straight up
         this.spinPitchRate = 0; this.spinRollRate = 0;
+        if (kind === 'wings' && typeof game !== 'undefined' && this === game.car) {
+          game.flight.t = game.flight.total;
+          if (typeof say === 'function') say('WINGS! 20 seconds of flight — LAND before they fold');
+        }
       } else {
         this.y = launched.base || 0;
       }
     } else if (this.airborne) {
+      const fl = (typeof game !== 'undefined' && this === game.car) ? game.flight : null;
+      if (fl && fl.t > 0) {
+        // Wings out: powered flight. W climbs, S dives, hands-off sinks
+        // gently, steering banks the car round, nitro is an afterburner.
+        const wantVy = throttle > 0 ? 6.5 : (throttle < 0 ? -13 : -1.2);
+        this.vy += (wantVy - this.vy) * Math.min(1, dt * 2.2);
+        this.y += this.vy * dt;
+        this.yaw += steerIn * 1.15 * dt;
+        const spd = Math.min(Math.max(this.speed, 20) + (nitro ? 26 : 10) * dt, 58);
+        this.vx = Math.sin(this.yaw) * spd;
+        this.vz = Math.cos(this.yaw) * spd;
+        this.spinPitch = clamp(-this.vy * 0.045, -0.5, 0.35);
+        this.spinRoll = clamp(-steerIn * 0.5, -0.6, 0.6);
+        this.spinPitchRate = 0; this.spinRollRate = 0;
+      } else {
       this.vy -= GRAVITY * dt;
       this.y += this.vy * dt;
       // In the air the driver can pitch and roll the car for style.
@@ -606,9 +634,19 @@ class Vehicle {
       if (steerIn !== 0) this.spinRollRate = clamp(this.spinRollRate + steerIn * 6.5 * dt, -8, 8);
       this.spinPitch += this.spinPitchRate * dt;
       this.spinRoll += this.spinRollRate * dt;
+      }
       // Land on whatever is underneath: a rooftop counts.
       const surface = city ? city.topAt(this.x, this.z) : 0;
-      if (this.y <= surface) {
+      // Flying into the FACE of a building is not a landing. The generic
+      // snap used to teleport a winged car up onto whatever roof it clipped;
+      // now the wings fold, the nose crumples, and gravity takes over.
+      if (fl && fl.t > 0 && this.y <= surface - 1.5 &&
+          surface > (this.surfaceY || 0) + 4) {
+        fl.t = 0;
+        this.takeHit(0.7, -Math.sin(this.yaw), -Math.cos(this.yaw), 'a tower, at altitude');
+        this.vx *= -0.25; this.vz *= -0.25;
+        this.vy = 0;
+      } else if (this.y <= surface) {
         this.y = surface;
         this.surfaceY = surface;
         this.airborne = false;

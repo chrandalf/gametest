@@ -1013,7 +1013,7 @@ class City {
         }
       }
     }
-    const emitRamp = (len, w, h) => {
+    const emitRamp = (len, w, h, kind) => {
       if (!rampCells.length) return;
       const [i, j] = rampCells[(rand() * rampCells.length) | 0];
       const horiz = rand() < 0.5;
@@ -1029,12 +1029,13 @@ class City {
       // Built flat and dropped onto the road, which may be on a slope.
       const wedge = new MeshBuilder();
       const base = this.groundY(x, z);
-      this.ramps.emit(wedge, x, z, yaw, len, w, h, base);
+      this.ramps.emit(wedge, x, z, yaw, len, w, h, base, kind);
       chunkAt(i, j).append(wedge, 0, base, 0);
     };
-    for (let n = 0; n < 8; n++) emitRamp(9.5, 6.4, 2.1);
-    // A few mega ramps: steep enough to put a nitro-boosted car on a roof.
-    for (let n = 0; n < 5; n++) emitRamp(15.0, 7.2, 5.4);
+    // Half the street ramps carry a boost deck; the mega ramps mostly carry
+    // wings, because a five-metre lip is where flight belongs.
+    for (let n = 0; n < 8; n++) emitRamp(9.5, 6.4, 2.1, n < 4 ? 'boost' : 'plain');
+    for (let n = 0; n < 5; n++) emitRamp(15.0, 7.2, 5.4, n < 3 ? 'wings' : 'boost');
 
     this.buildBoundary(builders[0]);
 
