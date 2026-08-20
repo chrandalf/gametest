@@ -2,41 +2,29 @@
 // Inlines the sequel tech demo into one self-contained page:
 //   node tools/bundle-sequel.js   ->  dist/neon-drive-2.html
 //
-// The engine ships gzipped and base64-encoded, inflated at load time with
-// the browser's native DecompressionStream. Two reasons: the page drops from
-// ~8 MB to ~2.4 MB, and eight megabytes of minified engine source is full of
-// `a<b` sequences that content classifiers misread as markup.
+// The engine is a tree-shaken @babylonjs/core build (see sequel/src/main.mjs
+// + esbuild), inlined raw: the artifact viewer's CSP has no 'unsafe-eval',
+// so it must be a real inline script, and shaking out the unused engine
+// modules keeps the page small.
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const zlib = require('zlib');
+const { execSync } = require('child_process');
 
 const root = path.resolve(__dirname, '..');
 const out = process.argv[2] || path.join(root, 'dist', 'neon-drive-2.html');
-const html = fs.readFileSync(path.join(root, 'sequel', 'index.html'), 'utf8');
-const babylon = fs.readFileSync(path.join(root, 'sequel', 'vendor', 'babylon.js'));
-const main = fs.readFileSync(path.join(root, 'sequel', 'main.js'), 'utf8');
+const seq = path.join(root, 'sequel');
 
-const packed = zlib.gzipSync(babylon, { level: 9 }).toString('base64');
-const esc = (s) => s.replace(/<\/script>/gi, '<\\/script>');
+execSync('npx esbuild src/main.mjs --bundle --minify --format=iife --outfile=vendor/engine.js',
+         { cwd: seq, stdio: 'pipe' });
 
-const loader = `<script>
-window.ENGINE_GZ = "${packed}";
-(async () => {
-  const bytes = Uint8Array.from(atob(window.ENGINE_GZ), (c) => c.charCodeAt(0));
-  window.ENGINE_GZ = null;
-  const ds = new DecompressionStream('gzip');
-  const src = await new Response(new Blob([bytes]).stream().pipeThrough(ds)).text();
-  (0, eval)(src);
-  ${esc(main)}
-})();
-</script>`;
+const html = fs.readFileSync(path.join(seq, 'index.html'), 'utf8');
+const engine = fs.readFileSync(path.join(seq, 'vendor', 'engine.js'), 'utf8');
 
-// Replacement callbacks, not strings: engine source and main.js may contain
-// $' and $&, and String.replace treats those as patterns.
-const bundle = html
-  .replace('<script src="vendor/babylon.js"></script>', () => loader)
-  .replace('<script src="main.js"></script>', '');
+// Replacement callback, not a string: minified engine source will contain
+// $' and $& somewhere, and String.replace treats those as patterns.
+const bundle = html.replace('<script src="vendor/engine.js"></script>',
+  () => `<script>\n${engine.replace(/<\/script>/gi, '<\\/script>')}\n</script>`);
 
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, bundle);
