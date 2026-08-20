@@ -21,10 +21,31 @@ execSync('npx esbuild src/main.mjs --bundle --minify --format=iife --outfile=ven
 const html = fs.readFileSync(path.join(seq, 'index.html'), 'utf8');
 const engine = fs.readFileSync(path.join(seq, 'vendor', 'engine.js'), 'utf8');
 
-// Replacement callback, not a string: minified engine source will contain
-// $' and $& somewhere, and String.replace treats those as patterns.
-const bundle = html.replace('<script src="vendor/engine.js"></script>',
-  () => `<script>\n${engine.replace(/<\/script>/gi, '<\\/script>')}\n</script>`);
+// The artifact host wraps published pages in its own <!doctype>/<head>/<body>
+// skeleton, so the bundle must be page CONTENT only — title, style, body —
+// with no skeleton of its own. index.html keeps the full document for
+// local development; the pieces are lifted out of it here.
+const pick = (re, label) => {
+  const m = html.match(re);
+  if (!m) throw new Error(`bundle-sequel: could not find ${label} in index.html`);
+  return m[1];
+};
+const title = pick(/<title>([\s\S]*?)<\/title>/, '<title>');
+const style = pick(/<style>([\s\S]*?)<\/style>/, '<style>');
+const body = pick(/<body>([\s\S]*?)<script/, '<body> content');
+
+// Template literal pieces, not String.replace: minified engine source will
+// contain $' and $& somewhere, and replace treats those as patterns.
+const bundle = `<meta charset="utf-8">
+<title>${title}</title>
+<style>
+${style.trim()}
+</style>
+${body.trim()}
+<script>
+${engine.replace(/<\/script>/gi, '<\\/script>')}
+</script>
+`;
 
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, bundle);

@@ -24,8 +24,18 @@ import { DefaultRenderingPipeline } from '@babylonjs/core/PostProcesses/RenderPi
 // the same W/A/S/D as Neon Drive 1.
 'use strict';
 
+// Boot diagnostics, drawn on the page itself: a blank screen with no clue
+// helps nobody, least of all when it only goes blank in someone else's
+// sandbox. Any error lands in the corner in plain text.
+const diag = document.getElementById('diag');
+const report = (msg) => { if (diag) diag.textContent = msg; };
+addEventListener('error', (e) => report('BOOT ERROR: ' + (e.message || e.error)));
+addEventListener('unhandledrejection', (e) => report('BOOT ERROR: ' + e.reason));
+report('starting engine…');
+
 const canvas = document.getElementById('c');
 const engine = new Engine(canvas, true);
+report('engine up — building scene…');
 const scene = new Scene(engine);
 scene.clearColor = new Color4(0.012, 0.006, 0.035, 1);
 
@@ -318,4 +328,7 @@ scene.onBeforeRenderObservable.add(() => {
 
 engine.runRenderLoop(() => scene.render());
 addEventListener('resize', () => engine.resize());
-scene.executeWhenReady(() => { setTimeout(() => { window.ready = true; }, 400); });
+scene.executeWhenReady(() => {
+  report("");
+  setTimeout(() => { window.ready = true; }, 400);
+});
