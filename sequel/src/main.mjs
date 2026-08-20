@@ -24,6 +24,15 @@ import { DefaultRenderingPipeline } from '@babylonjs/core/PostProcesses/RenderPi
 // the same W/A/S/D as Neon Drive 1.
 'use strict';
 
+// The artifact sandbox's permissions policy forbids the Gamepad API, and
+// Chrome makes the mere call throw. Babylon's input system polls it during
+// engine startup, so hand it an empty pad list instead of an exception.
+try { navigator.getGamepads && navigator.getGamepads(); }
+catch (e) {
+  Object.defineProperty(navigator, 'getGamepads',
+    { value: () => [], configurable: true });
+}
+
 // Boot diagnostics, drawn on the page itself: a blank screen with no clue
 // helps nobody, least of all when it only goes blank in someone else's
 // sandbox. Any error lands in the corner in plain text.
