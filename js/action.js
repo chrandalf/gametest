@@ -22,18 +22,51 @@ class RampSet {
     const c = Math.cos(yaw), s = Math.sin(yaw);
     const P = (lx, ly, lz) => [x + lx * c + lz * s, ly, z - lx * s + lz * c];
     const hw = width / 2, hl = length / 2;
-    b.style(TEX.METAL, [0.62, 0.55, 0.32], 0);
-    // Deck, wound so the face points up.
+    // Both windings, for the thin panels a driver sees from either side.
+    const dq = (p0, p1, p2, p3, u, v) => { b.quad(p0, p1, p2, p3, u, v)
+                                            .quad(p3, p2, p1, p0, u, v); };
+    // Deck: dark grip-plate steel, wound so the face points up.
+    b.style(TEX.METAL, [0.30, 0.31, 0.34], 0);
     b.quad(P(-hw, height, hl), P(hw, height, hl), P(hw, 0, -hl), P(-hw, 0, -hl), 3, 3);
-    // Triangular sides: a quad with its last two corners doubled up, so the
-    // normal still comes from three distinct points.
+    // Triangular side plates: a quad with its last two corners doubled up, so
+    // the normal still comes from three distinct points.
+    b.style(TEX.METAL, [0.20, 0.21, 0.23], 0);
     b.quad(P(hw, 0, -hl), P(hw, height, hl), P(hw, 0, hl), P(hw, 0, hl), 1, 1);
     b.quad(P(-hw, 0, -hl), P(-hw, 0, hl), P(-hw, height, hl), P(-hw, height, hl), 1, 1);
-    // Vertical face at the lip.
-    b.quad(P(-hw, 0, hl), P(hw, 0, hl), P(hw, height, hl), P(-hw, height, hl), 2, 1);
+    // The lip face wears hazard chevrons — alternating yellow and near-black
+    // panels — which is what tells a driver at speed that this is equipment.
+    const nCh = Math.max(4, Math.round(width / 0.75));
+    for (let i = 0; i < nCh; i++) {
+      const x0 = -hw + width * i / nCh, x1 = -hw + width * (i + 1) / nCh;
+      b.style(TEX.PLAIN, i % 2 ? [1.25, 0.85, 0.12] : [0.07, 0.07, 0.08], i % 2 ? 0.45 : 0);
+      b.quad(P(x0, 0, hl), P(x1, 0, hl), P(x1, height, hl), P(x0, height, hl), 1, 1);
+    }
+    // Neon guard rails up both edges of the deck, in the road-edging cyan:
+    // they mark the ramp at night and make the run-up read as a lane.
+    b.style(TEX.PLAIN, [0.30, 0.95, 1.40], 1.0);
+    for (const sd of [-1, 1]) {
+      dq(P(sd * hw, height + 0.34, hl), P(sd * hw, 0.40, -hl),
+         P(sd * hw, 0.28, -hl), P(sd * hw, height + 0.22, hl), 3, 1);
+    }
+    // Scaffold legs under the lip and a cross-brace, so the wedge stands on
+    // something instead of being a solid triangle of nothing.
+    b.style(TEX.METAL, [0.16, 0.17, 0.19], 0);
+    for (const sd of [-1, 1]) {
+      const lx = sd * (hw - 0.35), lz = hl - 0.45;
+      dq(P(lx - 0.07, height, lz), P(lx + 0.07, height, lz),
+         P(lx + 0.07, 0, lz), P(lx - 0.07, 0, lz), 1, 2);
+      dq(P(lx, height, lz - 0.07), P(lx, height, lz + 0.07),
+         P(lx, 0, lz + 0.07), P(lx, 0, lz - 0.07), 1, 2);
+    }
+    dq(P(-hw + 0.2, height * 0.45, hl - 0.45), P(hw - 0.2, height * 0.45, hl - 0.45),
+       P(hw - 0.2, height * 0.32, hl - 0.45), P(-hw + 0.2, height * 0.32, hl - 0.45), 3, 1);
+    // Painted arrow up the middle of the deck, laid flush along the slope.
+    const deckY = (lz) => height * (0.5 + lz / (2 * hl)) + 0.03;
     b.style(TEX.MARK, [1.0, 0.75, 0.1], 0.35);
-    b.quad(P(-hw, height + 0.02, hl - 0.5), P(hw, height + 0.02, hl - 0.5),
-           P(hw, height + 0.04, hl), P(-hw, height + 0.04, hl), 2, 1);
+    b.quad(P(-0.35, deckY(hl * 0.1), hl * 0.1), P(0.35, deckY(hl * 0.1), hl * 0.1),
+           P(0, deckY(hl * 0.55), hl * 0.55), P(0, deckY(hl * 0.55), hl * 0.55), 1, 1);
+    b.quad(P(-0.18, deckY(-hl * 0.5), -hl * 0.5), P(0.18, deckY(-hl * 0.5), -hl * 0.5),
+           P(0.18, deckY(hl * 0.28), hl * 0.28), P(-0.18, deckY(hl * 0.28), hl * 0.28), 1, 1);
   }
 
   // Returns the deck height under a point, or null when it is off the ramp.

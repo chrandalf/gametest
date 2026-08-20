@@ -624,14 +624,40 @@ class Vehicle {
     } else {
       // Grounded: follow the surface, and drop off the edge of a roof.
       const surface = city ? city.topAt(this.x, this.z) : 0;
-      // Tolerance enough that the roll of open country does not throw the car
-      // into the air over every crest; a roof edge is a much bigger drop.
-      if (surface < this.y - 0.6) {
-        this.airborne = true;
-        this.vy = 0;
-      } else {
-        this.y = surface;
-        this.surfaceY = surface;
+      // A crest taken at speed: when the ground ahead falls away faster than
+      // gravity could pull the car down after it, the car leaves the ground —
+      // proper OutRun hills, decided by physics rather than a scripted ramp.
+      let flew = false;
+      const sp = this.speed;
+      if (city && sp > 14) {
+        const inv = 1 / Math.max(sp, 1e-3);
+        const ax2 = this.vx * inv, az2 = this.vz * inv;
+        const a1 = city.topAt(this.x + ax2 * 2, this.z + az2 * 2);
+        const a2 = city.topAt(this.x + ax2 * 4, this.z + az2 * 4);
+        const sl0 = (a1 - surface) / 2, sl1 = (a2 - a1) / 2;
+        const curv = (sl1 - sl0) / 2;
+        // The slope guard matters: sampling ahead into a building wall reads
+        // as a huge slope, and without it every kerb-side facade was a jump.
+        if (curv < 0 && sp * sp * -curv > GRAVITY * 1.2 && Math.abs(sl0) < 0.6) {
+          this.airborne = true;
+          flew = true;
+          this.y = surface;
+          this.surfaceY = surface;
+          this.vy = clamp(sl0, -0.4, 0.5) * sp;
+          this.spinPitchRate = 0;
+          this.spinRollRate = 0;
+        }
+      }
+      if (!flew) {
+        // Tolerance enough that the roll of open country does not throw the
+        // car into the air over every pebble; a roof edge is a bigger drop.
+        if (surface < this.y - 0.6) {
+          this.airborne = true;
+          this.vy = 0;
+        } else {
+          this.y = surface;
+          this.surfaceY = surface;
+        }
       }
     }
 

@@ -1552,6 +1552,18 @@ function render() {
     r.draw(chunk, null);
     drawn++;
   }
+  // Neon road edging: additive, retro style only, brighter after dark. The
+  // wide GLOWSTRIP spill quads are what throw the light onto the tarmac.
+  if (game.retro && game.city.neon && game.city.neon.length) {
+    r.beginAdditive();
+    r.setMaterial([1, 1, 1], 0.2 + env.night * 0.85, 0, 1);
+    for (const chunk of game.city.neon) {
+      if (!aabbInFrustum(game.frustum, chunk.min, chunk.max)) continue;
+      r.draw(chunk, null);
+      drawn++;
+    }
+    r.endTranslucent();
+  }
   r.setMaterial([1, 1, 1], 0, 0);
   game.chunksDrawn = drawn;
   drawActors(r, env, false);

@@ -699,15 +699,20 @@ class City {
     // shadow of itself onto the road beside it. Decals are drawn in the scene
     // pass only, so they light but never occlude.
     const decals = [];
+    // Neon road edging lives in its own meshes: drawn additively in retro
+    // mode only, so the classic style never sees it.
+    const neons = [];
     for (let i = 0; i < chunkCount * chunkCount; i++) {
       builders.push(new MeshBuilder());
       decals.push(new MeshBuilder());
+      neons.push(new MeshBuilder());
     }
     const chunkIdx = (bi, bj) =>
       Math.min(chunkCount-1, Math.floor(bi/CH)) * chunkCount +
       Math.min(chunkCount-1, Math.floor(bj/CH));
     const chunkAt = (bi, bj) => builders[chunkIdx(bi, bj)];
     const paintAt = (bi, bj) => decals[chunkIdx(bi, bj)];
+    const neonAt = (bi, bj) => neons[chunkIdx(bi, bj)];
 
     // --- roads: one bowed ribbon per segment, plus a patch at each junction ---
     const lo = -ROAD/2, hi = (GRID - 1) * CELL + ROAD/2;
@@ -763,6 +768,49 @@ class City {
             if (flank(1)) {
               this.ribbon(b, axis, li, roadCenter(li), s0, s1, hw, ROAD/2 + 1.5,
                           yOff - 0.02, 16, vu, vv);
+            }
+          }
+
+          // --- neon road edging, straight off the Retrowave sleeve ---
+          // Cyan lines down both edges and a doubled pink line straddling the
+          // centre, each over a wide soft spill so the light lands on the
+          // tarmac around it. This is also the visibility fix for the open
+          // country, where there are no street lamps at all.
+          const nb = neonAt(a[0], a[1]);
+          // Inset from both ends: the ribbon runs junction-centre to
+          // junction-centre, and neon carried across the box criss-crosses
+          // every crossroads with an X of stray lines.
+          const ns0 = s0 + ROAD / 2 + 0.5, ns1 = s1 - ROAD / 2 - 0.5;
+          if (ns1 > ns0 + 2) {
+            nb.style(TEX.GLOWSTRIP, [0.10, 0.42, 0.70], 0.85);
+            this.ribbon(nb, axis, li, roadCenter(li), ns0, ns1, -hw + 0.24 - 0.9, -hw + 0.24 + 0.9, yOff + 0.016, 8, 1, 1);
+            this.ribbon(nb, axis, li, roadCenter(li), ns0, ns1, hw - 0.24 - 0.9, hw - 0.24 + 0.9, yOff + 0.016, 8, 1, 1);
+            nb.style(TEX.GLOWSTRIP, [0.55, 0.10, 0.38], 0.75);
+            this.ribbon(nb, axis, li, roadCenter(li), ns0, ns1, -0.7, 0.7, yOff + 0.016, 8, 1, 1);
+            nb.style(TEX.PLAIN, [0.30, 0.95, 1.40], 1.1);
+            this.ribbon(nb, axis, li, roadCenter(li), ns0, ns1, -hw + 0.18, -hw + 0.30, yOff + 0.022, 8, 1, 1);
+            this.ribbon(nb, axis, li, roadCenter(li), ns0, ns1, hw - 0.30, hw - 0.18, yOff + 0.022, 8, 1, 1);
+            nb.style(TEX.PLAIN, [1.45, 0.30, 0.95], 1.1);
+            this.ribbon(nb, axis, li, roadCenter(li), ns0, ns1, -0.30, -0.18, yOff + 0.022, 8, 1, 1);
+            this.ribbon(nb, axis, li, roadCenter(li), ns0, ns1, 0.18, 0.30, yOff + 0.022, 8, 1, 1);
+          }
+          // Orange marker posts along the verges of country lanes — the one
+          // place with nothing else to see the road by.
+          if (rk <= 2) {
+            nb.style(TEX.PLAIN, [1.35, 0.42, 0.10], 0.9);
+            for (let t = s0 + 9; t < s1 - 5; t += 22) {
+              for (const sd of [-1, 1]) {
+                const across = roadCenter(li) + this.bowAt(t, li, axis) + sd * (hw + 1.1);
+                const px = axis ? across : t, pz = axis ? t : across;
+                const py = this.groundY(px, pz);
+                for (const rot of [0, 1]) {
+                  const ox = rot ? 0.09 : 0, oz = rot ? 0 : 0.09;
+                  nb.quad([px - ox, py, pz - oz], [px + ox, py, pz + oz],
+                          [px + ox, py + 1.05, pz + oz], [px - ox, py + 1.05, pz - oz], 1, 1);
+                  nb.quad([px + ox, py, pz + oz], [px - ox, py, pz - oz],
+                          [px - ox, py + 1.05, pz - oz], [px + ox, py + 1.05, pz + oz], 1, 1);
+                }
+              }
             }
           }
         }
@@ -970,7 +1018,11 @@ class City {
       const [i, j] = rampCells[(rand() * rampCells.length) | 0];
       const horiz = rand() < 0.5;
       const along = roadCenter(horiz ? j : i) + (rand() - 0.5) * (CELL * 0.4);
-      const across = roadCenter(horiz ? i : j) - LANE;
+      // Against the kerb, tight to the building line, not marooned mid-lane:
+      // a ramp parked at the roadside reads as street furniture; the same
+      // wedge in the middle of the carriageway reads as a bug.
+      const across = roadCenter(horiz ? i : j) +
+                     (rand() < 0.5 ? -1 : 1) * (ROAD / 2 - w / 2 - 0.9);
       const x = horiz ? along : across;
       const z = horiz ? across : along;
       const yaw = horiz ? (rand() < 0.5 ? Math.PI / 2 : -Math.PI / 2) : (rand() < 0.5 ? 0 : Math.PI);
@@ -993,6 +1045,11 @@ class City {
     for (const bld of decals) {
       if (bld.empty) continue;
       this.decals.push(bld.upload(this.gl));
+    }
+    this.neon = [];
+    for (const bld of neons) {
+      if (bld.empty) continue;
+      this.neon.push(bld.upload(this.gl));
     }
 
     this.spawn = this.pickSpawn();

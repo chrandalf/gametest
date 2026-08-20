@@ -435,9 +435,9 @@ const TEX = {
   PLATE: 16,
   // Rural and light-industrial set, added for zoned worlds.
   FIELD: 17, DIRT: 18, TILE: 19, COTTAGE: 20, SIDING: 21, HOUSE: 22, WATER: 23,
-  FLARE: 24,
+  FLARE: 24, GLOWSTRIP: 25,
 };
-const TEX_COUNT = 25;
+const TEX_COUNT = 26;
 const TEX_SIZE = 256;
 
 function makeTextureArray(gl) {
@@ -972,6 +972,19 @@ function makeTextureArray(gl) {
     };
     streak(1.0, 0.055, 0.85);   // the long horizontal bar
     streak(0.05, 0.65, 0.5);    // a shorter vertical spike
+  };
+
+  painters[TEX.GLOWSTRIP] = () => {
+    // A soft light spill for neon road edging: bright down the middle of U,
+    // falling to black at both sides, constant along V. Drawn additively, so
+    // the black edges vanish and only the glow lands on the tarmac.
+    fill('#000000');
+    const g = ctx.createLinearGradient(0, 0, S, 0);
+    g.addColorStop(0.0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.5, 'rgba(255,255,255,1)');
+    g.addColorStop(1.0, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
   };
 
   const rgba = new Uint8Array(S * S * 4);
