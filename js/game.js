@@ -1368,8 +1368,11 @@ function environment() {
     // gradient on every retrowave sleeve ever printed.
     fogColor = mix3(mix3([0.82, 0.44, 0.74], [1.00, 0.46, 0.32], dusk),
                     [0.09, 0.035, 0.17], night);
+    // The night ambient is the difference between twilight and midnight:
+    // Retrowave's streets are near-black with violet in the corners, and
+    // the old value here lit the whole road like a blue dusk.
     ambColor = mix3(mix3([0.48, 0.42, 0.62], [0.44, 0.34, 0.60], dusk),
-                    [0.30, 0.25, 0.55], night);
+                    [0.13, 0.09, 0.27], night);
   }
 
   // Where the banded sun hangs. By day it is the sun; once the real one dips
@@ -1391,6 +1394,9 @@ function environment() {
     fogDensity: (game.isMap ? 0.0011 : 1) * lerp(0.0026, 0.0034, night),
     time: game.time,
     lights: collectLights(night),
+    // Wet-road reflection strength: the streets sweat neon after dark, and
+    // in retro mode they positively drip with it. Dry by day.
+    streak: night * (game.retro ? 1.5 : 0.55),
   };
 }
 
@@ -1415,13 +1421,18 @@ function collectLights(night) {
   // synthwave look done in one line.
   for (let i = 0; i < Math.min(22, nearby.length); i++) {
     const L = nearby[i].L;
-    let col = [1.12, 0.86, 0.52];
+    let col = [1.12, 0.86, 0.52], radius = 34, level = 1;
     if (game.retro) {
       col = (((L.x * 7 + L.z * 13) | 0) % 2) ? [1.15, 0.35, 0.95] : [0.25, 0.70, 1.25];
+      // Tight, dim pools: on the cassette sleeve the asphalt stays black
+      // and the lamp itself does the glowing (that part is the flare's
+      // job now). Wide overlapping pools painted the whole road cobalt.
+      radius = 24; level = 0.5;
     }
     out.push({
-      pos: [L.x, L.y, L.z], radius: 34,
-      color: [col[0] * intensity, col[1] * intensity, col[2] * intensity], dir: null,
+      pos: [L.x, L.y, L.z], radius,
+      color: [col[0] * intensity * level, col[1] * intensity * level,
+              col[2] * intensity * level], dir: null,
     });
   }
 
@@ -1485,9 +1496,10 @@ function render() {
   const cam = game.cam;
   const env = environment();
 
-  // Neon mode runs the bloom hotter: glow is the whole point.
+  // Neon mode runs the bloom hotter: glow is the whole point. After dark it
+  // gets hotter still — fat halos on every lamp are most of the arcade look.
   r.bloomStrength = game.retro ? 1.15 : 0.8;
-  r.bloomThreshold = game.retro ? 1.3 : 1.5;
+  r.bloomThreshold = game.retro ? (env.night > 0.3 ? 1.12 : 1.3) : 1.5;
 
   const aspect = r.resize();
   M4.perspective(m.proj, cam.fov * Math.PI / 180, aspect, 0.25, 1200);
@@ -1544,8 +1556,72 @@ function render() {
   game.chunksDrawn = drawn;
   drawActors(r, env, false);
   r.drawSky(env);
+  // Flares go after the sky: the sky writes no depth, so a flare hanging
+  // against it survives, while one behind a building still fails the test.
+  drawFlares(r, env);
   r.present(env);
   gl.bindVertexArray(null);
+}
+
+// Anamorphic lens flares on every live point light — street lamps, the neon
+// underglow, the objective beacon. Camera-facing quads wearing the FLARE
+// sprite, drawn additively; their emissive pushes them over the bloom
+// threshold, which is where the halo actually comes from.
+function drawFlares(r, env) {
+  if (env.night < 0.06 || !env.lights || !env.lights.length) return;
+  // The sky pass leaves its own program active, and setMaterial politely
+  // ignores anything that is not the scene program — so wake it first.
+  r.gl.useProgram(r.sceneProg);
+  r.prog = r.sceneProg;
+  // Rebuilt every frame, so it lives in a DynamicMesh: fixed buffers,
+  // refilled — a fresh upload() per frame would leak a VAO every 16ms.
+  if (!game.flareMesh) {
+    game.flareMesh = new DynamicMesh(r.gl, 26 * 4, 26 * 6);
+    game.flareBuilder = new MeshBuilder();
+  }
+  const b = game.flareBuilder;
+  b.reset();
+  const cp = env.camPos, ct = game.cam.target;
+  let fx = ct[0] - cp[0], fy = ct[1] - cp[1], fz = ct[2] - cp[2];
+  const fl = Math.hypot(fx, fy, fz) || 1;
+  fx /= fl; fy /= fl; fz /= fl;
+  let rx = -fz, rz = fx;
+  const rl = Math.hypot(rx, rz) || 1;
+  rx /= rl; rz /= rl;
+  let ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;
+  const ul = Math.hypot(ux, uy, uz) || 1;
+  ux /= ul; uy /= ul; uz /= ul;
+
+  let quads = 0;
+  for (const L of env.lights) {
+    const dx = L.pos[0] - cp[0], dy = L.pos[1] - cp[1], dz = L.pos[2] - cp[2];
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < 4 || d2 > 170 * 170) continue;
+    // Headlight cones flare only when they roughly face the camera.
+    if (L.dir) {
+      const dd = Math.sqrt(d2);
+      if ((dx * L.dir[0] + dy * L.dir[1] + dz * L.dir[2]) / dd > -0.25) continue;
+    }
+    const s = Math.min(3.2, 0.55 + L.radius * 0.055) * (1 + game.retro * 0.4);
+    // The flare borrows the lamp's hue but not its dimmed pool level — the
+    // fixture itself is the brightest thing on the street, whatever it
+    // deigns to spill on the tarmac.
+    const col = [Math.min(1, L.color[0] * 2.2), Math.min(1, L.color[1] * 2.2),
+                 Math.min(1, L.color[2] * 2.2)];
+    b.style(TEX.FLARE, col, 1.3);
+    const x = L.pos[0], y = L.pos[1], z = L.pos[2];
+    b.quad([x - rx * s - ux * s, y - uy * s, z - rz * s - uz * s],
+           [x + rx * s - ux * s, y - uy * s, z + rz * s - uz * s],
+           [x + rx * s + ux * s, y + uy * s, z + rz * s + uz * s],
+           [x - rx * s + ux * s, y + uy * s, z - rz * s + uz * s], 1, 1);
+    if (++quads >= 24) break;
+  }
+  if (!quads) return;
+  game.flareMesh.update(b);
+  r.beginAdditive();
+  r.setMaterial([1, 1, 1], 0, 0, 1);
+  r.draw(game.flareMesh, null);
+  r.endTranslucent();
 }
 
 const _m = M4.create(), _m2 = M4.create(), _m3 = M4.create();

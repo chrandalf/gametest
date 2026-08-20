@@ -435,8 +435,9 @@ const TEX = {
   PLATE: 16,
   // Rural and light-industrial set, added for zoned worlds.
   FIELD: 17, DIRT: 18, TILE: 19, COTTAGE: 20, SIDING: 21, HOUSE: 22, WATER: 23,
+  FLARE: 24,
 };
-const TEX_COUNT = 24;
+const TEX_COUNT = 25;
 const TEX_SIZE = 256;
 
 function makeTextureArray(gl) {
@@ -943,6 +944,34 @@ function makeTextureArray(gl) {
       }
     }
     noise(9);
+  };
+
+  painters[TEX.FLARE] = () => {
+    // A lens flare on black: bright core, wide soft halo, and an anamorphic
+    // cross of streaks. Drawn additively on billboards, so the black outside
+    // the glow adds nothing; the glow itself comes from the vertex emissive.
+    fill('#000000');
+    const cx = S / 2, cy = S / 2;
+    const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, S * 0.5);
+    core.addColorStop(0.00, 'rgba(255,255,255,1)');
+    core.addColorStop(0.10, 'rgba(255,255,255,0.75)');
+    core.addColorStop(0.30, 'rgba(255,255,255,0.16)');
+    core.addColorStop(1.00, 'rgba(255,255,255,0)');
+    ctx.fillStyle = core;
+    ctx.fillRect(0, 0, S, S);
+    const streak = (sx, sy, alpha) => {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(sx, sy);
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, S * 0.5);
+      g.addColorStop(0, `rgba(255,255,255,${alpha})`);
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(-S, -S, S * 2, S * 2);
+      ctx.restore();
+    };
+    streak(1.0, 0.055, 0.85);   // the long horizontal bar
+    streak(0.05, 0.65, 0.5);    // a shorter vertical spike
   };
 
   const rgba = new Uint8Array(S * S * 4);

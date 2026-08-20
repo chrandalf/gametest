@@ -184,7 +184,13 @@ void main() {
   float fog = 1.0 - exp(-pow(dist * uFogDensity, 2.0));
   color = mix(color, fogLin * (1.0 + uNight * 0.4), clamp(fog, 0.0, 1.0));
 
-  fragColor = vec4(color, uAlpha);
+  // The HDR target's alpha doubles as a wet-ground mask for the reflection
+  // streak pass: up-facing surfaces near street level. Blended draws (fading
+  // cars, glowing volumes) still own their alpha — only opaque geometry
+  // contributes to the mask.
+  float groundM = (1.0 - uSpriteMode) * step(0.75, N.y)
+                * (1.0 - smoothstep(0.6, 2.4, vWorld.y));
+  fragColor = vec4(color, mix(uAlpha, groundM, step(0.999, uAlpha)));
 }`;
 
 const DEPTH_VS = `#version 300 es
@@ -246,6 +252,10 @@ void main() {
   vec3 col = mix(horizon, zenith, pow(clamp(h, 0.0, 1.0), 0.55));
   col = mix(col, horizon * 0.75, smoothstep(0.0, -0.25, h));
 
+  // Retrowave nights are BLACK above the glow line: most of the frame shuts
+  // up so the neon can do the talking. The horizon band keeps its colour.
+  col = mix(col, col * 0.22, uRetro * uNight * smoothstep(0.03, 0.38, h));
+
   // Sun disc plus a wide bloom, warmed near the horizon.
   float sd = max(dot(dir, uSunDir), 0.0);
   col += uSunColor * pow(sd, 380.0) * 9.0 * (1.0 - uRetro * 0.75);
@@ -261,16 +271,22 @@ void main() {
     float sr = max(dot(dir, uRetroSun), 0.0);
     // Genuinely enormous: about twenty degrees across, so it towers over
     // the skyline the way it does on every cassette sleeve.
-    float disc = smoothstep(0.9860, 0.9880, sr);
+    float disc = smoothstep(0.9815, 0.9845, sr);
     float dy = dir.y - uRetroSun.y;
-    float stripes = smoothstep(-0.2, 0.4, sin(dy * 92.0 - uTime * 0.3));
-    float cut = mix(1.0, stripes, smoothstep(0.05, -0.045, dy));
-    vec3 sunCol = mix(vec3(1.65, 0.22, 0.62), vec3(1.7, 1.15, 0.30),
+    // Bands over most of the disc, and they cut to BLACK: the gaps showing
+    // dark sky through the sun is the whole cassette-sleeve trick.
+    float stripes = smoothstep(-0.05, 0.28, sin(dy * 92.0 - uTime * 0.3));
+    float cut = mix(1.0, stripes, smoothstep(0.10, -0.02, dy));
+    vec3 sunCol = mix(vec3(1.60, 0.20, 0.58), vec3(1.55, 0.95, 0.22),
                       smoothstep(-0.15, 0.11, dy));
-    col += sunCol * disc * cut * 1.65;
-    col += vec3(0.95, 0.20, 0.60) * pow(sr, 6.0) * 0.26;
+    // A faint scan shimmer inside the disc, like a picture on a tube.
+    sunCol *= 1.0 + 0.05 * sin(dir.y * 640.0 + uTime * 2.0);
+    col = mix(col, vec3(0.0), disc * 0.85);   // the disc owns its pixels
+    col += sunCol * disc * cut * 1.35;
+    // Halo outside the disc only — inside it would flood the black gaps.
+    col += vec3(0.95, 0.20, 0.60) * pow(sr, 6.0) * 0.45 * (1.0 - disc * 0.9);
     // After dark it gains the cyan halo of the arcade poster.
-    col += vec3(0.16, 0.80, 0.85) * pow(sr, 20.0) * (1.0 - disc) * 0.9 * uNight;
+    col += vec3(0.16, 0.80, 0.85) * pow(sr, 20.0) * (1.0 - disc) * 1.25 * uNight;
   }
 
   // Stars fade in after dusk.
@@ -287,7 +303,8 @@ void main() {
   // Soft horizon-hugging haze band.
   col = mix(col, uFogColor, smoothstep(0.16, 0.0, abs(h)) * 0.55);
 
-  fragColor = vec4(col, 1.0);
+  // Alpha 0: the sky is never wet ground, whatever the streak pass thinks.
+  fragColor = vec4(col, 0.0);
 }`;
 
 // Fullscreen pass shared by every post step.
@@ -335,11 +352,46 @@ void main() {
   fragColor = vec4(c, 1.0);
 }`;
 
+// Wet-road reflections, the cassette-sleeve way: march up the screen from
+// each pixel gathering bright emitters, so taillights, neon and the banded
+// sun all smear downward. Composite adds it only where the scene's alpha
+// says "street-level ground", which is what turns a smear into a puddle.
+const STREAK_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uTex;      // resolved scene: rgb colour, a = ground mask
+uniform vec2 uTexel;
+uniform float uTime;
+out vec4 fragColor;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+void main() {
+  vec3 acc = vec3(0.0);
+  float wsum = 0.0;
+  // A slow per-column wobble breaks the streaks into ripples.
+  float wob = (hash(vec2(floor(vUv.x / uTexel.x * 0.5), floor(uTime * 3.0))) - 0.5) * 2.0;
+  for (int k = 1; k <= 24; k++) {
+    float fk = float(k);
+    vec2 uv = vUv + vec2(wob * uTexel.x * fk * 0.10,
+                         (fk * 2.2 + fk * fk * 0.16) * uTexel.y);
+    vec3 s = texture(uTex, uv).rgb;
+    float lum = dot(s, vec3(0.2126, 0.7152, 0.0722));
+    float w = exp(-fk * 0.13);
+    // Only genuinely HDR-bright sources reflect — lamps, neon, the sun,
+    // taillights. A lower cut here smears the whole night sky down the
+    // road and floods the black asphalt the look depends on.
+    acc += s * (max(lum - 1.05, 0.0) / max(lum, 1e-3)) * w;
+    wsum += w;
+  }
+  fragColor = vec4(acc / wsum, 1.0);
+}`;
+
 const COMPOSITE_FS = `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uScene;
 uniform sampler2D uBloom;
+uniform sampler2D uStreakTex;
+uniform float uStreakAmt;
 uniform float uBloomStrength;
 uniform float uExposure;
 uniform float uNight;
@@ -363,7 +415,10 @@ void main() {
                     texture(uScene, vUv).g,
                     texture(uScene, vUv - ab).b);
   vec3 bloom = texture(uBloom, vUv).rgb;
-  vec3 c = scene + bloom * uBloomStrength;
+  // The wet-road streaks land only on pixels the scene flagged as ground.
+  float groundM = texture(uScene, vUv).a;
+  vec3 streak = texture(uStreakTex, vUv).rgb;
+  vec3 c = scene + bloom * uBloomStrength + streak * groundM * uStreakAmt;
   c *= uExposure;
   c = aces(c);
 
@@ -381,7 +436,10 @@ void main() {
     float gr = fract(sin(dot(vUv * 941.7 + fract(uTime * 7.0), vec2(12.9898, 78.233))) * 43758.5453);
     c += (gr - 0.5) * 0.04;
     // Shadows lean violet instead of black.
-    c = mix(c, c * vec3(1.02, 0.94, 1.10) + vec3(0.012, 0.0, 0.02), 1.0 - smoothstep(0.0, 0.4, l));
+    c = mix(c, c * vec3(1.02, 0.94, 1.10) + vec3(0.006, 0.0, 0.012), 1.0 - smoothstep(0.0, 0.4, l));
+    // And after dark they get crushed: the retrowave frame is mostly black,
+    // which is the only reason the neon reads as loud as it does.
+    c = pow(max(c, 0.0), vec3(1.0 + 0.22 * uNight));
   }
   vec2 d = vUv - 0.5;
   float vig = smoothstep(0.85, 0.28, dot(d, d) * 2.0);
@@ -425,6 +483,7 @@ class Renderer {
 
     this.brightProg = createProgram(gl, POST_VS, BRIGHT_FS, 'bright');
     this.blurProg = createProgram(gl, POST_VS, BLUR_FS, 'blur');
+    this.streakProg = createProgram(gl, POST_VS, STREAK_FS, 'streak');
     this.compositeProg = createProgram(gl, POST_VS, COMPOSITE_FS, 'composite');
     // RGBA16F render targets need this extension; without it we fall back to
     // 8-bit targets, which still tone map but cannot hold highlights.
@@ -471,6 +530,7 @@ class Renderer {
       gl.deleteRenderbuffer(t.msaaColor); gl.deleteRenderbuffer(t.msaaDepth);
       gl.deleteTexture(t.sceneTex);
       for (const b of t.bloom) { gl.deleteFramebuffer(b.fbo); gl.deleteTexture(b.tex); }
+      if (t.streak) { gl.deleteFramebuffer(t.streak.fbo); gl.deleteTexture(t.streak.tex); }
     }
     const maxSamples = gl.getParameter(gl.MAX_SAMPLES) || 0;
     const samples = Math.min(4, maxSamples);
@@ -511,8 +571,13 @@ class Renderer {
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
       bloom.push({ tex, fbo });
     }
+    const streakTex = mkTex(bw, bh);
+    const streakFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, streakFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, streakTex, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    this.targets = { w, h, bw, bh, msaaFbo, msaaColor, msaaDepth, resolveFbo, sceneTex, bloom };
+    this.targets = { w, h, bw, bh, msaaFbo, msaaColor, msaaDepth, resolveFbo, sceneTex, bloom,
+                     streak: { tex: streakTex, fbo: streakFbo } };
   }
 
   beginShadowPass(lightVP) {
@@ -652,6 +717,17 @@ class Renderer {
     this.setMaterial([1, 1, 1], 0, 1, 1);
   }
 
+  // Pure additive, for lens flares: black pixels add nothing, so the flare
+  // sprite needs no alpha at all. Depth-tested but not depth-written, so a
+  // flare pokes through nothing yet dies behind a wall like it should.
+  beginAdditive() {
+    const gl = this.gl;
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.depthMask(false);
+    gl.disable(gl.CULL_FACE);
+  }
+
   draw(mesh, model) {
     const gl = this.gl;
     const p = this.prog;
@@ -705,6 +781,24 @@ class Renderer {
       }
     }
 
+    // The wet-road streak buffer, gathered straight from the resolved scene.
+    const streakAmt = env.streak || 0;
+    if (streakAmt > 0.001) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, t.streak.fbo);
+      gl.viewport(0, 0, t.bw, t.bh);
+      gl.useProgram(this.streakProg);
+      gl.bindTexture(gl.TEXTURE_2D, t.sceneTex);
+      gl.uniform1i(this.streakProg.u.uTex, 0);
+      gl.uniform2f(this.streakProg.u.uTexel, 1 / t.bw, 1 / t.bh);
+      gl.uniform1f(this.streakProg.u.uTime, env.time || 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    } else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, t.streak.fbo);
+      gl.viewport(0, 0, t.bw, t.bh);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, t.w, t.h);
     gl.useProgram(this.compositeProg);
@@ -714,6 +808,10 @@ class Renderer {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, t.bloom[0].tex);
     gl.uniform1i(this.compositeProg.u.uBloom, 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, t.streak.tex);
+    gl.uniform1i(this.compositeProg.u.uStreakTex, 2);
+    gl.uniform1f(this.compositeProg.u.uStreakAmt, streakAmt);
     gl.uniform1f(this.compositeProg.u.uBloomStrength, this.hdr ? this.bloomStrength : this.bloomStrength * 0.5);
     gl.uniform1f(this.compositeProg.u.uExposure, this.exposure);
     gl.uniform1f(this.compositeProg.u.uNight, env.night);
