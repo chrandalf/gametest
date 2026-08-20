@@ -15,16 +15,19 @@ const GRAVITY = 9.81;
 // of the nose up over the scuttle, a low flat roof, and a tall kamm tail cut
 // off dead square. Corner radii are kept tight: this body is all creases,
 // which is exactly what a DeLorean or an Esprit is.
+// Sculpted to the Vortex Turbo reference sheet: a longer, lower nose with
+// real overhang past the front axle, and the wedge line falling in one
+// unbroken crease from the scuttle to the blade.
 const CAR_SECTIONS = [
   [-2.30, 0.86, 0.42, 0.96, 0.10],   // kamm tail: tall, flat, abrupt
   [-2.05, 0.93, 0.36, 1.01, 0.10],
   [-1.45, 0.97, 0.33, 1.05, 0.10],
   [-0.60, 0.98, 0.33, 1.03, 0.10],
-  [ 0.20, 0.97, 0.33, 0.97, 0.10],
-  [ 0.95, 0.94, 0.33, 0.86, 0.09],   // the wedge line dives at the scuttle
-  [ 1.60, 0.88, 0.34, 0.74, 0.08],   // ...but clears the front wheel arch
-  [ 2.05, 0.78, 0.36, 0.56, 0.06],
-  [ 2.30, 0.62, 0.40, 0.48, 0.04],   // blade nose
+  [ 0.25, 0.97, 0.33, 0.96, 0.10],
+  [ 1.00, 0.94, 0.33, 0.84, 0.09],   // the wedge line dives at the scuttle
+  [ 1.70, 0.89, 0.33, 0.68, 0.07],   // ...but clears the front wheel arch
+  [ 2.20, 0.80, 0.34, 0.52, 0.05],
+  [ 2.46, 0.66, 0.38, 0.44, 0.03],   // low blade nose, proper overhang
 ];
 
 // The greenhouse: low, angular, the windscreen raked to carry the bonnet
@@ -151,19 +154,55 @@ function buildCarMeshes(gl) {
     paint.style(TEX.METAL, [1, 1, 1], -0.001);   // negative emissive = glossy material
     loft(paint, CAR_SECTIONS, { steps: 4 });
     paint.style(TEX.PLAIN, [0.13, 0.13, 0.15], 0);
-    paint.chamferBox(0, 0.40, 2.28, 0.86, 0.11, 0.11, 0.06, { perUnit: 1 });   // front blade bumper
+    paint.chamferBox(0, 0.40, 2.44, 0.86, 0.11, 0.11, 0.06, { perUnit: 1 });   // front blade bumper
     paint.chamferBox(0, 0.46, -2.36, 0.88, 0.13, 0.10, 0.06, { perUnit: 1 });  // rear bumper
+    // Black rocker band along the sills: the reference body is red over a
+    // dark lower third, and the band is what makes the wedge look low.
+    for (const s of [-1, 1]) {
+      paint.box(s * 0.945, 0.375, 0.05, 0.05, 0.055, 1.55, { perUnit: 1 });
+    }
+    // Pop-up headlight housings, up and proud on the bonnet. Body-coloured
+    // like the sheet; the lamp faces live in the lights mesh so they glow.
+    paint.style(TEX.METAL, [1, 1, 1], -0.001);
+    for (const s of [-1, 1]) {
+      paint.chamferBox(s * 0.47, 0.745, 1.50, 0.235, 0.075, 0.155, 0.025, { perUnit: 1 });
+    }
     // Louvres over the engine deck — the single most DeLorean thing a car
     // can wear. Slats step down toward the tail.
     paint.style(TEX.PLAIN, [0.10, 0.10, 0.12], 0);
     for (let k = 0; k < 5; k++) {
       paint.box(0, 1.06 - k * 0.015, -1.62 - k * 0.15, 0.78, 0.017, 0.055, { perUnit: 1 });
     }
+    // Gill strakes on the rear flank, ahead of the wheel: four black slats
+    // a hair proud of the panel, stacked up the side.
+    for (const s of [-1, 1]) {
+      for (let k = 0; k < 4; k++) {
+        paint.box(s * 0.965, 0.52 + k * 0.105, -0.72, 0.035, 0.038, 0.30, { perUnit: 1 });
+      }
+    }
     // Grid dividers over the tail lamp bar, so it reads as a bank of cells.
     for (const s of [-1, 1]) {
       for (let k = 0; k < 3; k++) {
         paint.box(s * (0.16 + k * 0.24), 0.80, -2.355, 0.022, 0.14, 0.02, { perUnit: 1 });
       }
+    }
+    // Horizontal slats across the lamp bar: the reference tail is a bank of
+    // glowing louvres, and two dark lines are the whole difference.
+    for (const s of [-1, 1]) {
+      for (const y of [0.765, 0.835]) {
+        paint.box(s * 0.455, y, -2.388, 0.40, 0.009, 0.012, { perUnit: 1 });
+      }
+    }
+    // The wing: body-coloured blade held over the tail on two dark struts.
+    for (const s of [-1, 1]) {
+      paint.box(s * 0.60, 1.075, -2.04, 0.045, 0.085, 0.045, { perUnit: 1 });
+    }
+    paint.style(TEX.METAL, [1, 1, 1], -0.001);
+    paint.chamferBox(0, 1.175, -2.06, 0.88, 0.032, 0.20, 0.02, { perUnit: 1 });
+    // Twin exhaust pairs under the rear bumper.
+    paint.style(TEX.METAL, [0.62, 0.63, 0.66], 0);
+    for (const x of [-0.46, -0.32, 0.32, 0.46]) {
+      paint.cylinder(x, 0.34, -2.44, 0.045, 0.14, 8, { axis: 'z' });
     }
     // Wing mirrors — small, but their absence is very noticeable.
     paint.style(TEX.METAL, [1, 1, 1], 0);
@@ -178,7 +217,9 @@ function buildCarMeshes(gl) {
 
   const buildGlass = () => {
     const glass = new MeshBuilder();
-    glass.style(TEX.PLAIN, [0.11, 0.15, 0.21], -0.001);
+    // Near-black canopy: on the sheet the greenhouse reads as one dark
+    // wraparound band, not a pale blue tint.
+    glass.style(TEX.PLAIN, [0.08, 0.11, 0.16], -0.001);
     loft(glass, CABIN_SECTIONS, { steps: 4 });
     return glass;
   };
@@ -186,11 +227,13 @@ function buildCarMeshes(gl) {
   const glassWreck = buildGlass();
   crumpleMesh(glassWreck, 0.05);
 
-  // Wide rectangular lamps set low in the nose, in the pop-up position.
+  // Lamp faces on the raised pop-ups, plus the small square driving lamps
+  // set low in the bumper — both banks light up together after dark.
   const lights = new MeshBuilder();
   lights.style(TEX.PLAIN, [1.0, 0.96, 0.85], 0);
   for (const s of [-1, 1]) {
-    lights.chamferBox(s * 0.44, 0.49, 2.22, 0.25, 0.055, 0.05, 0.03, { perUnit: 1 });
+    lights.chamferBox(s * 0.47, 0.755, 1.645, 0.20, 0.052, 0.02, 0.015, { perUnit: 1 });
+    lights.chamferBox(s * 0.44, 0.435, 2.485, 0.16, 0.05, 0.03, 0.02, { perUnit: 1 });
   }
 
   // The full-width tail bar across the kamm tail — the eighties rear end.
@@ -200,11 +243,17 @@ function buildCarMeshes(gl) {
     tail.chamferBox(s * 0.455, 0.80, -2.335, 0.40, 0.115, 0.045, 0.03, { perUnit: 1 });
   }
 
+  // Tyre, dark dish, then a five-sided hub: the pentagon's corners read as
+  // spokes at street distance, and the wheels genuinely spin, so they turn.
   const wheel = new MeshBuilder();
   wheel.style(TEX.PLAIN, [0.09, 0.09, 0.10], 0);
   wheel.cylinder(0, 0, 0, 0.40, 0.30, 20, { axis: 'x', uRepeat: 6, vRepeat: 1 });
-  wheel.style(TEX.METAL, [0.78, 0.79, 0.82], 0);
-  wheel.cylinder(0, 0, 0, 0.235, 0.315, 16, { axis: 'x', uRepeat: 6, vRepeat: 1 });
+  wheel.style(TEX.METAL, [0.42, 0.42, 0.45], 0);
+  wheel.cylinder(0, 0, 0, 0.25, 0.31, 16, { axis: 'x', uRepeat: 6, vRepeat: 1 });
+  wheel.style(TEX.METAL, [0.85, 0.86, 0.89], 0);
+  wheel.cylinder(0, 0, 0, 0.21, 0.325, 5, { axis: 'x', uRepeat: 5, vRepeat: 1 });
+  wheel.style(TEX.METAL, [0.60, 0.61, 0.64], 0);
+  wheel.cylinder(0, 0, 0, 0.065, 0.34, 8, { axis: 'x' });
 
   return {
     paint: paint.upload(gl),
@@ -214,7 +263,7 @@ function buildCarMeshes(gl) {
     lights: lights.upload(gl),
     tail: tail.upload(gl),
     wheel: wheel.upload(gl),
-    plates: buildPlateMesh(gl, 2.395, -2.355, 0.33, 0.44),
+    plates: buildPlateMesh(gl, 2.555, -2.355, 0.33, 0.44),
   };
 }
 
