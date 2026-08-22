@@ -30,6 +30,7 @@ import { Mission, OFFENCES } from './mission.mjs';
 import { Signals } from './lights.mjs';
 import { Peds } from './peds.mjs';
 import { Coast } from './outrun.mjs';
+import { Pickups } from './pickups.mjs';
 import { Sound } from './sound.mjs';
 
 // The artifact sandbox's permissions policy forbids the Gamepad API, and
@@ -230,7 +231,8 @@ function tileAt(x, z) {
   // traffic signals, the palms - joins the same tiles, so a district that
   // is switched off is switched off entirely.
   const DYNAMIC = new Set(['p', 'w', 'ped', 'pedh', 'tr', 'sky', 'r',
-                           'dsky', 'sun', 'g', 'static', 'car']);
+                           'dsky', 'sun', 'g', 'static', 'car',
+                           'cass', 'case']);
   for (const msh of scene.meshes) {
     if (DYNAMIC.has(msh.name) || !msh.material || !msh.isEnabled(false)) continue;
     // Same rule as the merged geometry: anything longer than a couple of
@@ -266,7 +268,8 @@ function updateDistricts(px, pz) {
 // ground and the near-coplanar road slabs into itself for nothing.
 const CAR_PARTS = new Set(['p', 'w']);
 for (const msh of scene.meshes) {
-  if (CAR_PARTS.has(msh.name) || msh.name === 'pal' || msh.name === 'sun') continue;
+  if (CAR_PARTS.has(msh.name) || msh.name === 'pal' || msh.name === 'sun' ||
+      msh.name === 'cass' || msh.name === 'case') continue;
   msh.freezeWorldMatrix();
   msh.doNotSyncBoundingInfo = true;
 }
@@ -506,6 +509,7 @@ const signals = new Signals(scene, net);
   }
 }
 const peds = new Peds(scene, net, 42);
+const pickups = new Pickups(scene, net, hud);
 
 // Every cruiser gets a lightbar; pursuit strobes them blue/red.
 const beaconMats = [];
@@ -569,6 +573,22 @@ const playerPrev = { e: null, dir: 0, s: 0 };
 let speedTattleT = 0;
 mission.onScore = (n) => { run.score += n; };
 coast.onScore = (n) => { run.score += n; };
+// Pickups: the tape deck and the briefcase.
+pickups.onCassette = (left) => {
+  run.score += 120;
+  sound.next();
+  hud.say(left ? `CASSETTE FOUND · +120 · ${left} STILL OUT THERE`
+                : 'EVERY CASSETTE FOUND · +120 · SIDE B FOREVER', true);
+};
+pickups.onCase = () => {
+  run.score += 250;
+  sound.chime();
+  hud.say('BRIEFCASE RECOVERED · +250', true);
+};
+pickups.onCaseLost = () => hud.say('THE LAW GOT TO THE BRIEFCASE FIRST');
+mission.onDrop = (x, y, z) => pickups.dropCase(x, y, z);
+// A fresh six every level, somewhere new.
+mission.onLevel = (level) => pickups.scatter(level);
 
 // ---- the gun: hitscan forward, tracer pooled ---------------------------
 const tracers = [];
@@ -614,6 +634,10 @@ function firePlayerGun(dt) {
   };
   const T = mission.target;
   consider(T, T.pos.x, T.pos.z, 'target', T.pos.y);
+  if (mission.van) {
+    const V = mission.van;
+    consider(V, V.pos.x, V.pos.z, 'van', V.pos.y);
+  }
   for (const p of mission.police) consider(p, p.pos.x, p.pos.z, 'police', p.pos.y);
   for (const d of traffic) consider(d, d.pos.x, d.pos.z, 'traffic', d.pos.y);
   for (const p of peds.list) {
@@ -624,7 +648,10 @@ function firePlayerGun(dt) {
   const hx = mx + fx * bestD, hz = mz + fz * bestD;
   showTracer(mx, mz, hx, hz, player.pos.y + 0.8);
   if (!best) return;
-  if (bestKind === 'target') {
+  if (bestKind === 'van') {
+    mission.damageVan(0.5, player);
+    run.score += 25;
+  } else if (bestKind === 'target') {
     mission.damageTarget(0.5, player);
     run.score += 25;
   } else if (bestKind === 'police') {
@@ -703,6 +730,7 @@ let shake = 0;
 const hitCooldown = new Map();
 function updateCollisions(dt, clock) {
   const everyone = [player, ...traffic, mission.target, ...mission.police];
+  if (mission.van) everyone.push(mission.van);
   for (let i = 0; i < everyone.length; i++) {
     for (let j = i + 1; j < everyone.length; j++) {
       const a = everyone[i], b = everyone[j];
@@ -1006,6 +1034,7 @@ const tick = (dt) => {
       else b.tex.uOffset = (b.tex.uOffset + b.speed * dt) % 1;
     }
   }
+  pickups.update(dt, player);
   updateDistricts(player.pos.x, player.pos.z);
   coast.update(dt, player, clock, mission.wanted);
   sound.update(dt, Math.min(1, player.speed / 55), turbo.active, mission.wanted > 0);
@@ -1028,7 +1057,8 @@ const tick = (dt) => {
   scoreEl.textContent = String(Math.round(run.score)).padStart(6, '0');
   healthBar.style.width = Math.max(0, run.health) + '%';
 
-  hud.update(dt, player, [...traffic, ...mission.mapEntries(), ...coast.mapEntries()]);
+  hud.update(dt, player, [...traffic, ...mission.mapEntries(),
+                          ...coast.mapEntries(), ...pickups.mapEntries()]);
   fuelBar.style.width = tank.fuel.toFixed(0) + '%';
   fuelBar.style.background = tank.fuel < 25 ? '#ff5a4d' : '#ffd34d';
   turboBar.style.width = (turbo.charge * 100).toFixed(0) + '%';
@@ -1037,8 +1067,14 @@ const tick = (dt) => {
     const ang = Math.atan2(bp.x - player.pos.x, bp.z - player.pos.z) - player.pos.yaw;
     tgtEl.style.transform = 'rotate(' + ang.toFixed(2) + 'rad)';
     const dTgt = Math.hypot(bp.x - player.pos.x, bp.z - player.pos.z);
-    tgtdEl.textContent = (mission.state === 'locate' ? 'LAST SEEN ' : '') +
-      Math.round(dTgt) + 'm';
+    const secs = pickups.caseSeconds();
+    const van = mission.van
+      ? ' · VAN ' + Math.round(Math.hypot(mission.van.pos.x - player.pos.x,
+                                          mission.van.pos.z - player.pos.z)) + 'm'
+      : '';
+    tgtdEl.textContent = secs
+      ? 'BRIEFCASE · ' + secs + 's'
+      : (mission.state === 'locate' ? 'LAST SEEN ' : '') + Math.round(dTgt) + 'm' + van;
     tgtBox.style.opacity = mission.state === 'done' ? 0 : 1;
     tgtBox.style.color = mission.state === 'locate' ? '#ff9a8a' : '#ff5a4d';
   } else {
@@ -1051,7 +1087,7 @@ scene.onBeforeRenderObservable.add(() =>
   tick(Math.min(0.05, engine.getDeltaTime() / 1000)));
 
 // Handles for tests and the console.
-window.game = { player, traffic, net, hud, tick, mission, coast, tiles };
+window.game = { player, traffic, net, hud, tick, mission, coast, tiles, pickups };
 
 // ---- intro screen -------------------------------------------------------
 {

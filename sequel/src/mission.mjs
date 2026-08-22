@@ -62,6 +62,12 @@ export class Mission {
     this.busted = false;
     this.shots = [];                 // AI shots for main to render/apply
     this.police = [];
+    // The exchange: from level two the coupe is not merely running, it is
+    // going somewhere. An armoured van is bringing the drop, and if the two
+    // of them meet the coupe leaves the meeting stronger than it arrived.
+    this.van = null;
+    this.exchangeT = 0;
+    this.dropDone = false;
     this.spawnTarget();
     this.ensurePolice();
     this.announce();
@@ -85,6 +91,46 @@ export class Mission {
                                      new Color3(0.75, 0.06, 0.05));
     }
     this.target = d;
+    this.spawnVan();
+  }
+
+  spawnVan() {
+    this.exchangeT = 0;
+    this.dropDone = false;
+    if (this.level < 2) { this.van = null; if (this.vanCar) this.vanCar.root.setEnabled(false); return; }
+    const net = this.net;
+    const roads = net.edges.filter(e => e.cls === 'avenue' || e.cls === 'highway');
+    const e = roads[((roads.length * (0.61 + this.level * 0.13)) | 0) % roads.length];
+    const d = new Driver(net, e, -1, 0, e.len * 0.6);
+    d.thinkT = 0;
+    d.health = 4 + this.level;
+    d.maxHealth = d.health;
+    if (!this.vanCar) {
+      this.vanCar = this.buildCar(new Color3(0.06, 0.10, 0.07), true,
+                                  new Color3(0.9, 0.75, 0.15));
+    }
+    this.vanCar.root.setEnabled(true);
+    this.van = d;
+  }
+
+  damageVan(n, player) {
+    const v = this.van;
+    if (!v) return;
+    v.health -= n;
+    if (v.health > 0) {
+      this.hud.say(`VAN HIT · ${v.health} MORE`);
+      return;
+    }
+    // The drop never arrives. That is worth more than the coupe is.
+    const bonus = 300 * this.level;
+    if (this.onScore) this.onScore(bonus);
+    this.hud.say(`DROP STOPPED · +${bonus} — THE COUPE IS ON ITS OWN`, true);
+    this.van = null;
+    this.vanCar.root.setEnabled(false);
+    // A courier with nothing to collect runs for its life.
+    this.target.stateName = 'fleeing';
+    this.target.suspicion = 9;
+    if (this.state === 'locate') this.state = 'intercept';
   }
 
   policeWanted() { return Math.min(1 + this.wanted, 5); }
@@ -114,7 +160,8 @@ export class Mission {
   announce() {
     const q = quadrantName(this.target.pos.x, this.target.pos.z, this.net.extent);
     this.hud.say(`LEVEL ${this.level} · LOCATE BLACK COUPE · LAST SEEN ${q}` +
-      (this.target.armoured ? ' · ARMOURED' : ''), true);
+      (this.target.armoured ? ' · ARMOURED' : '') +
+      (this.van ? ' · A VAN IS BRINGING THE DROP' : ''), true);
   }
 
   // ------------------------------------------------------------ wanted ----
@@ -167,6 +214,9 @@ export class Mission {
   onPlayerImpact(other, speed, player, pedsNear) {
     if (other === this.target && this.state !== 'done') {
       if (speed > 6) this.damageTarget(1, player);
+    } else if (other === this.van) {
+      // Loaded and armoured: ramming it hurts you more than it.
+      if (speed > 6) this.damageVan(0.6, player);
     } else if (this.police.includes(other)) {
       const o = OFFENCES.assault;
       this.bumpWanted(o.stars, o.why, o.cap);
@@ -205,6 +255,8 @@ export class Mission {
       const bonus = this.cleanHands ? 250 : 0;
       if (this.onScore) this.onScore(base + bonus);
       this.hud.say(`TARGET DISABLED · +${base}${bonus ? ' · CLEAN +250' : ''}`, true);
+      // Whatever it was carrying is now lying in the road.
+      if (this.onDrop) this.onDrop(t.pos.x, t.pos.y, t.pos.z);
     }
   }
 
@@ -284,7 +336,9 @@ export class Mission {
       t.thinkT = fleeing ? 0.55 : 3.5;
       tInd = fleeing
         ? chooseTurn(t, player.pos.x, player.pos.z, true)
-        : (Math.random() < 0.5 ? 'straight' : Math.random() < 0.5 ? 'left' : 'right');
+        : this.van
+          ? chooseTurn(t, this.van.pos.x, this.van.pos.z, false)
+          : (Math.random() < 0.5 ? 'straight' : Math.random() < 0.5 ? 'left' : 'right');
     }
     const fleeMult = 1.45 + this.level * 0.07;
     const tCap = this.state === 'done' ? 0
@@ -301,6 +355,45 @@ export class Mission {
       if (t.fireT <= 0 && dp < 34) {
         t.fireT = 0.9;
         this.shots.push({ from: t.pos, to: player.pos, hurt: 4, kind: 'target' });
+      }
+    }
+
+    // ---------------- the van, and the exchange -------------------------
+    if (this.van) {
+      const v = this.van;
+      v.thinkT -= dt;
+      let vInd;
+      if (v.thinkT <= 0) {
+        v.thinkT = 2.2;
+        // It is driving to the meeting, not away from you.
+        vInd = chooseTurn(v, t.pos.x, t.pos.z, false);
+      }
+      v.update(dt, { throttle: 1, steer: 0, indicate: vInd,
+                     maxSpeed: CLASSES[v.e.cls].limit * 0.8 });
+      if (v.blocked) v.beginUTurn();
+      this.vanCar.root.position.set(v.pos.x, v.pos.y, v.pos.z);
+      this.vanCar.root.rotation.y = v.pos.yaw;
+
+      // Close enough for long enough and the drop goes through.
+      const meet = dist(t, v);
+      if (meet < 26 && this.state !== 'done') {
+        this.exchangeT += dt;
+        if (this.exchangeT > 1 && this.exchangeT - dt <= 1) {
+          this.hud.say('THEY ARE MAKING THE EXCHANGE — BREAK IT UP', true);
+        }
+        if (this.exchangeT > 4 && !this.dropDone) {
+          this.dropDone = true;
+          this.cleanHands = false;
+          t.armoured = true;
+          t.health = t.maxHealth = t.health + 3 + this.level;
+          t.stateName = 'fleeing';
+          t.suspicion = 9;
+          this.hud.say('THE DROP WENT THROUGH — THE COUPE IS ARMOURED NOW', true);
+          this.van = null;
+          this.vanCar.root.setEnabled(false);
+        }
+      } else {
+        this.exchangeT = Math.max(0, this.exchangeT - dt * 0.6);
       }
     }
 
@@ -342,11 +435,12 @@ export class Mission {
     // ---------------- loop ---------------------------------------------
     if (this.state === 'done') {
       this.doneT += dt;
-      if (this.doneT > 7) {
+      if (this.doneT > 9) {
         this.level += 1;
         this.state = 'locate';
         this.cleanHands = true;
         this.spawnTarget();
+        if (this.onLevel) this.onLevel(this.level);
         this.announce();
       }
     }
@@ -356,6 +450,7 @@ export class Mission {
 
   mapEntries() {
     const out = this.police.map(p => ({ pos: p.pos, mapColour: 'rgba(90, 160, 255, 0.95)' }));
+    if (this.van) out.push({ pos: this.van.pos, mapColour: 'rgba(255, 190, 60, 0.95)' });
     if (this.state !== 'locate') {
       out.push({ pos: this.target.pos, mapColour: 'rgba(255, 70, 70, 0.95)' });
     } else if (this.lastSeen) {

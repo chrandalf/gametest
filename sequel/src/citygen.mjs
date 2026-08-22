@@ -774,6 +774,10 @@ export function buildCity(scene, net, mirror) {
 
   // ---- gantry signs pointing at the coast highway ----------------------
   {
+    // The arrow points UP, not sideways. A sideways arrow has to be
+    // mirrored on the back face to keep pointing at the same place, and it
+    // was never right anyway: the gantry sits on the approach to the ring,
+    // so from either side the coast road is straight on.
     const signTex = (() => {
       const dt = new DynamicTexture('hwsg', { width: 512, height: 128 }, scene, true);
       const x = dt.getContext();
@@ -782,7 +786,7 @@ export function buildCity(scene, net, mirror) {
       x.fillStyle = '#e8f2ff';
       x.font = '800 56px system-ui, sans-serif';
       x.textAlign = 'center'; x.textBaseline = 'middle';
-      x.fillText('COAST HWY \u2192', 256, 64);
+      x.fillText('COAST HWY \u2191', 256, 64);
       dt.update();
       return dt;
     })();
