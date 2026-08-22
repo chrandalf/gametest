@@ -2,9 +2,10 @@
 //
 // Wanted works the 1986-street way: it is not what you did, it is who saw
 // you do it. Police witnesses raise stars on the spot; civilian witnesses
-// take a while to find a phone box. More stars, more cruisers; three stars
-// and they ram; four and they shoot. You get clean by staying unseen for a
-// long minute per star, or by buying a respray where nobody is looking.
+// take a while to find a phone box. More stars, more cruisers. One or two
+// stars they tail you and wait; three and they ram; four and they shoot.
+// You get clean by staying unseen most of a minute per star, or by buying
+// a respray where nobody is looking.
 'use strict';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { CLASSES, nodeAhead, headingSlot, turnOptions } from './network.mjs';
@@ -100,6 +101,7 @@ export class Mission {
     this.target = d;
     this.lastSeen = null;
     this.searchPoint = null;
+    this.sightingT = 8;              // the radio's first report comes early
     this.spawnVan();
   }
 
@@ -232,7 +234,10 @@ export class Mission {
       // Loaded and armoured: ramming it hurts you more than it.
       if (speed > 6) this.damageVan(0.6, player);
     } else if (this.police.includes(other)) {
-      if (!atFault) return;
+      // Same bar as ramming a civilian: it has to be a hit, not a nudge.
+      // Cruisers on surveillance crowd you on purpose, and brushing one at
+      // parking speed must not be the assault that starts the shooting.
+      if (!atFault || speed <= 8) return;
       const o = OFFENCES.assault;
       this.bumpWanted(o.stars, o.why, o.cap);
       this.cleanHands = false;
@@ -308,16 +313,37 @@ export class Mission {
     if (this.wanted > 0) {
       if (this.nearestPoliceDist(player) > 65) {
         this.unseenT += dt;
-        if (this.unseenT > 60) {
+        if (this.unseenT > 45) {
           this.bumpWanted(-1, '');
           this.hud.say(this.wanted > 0
             ? `HEAT FADING · WANTED ${'★'.repeat(this.wanted)}` : 'HEAT GONE — CLEAN', false);
-          this.unseenT = 30;      // each further star drops faster
+          this.unseenT = 25;      // each further star drops faster
         }
       } else this.unseenT = Math.max(0, this.unseenT - dt * 2);
     }
 
     // ---------------- target ------------------------------------------
+    // The radio: while you are hunting, somebody phones in roughly where
+    // the coupe is every so often. Without this the briefing's one fixed
+    // "last seen" goes stale the moment the coupe drives off, and the
+    // search is an orbit round an empty district that only luck ends -
+    // the bot proved it by never finding the target in two whole runs.
+    // Turbo Esprit did it with police radio reports; so does this.
+    if (this.state === 'locate') {
+      this.sightingT = (this.sightingT ?? 8) - dt;
+      if (this.sightingT <= 0) {
+        this.sightingT = 20;
+        // A neighbourhood, not a grid reference: the jitter keeps the last
+        // fifty metres a hunt.
+        this.lastSeen = { x: t.pos.x + (Math.random() - 0.5) * 120,
+                          z: t.pos.z + (Math.random() - 0.5) * 120 };
+        const q = this.districtAt ? this.districtAt(t.pos.x, t.pos.z) : '';
+        if (q && q !== this.calledQ) {
+          this.calledQ = q;
+          this.hud.say(`RADIO · COUPE SPOTTED ${q}`);
+        }
+      }
+    } else this.calledQ = null;
     if (this.state !== 'done') {
       const dp = dist(t, player);
       if (this.state === 'locate' && dp < 45) {
@@ -419,14 +445,18 @@ export class Mission {
       const dp = dist(p, player);
       if (this.wanted > 0) {
         if (p.thinkT <= 0) {
-          p.thinkT = this.wanted >= 3 ? 0.3 : 0.55;
+          p.thinkT = this.wanted >= 3 ? 0.3 : 0.9;
           pInd = chooseTurn(p, player.pos.x, player.pos.z, false);
         }
       } else if (p.thinkT <= 0) {
         p.thinkT = 4;
         pInd = Math.random() < 0.6 ? 'straight' : Math.random() < 0.5 ? 'left' : 'right';
       }
-      const aggr = this.wanted >= 3 ? 1.85 : this.wanted > 0 ? 1.6 : 0.9;
+      // One or two stars is surveillance, not a demolition derby: they
+      // shadow you at a civil pace and wait for you to stop somewhere
+      // stupid. Only from three stars do they drive THROUGH you - which is
+      // what the ladder has promised all along.
+      const aggr = this.wanted >= 3 ? 1.85 : this.wanted > 0 ? 1.12 : 0.9;
       p.update(dt, { throttle: 1, steer: 0, indicate: pInd,
                      maxSpeed: CLASSES[p.e.cls].limit * aggr });
       if (p.blocked) p.beginUTurn();
@@ -438,9 +468,12 @@ export class Mission {
           this.shots.push({ from: p.pos, to: player.pos, hurt: 6, kind: 'police' });
         }
       }
-      // Busted: pinned slow at two stars or more. Stopped in a garage is
-      // not pinned.
-      if (this.wanted >= 2 && dp < 7 && player.speed < 3 && !this.playerSafe) {
+      // Busted: pinned slow at three stars or more. Stopped in a garage is
+      // not pinned - and neither is waiting at a red on two stars, because
+      // obeying the law must never be what hands you to it. Traffic
+      // offences cap at two stars, so a bust always traces back to
+      // violence.
+      if (this.wanted >= 3 && dp < 7 && player.speed < 3 && !this.playerSafe) {
         p.bustT += dt;
         if (p.bustT > 2.5) this.busted = true;
       } else p.bustT = 0;

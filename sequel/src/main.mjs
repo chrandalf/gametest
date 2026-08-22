@@ -82,8 +82,27 @@ hemi.intensity = 0.22;
 hemi.diffuse = new Color3(0.45, 0.35, 0.75);
 hemi.groundColor = new Color3(0.05, 0.02, 0.1);
 
+// ---- the four cities ----------------------------------------------------
+// Turbo Esprit shipped four towns and let you choose before you set off;
+// so does this. The seed IS the town: block sizes, where the avenues run,
+// which streets exist, where the garages are, how the districts fall. The
+// choice rides in the URL hash so a restart stays in the same town and
+// switching is a clean reload into a different one.
+const CITIES = [
+  { name: 'NEON CITY',    seed: 19860508 },
+  { name: 'SODIUM BAY',   seed: 19870127 },
+  { name: 'VELVET SHORE', seed: 19881104 },
+  { name: 'MERIDIAN',     seed: 19900615 },
+];
+let cityIdx = 0;
+{
+  const m = /city(\d)/.exec(location.hash || '');
+  if (m) cityIdx = Math.min(CITIES.length - 1, +m[1] || 0);
+}
+const CITY = CITIES[cityIdx];
+
 // The network first: the backdrop wraps whatever size the city came out.
-const net = buildNetwork();
+const net = buildNetwork(CITY.seed);
 
 // ------------------------------------------------------------- backdrop ----
 const mid = Math.max(net.extent.x, net.extent.z) / 2;
@@ -169,7 +188,7 @@ mirror.level = 0.8;
 mirror.refreshRate = 2;
 mirror.renderList.push(sun);
 
-const cityBits = buildCity(scene, net, mirror);
+const cityBits = buildCity(scene, net, mirror, CITY.seed);
 report('city built — starting traffic…');
 
 // ---- districts: merge per tile, not per city --------------------------
@@ -1005,6 +1024,7 @@ function updateGarage(dt, clock) {
 const tank = { fuel: 100, low: false };
 const turbo = { charge: 1, active: false };
 const holdT = { q: 0, e: 0 };
+const clean = { t: 0 };          // seconds of tidy driving toward the bonus
 
 const tick = (dt) => {
   clock += dt;
@@ -1064,6 +1084,14 @@ const tick = (dt) => {
   if (live) {
     run.time += dt;
     run.score += dt * 2 * (1 + mission.wanted * 0.5);
+    // Turbo Esprit paid you for car control, not just for contact: a whole
+    // minute with no heat, no shunt and no red run is worth money here too.
+    if (mission.wanted === 0 && shake < 0.25) clean.t += dt; else clean.t = 0;
+    if (clean.t >= 60) {
+      clean.t = 0;
+      run.score += 100;
+      hud.say('CLEAN DRIVING BONUS · +100');
+    }
   }
 
   if (keys.Space && live) firePlayerGun(dt); else gunT = Math.min(gunT, 0.05);
@@ -1089,7 +1117,10 @@ const tick = (dt) => {
   if (player.mode === 'edge') {
     if (playerPrev.e === player.e && playerPrev.dir === player.dir &&
         signals.ranRed(player.e, player.dir, playerPrev.s, player.s, clock)) {
-      run.score += 15;
+      // Running a red used to PAY 15 points, which argued with everything
+      // else the game says about driving well. Now it just costs you the
+      // clean-driving clock, plus whatever the witnesses make of it.
+      clean.t = 0;
       mission.witnessed('redLight', player, true);
     }
     playerPrev.e = player.e; playerPrev.dir = player.dir; playerPrev.s = player.s;
@@ -1254,7 +1285,7 @@ scene.onBeforeRenderObservable.add(() =>
 // bot needs to play it without reaching into module scope.
 window.game = {
   player, traffic, net, hud, tick, mission, coast, tiles, pickups,
-  run, tank, turbo, garage, peds, signals, coast2,
+  run, tank, turbo, garage, peds, signals, coast2, city: CITY, clean,
   zones: cityBits.zones, districtAt: cityBits.districtAt,
   stations: cityBits.stations,
   nav: { nodeAhead, headingSlot, turnOptions },
@@ -1268,6 +1299,7 @@ window.game = {
         `${i + 1}. ${r.n}  ${r.s}`).join('\n')
     : 'NO SCORES YET — BE FIRST';
   document.getElementById('introtext').textContent =
+    `TOWN · ${CITY.name} — ◄ ► PICKS ANOTHER\n\n` +
     'FIND THE BLACK COUPE · RAM OR SHOOT IT · DODGE THE LAW\n' +
     'W/S DRIVE · A/D LANES · Q/E INDICATE (HOLD FOR U-TURN)\n' +
     'SPACE FIRE · SHIFT TURBO · GREEN SQUARES SELL PETROL\n' +
@@ -1280,6 +1312,14 @@ addEventListener('keydown', (e) => {
     document.getElementById('intro').style.display = 'none';
     sound.start();
     mission.announce();
+  }
+  // On the intro screen the arrows pick the town. The choice goes in the
+  // hash and the page reloads into it - the city is baked at boot, so a
+  // different seed means building it again from the ground.
+  if (!run.started && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
+    const n = (cityIdx + (e.code === 'ArrowRight' ? 1 : CITIES.length - 1)) % CITIES.length;
+    location.hash = 'city' + n;
+    location.reload();
   }
   if (e.code === 'KeyM' && sound.started) {
     hud.say(sound.toggle() ? 'SOUND ON' : 'SOUND OFF');

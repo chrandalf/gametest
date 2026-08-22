@@ -82,8 +82,8 @@ function twoSidedSign(scene, name, opts, x, y, z, ry, mat) {
   return out;
 }
 
-export function buildCity(scene, net, mirror) {
-  const rand = mulberry(19860508);          // Turbo Esprit's release spring
+export function buildCity(scene, net, mirror, seed = 19860508) {
+  const rand = mulberry(seed);              // the same seed that built the roads
   const glow = {
     cyan: neonMat(scene, 0.15, 1.05, 1.5, 'cyan'),
     blue: neonMat(scene, 0.25, 0.75, 2.1, 'blue'),
@@ -493,9 +493,11 @@ export function buildCity(scene, net, mirror) {
     park:        { label: 'THE PARK',   fam: 'warm',  h: [0, 0],   n: [0, 0], w: 0,    sign: 0,    prop: 'park' },
   };
 
-  // Deterministic per-block hash, so the zoning is the same city every time.
+  // Deterministic per-block hash, salted by the seed: the same city zones
+  // the same way every time, and a different city zones differently.
+  const zoneSalt = (seed % 977) * 0.173;
   const blockHash = (bi, bj) => {
-    const h = Math.sin(bi * 127.1 + bj * 311.7) * 43758.5453;
+    const h = Math.sin(bi * 127.1 + bj * 311.7 + zoneSalt) * 43758.5453;
     return h - Math.floor(h);
   };
   const centre = (GRID - 1) / 2;

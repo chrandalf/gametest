@@ -45,8 +45,11 @@ export function halfWidth(cls) {
 }
 
 // Node/edge model. Edges are axis-aligned: axis 0 runs +x, axis 1 runs +z.
-export function buildNetwork() {
-  const rand = mulberry(19860508);
+// The seed IS the city: pitches, avenue placement, which streets die and
+// where the garages land all fall out of it. main.mjs owns the list of
+// named cities and their seeds.
+export function buildNetwork(seed = 19860508) {
+  const rand = mulberry(seed);
 
   // Irregular pitches: some blocks squat, some long. Prefix-summed into
   // node coordinates.
@@ -64,7 +67,10 @@ export function buildNetwork() {
 
   // Class layout: the perimeter ring is highway; two mid axes are avenues;
   // everything else is street. Simple, legible, learnable - the point.
-  const midA = Math.floor(GRID / 3), midB = GRID - 1 - Math.floor(GRID / 3);
+  // WHERE the avenues run is the city's own business: a tight cross near
+  // the middle in one town, a wide box round it in another.
+  const midA = 2 + ((rand() * 3) | 0);
+  const midB = GRID - 1 - (2 + ((rand() * 3) | 0));
   const classFor = (a, axis) => {
     if (axis === 0 && (a.j === 0 || a.j === GRID - 1)) return 'highway';
     if (axis === 1 && (a.i === 0 || a.i === GRID - 1)) return 'highway';
@@ -241,8 +247,10 @@ export function buildNetwork() {
   }
 
   // Now make it a CITY, not graph paper: delete a share of the streets,
-  // creating T-junctions, long blocks and genuine dead ends - but never
-  // disconnect the map, and never touch the ring or the avenues.
+  // creating T-junctions, corners and long blocks - but no dead ends
+  // (every junction keeps at least two ways out; a road that punishes you
+  // for exploring it is a bad road), never disconnect the map, and never
+  // touch the ring or the avenues.
   const connectedWithout = (dead) => {
     const seen = new Set([nodes[0]]);
     const q = [nodes[0]];
@@ -263,11 +271,12 @@ export function buildNetwork() {
     [streets[k], streets[r]] = [streets[r], streets[k]];
   }
   let killed = 0;
-  const wantDead = Math.floor(streets.length * 0.26);
+  // How much of the grid survives varies with the city too.
+  const wantDead = Math.floor(streets.length * (0.20 + rand() * 0.12));
   for (const e of streets) {
     if (killed >= wantDead) break;
-    // Leave every node at least one road, and keep the city one piece.
-    if (degree(e.a) < 2 || degree(e.b) < 2) continue;
+    // A node on two roads is a corner; take one away and it is a dead end.
+    if (degree(e.a) < 3 || degree(e.b) < 3) continue;
     if (!connectedWithout(e)) continue;
     e.dead = true;
     killed++;

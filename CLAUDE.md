@@ -26,6 +26,13 @@ script. There is no framework and no build step beyond the bundler.
 Everything else is generated from it or navigates on it. If a question is
 about *where roads are*, it is answered here.
 
+- `buildNetwork(seed)` — **the seed is the town.** Pitches, avenue rows,
+  the street cull and the forecourts all fall out of it; `citygen` takes
+  the same seed for the districts. `main.mjs` owns `CITIES`, the four
+  named towns, picked on the intro screen (◄ ► before Enter; the choice
+  rides in the URL hash and switching reloads).
+- The street cull never leaves a dead end: every junction keeps at least
+  two ways out (`degree < 3` guard), and the map stays one piece.
 - `GRID` (11), `CELL` (67 m average; pitches are irregular per row/column)
 - `CLASSES` — `street`, `avenue`, `highway` (the coastal ring), `express`
   (elevated deck), `ramp` (slip road), `service` (garage spur). Each has
@@ -83,6 +90,9 @@ Conventions worth knowing:
 ### `main.mjs` — the game itself
 Boot, scene, backdrop, the merge/district passes, `buildCar`, traffic, the
 gun, collisions, cameras, the garage, HUD wiring, intro, game over, `tick`.
+Also `CITIES` (the four towns and their seeds; hash-selected on the intro)
+and the clean-driving bonus (`clean` — a minute with no heat, no shunt, no
+red run pays 100).
 
 Things that live here and are easy to hunt for:
 - **Districts / streaming** — `TILE`, `tileAt`, `updateDistricts`,
@@ -100,7 +110,7 @@ Things that live here and are easy to hunt for:
 ### The rest
 | file | owns |
 |---|---|
-| `mission.mjs` | The director: target coupe, the armoured van and the exchange, police fleet, the wanted ladder (`OFFENCES` — each has a cap; only killing reaches 5), lie-low, respray, levels |
+| `mission.mjs` | The director: target coupe, the armoured van and the exchange, police fleet, the wanted ladder (`OFFENCES` — each has a cap; only killing reaches 5; 1–2★ the police tail, 3★ they ram and can bust, 4★ they shoot), lie-low, respray, levels |
 | `lights.mjs` | Traffic signals. Three real lenses per head, `green → amber → red → red+amber → green`. Each head faces one approach |
 | `peds.mjs` | Pedestrians: walk, cross, get hit |
 | `pickups.mjs` | Six cassettes and the briefcase the coupe drops |
