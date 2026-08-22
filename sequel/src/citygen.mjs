@@ -344,11 +344,12 @@ export function buildCity(scene, net, mirror) {
     sandMat.albedoColor = new Color3(0.45, 0.36, 0.22);
     sandMat.metallic = 0.05; sandMat.roughness = 0.9;
     sandMat.emissiveColor = new Color3(0.10, 0.08, 0.045);
+    // No mirror on the sea: a second half-screen of planar reflection was
+    // most of the beach frame budget. A gradient sheen fakes it fine.
     const seaMat = new PBRMaterial('sea', scene);
     seaMat.albedoColor = new Color3(0.02, 0.10, 0.22);
-    seaMat.metallic = 0.9; seaMat.roughness = 0.16;
-    seaMat.reflectionTexture = mirror;
-    seaMat.emissiveColor = new Color3(0.015, 0.05, 0.1);
+    seaMat.metallic = 0.55; seaMat.roughness = 0.32;
+    seaMat.emissiveColor = new Color3(0.03, 0.10, 0.19);
     const hwHalf = halfWidth('highway');
     const sandW = 34, seaW = 380;
     const rim = hwHalf + 2.2;

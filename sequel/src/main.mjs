@@ -108,6 +108,7 @@ function ridgeTexture(seed, dark) {
   return dt;
 }
 // Four sky walls boxing the city so every heading has a horizon.
+const nightSkies = [];
 for (const [rx, rz, ry] of [[mid, mid + 1250, 0], [mid, mid - 1250, Math.PI],
                             [mid + 1250, mid, -Math.PI / 2], [mid - 1250, mid, Math.PI / 2]]) {
   const p = MeshBuilder.CreatePlane('sky', { width: 3400, height: 800 }, scene);
@@ -116,6 +117,7 @@ for (const [rx, rz, ry] of [[mid, mid + 1250, 0], [mid, mid - 1250, Math.PI],
   const m = new StandardMaterial('skym', scene);
   m.emissiveTexture = skyTexture(); m.disableLighting = true;
   p.material = m;
+  nightSkies.push(p);
 }
 const sun = MeshBuilder.CreatePlane('sun', { size: 420 }, scene);
 sun.position.set(mid, 150, mid + 1240);
@@ -133,6 +135,7 @@ for (const [seed, dz, y, col] of [[1.7, 1180, 70, '#241040'], [4.2, 1120, 50, '#
     m.emissiveTexture = ridgeTexture(seed, col); m.opacityTexture = m.emissiveTexture;
     m.disableLighting = true;
     r.material = m;
+    nightSkies.push(r);
   }
 }
 
@@ -703,7 +706,14 @@ const tick = (dt) => {
   hemi.groundColor.set(0.05 + vibe * 0.3, 0.02 + vibe * 0.26, 0.1 + vibe * 0.1);
   scene.clearColor.set(0.012 + vibe * 0.09, 0.006 + vibe * 0.31,
                        0.035 + vibe * 0.52, 1);
-  for (const p of daySkies) p.visibility = vibe;
+  // Only pay for the sky you can actually see: outside the short morph,
+  // one full set of sky walls is switched off entirely.
+  const dayOn = vibe > 0.02, nightOn = vibe < 0.98;
+  for (const p of daySkies) {
+    p.setEnabled(dayOn);
+    p.visibility = vibe >= 0.98 ? 1 : vibe;
+  }
+  for (const p of nightSkies) p.setEnabled(nightOn);
   sunM.emissiveColor.set(1 + vibe * 0.25, 1 + vibe * 0.05, 1 - vibe * 0.25);
   sun.scaling.setAll(1 + vibe * 0.4);
   pipe.imageProcessing.exposure = 1.05 + vibe * 0.22;
@@ -771,6 +781,28 @@ addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyX' && sound.started) sound.next();
 });
+
+// Auto quality: when the frame rate sags, render smaller and stretch -
+// the neon look survives a soft frame far better than a 9 fps one.
+let scaleStep = 0, scaleGoodT = 0, scaleBadT = 0;
+setInterval(() => {
+  const f = engine.getFps();
+  if (f < 26 && scaleStep < 2) {
+    scaleBadT += 0.5;
+    if (scaleBadT > 1.5) {
+      scaleStep++; scaleBadT = 0; scaleGoodT = 0;
+      engine.setHardwareScalingLevel(1 + scaleStep * 0.45);
+      hud.say('PERFORMANCE MODE — RESOLUTION EASED');
+    }
+  } else if (f > 52 && scaleStep > 0) {
+    scaleGoodT += 0.5;
+    if (scaleGoodT > 6) {
+      scaleStep--; scaleGoodT = 0;
+      engine.setHardwareScalingLevel(1 + scaleStep * 0.45);
+      if (scaleStep === 0) hud.say('FULL RESOLUTION RESTORED');
+    }
+  } else { scaleBadT = 0; }
+}, 500);
 
 const fpsEl = document.getElementById('fps');
 const fuelBar = document.getElementById('fuel');
