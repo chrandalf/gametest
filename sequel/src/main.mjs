@@ -65,6 +65,7 @@ report('engine up — building the city…');
 // Photosensitivity: one switch over everything in the game that pulses. On
 // by default if the browser says this viewer prefers reduced motion, and F
 // toggles it at any time.
+let fogScale = 1;
 const safe = { reduceFlash: false };
 try { safe.reduceFlash = matchMedia('(prefers-reduced-motion: reduce)').matches; }
 catch (e) { /* not every browser has it */ }
@@ -169,29 +170,86 @@ mirror.renderList.push(sun);
 const cityBits = buildCity(scene, net, mirror);
 report('city built — starting traffic…');
 
-// ---- merge pass: the 9-fps fix ----------------------------------------
-// Every kerb, neon line and tower was its own draw call - then the mirror
-// drew them all again, then the glow layer again. Merge all static
-// geometry per material into a handful of meshes.
+// ---- districts: merge per tile, not per city --------------------------
+// Merging every kerb and tower into one mesh per material killed the draw
+// calls, but it also handed the renderer a set of meshes the size of the
+// whole city - and a mesh that big is never outside the view, so frustum
+// culling had nothing left to reject and every district behind you was
+// drawn in full. Merging per tile instead keeps the low draw count AND
+// gives the culler something to throw away, which is most of the map.
+const TILE = 260;
+const tiles = new Map();
+const globalStatics = [];
+function tileAt(x, z) {
+  const kx = Math.floor(x / TILE), kz = Math.floor(z / TILE);
+  const k = kx + ':' + kz;
+  let t = tiles.get(k);
+  if (!t) {
+    t = { cx: (kx + 0.5) * TILE, cz: (kz + 0.5) * TILE, meshes: [], on: true };
+    tiles.set(k, t);
+  }
+  return t;
+}
 {
   const MERGE = new Set(['rd', 'wk', 'kb', 'sl', 'el', 'ml', 'b', 'sg',
                          'pad', 'pump', 'sand', 'sea', 'gp', 'gpan',
                          'cone', 'barr', 'pole']);
+  // Where each merged mesh sits has to be worked out from the meshes going
+  // into it. A merged mesh's world bounding box is not computed until it is
+  // first rendered, so reading it here hands back zeroes and files half the
+  // city under the wrong district.
   const buckets = new Map();
   for (const msh of scene.meshes.slice()) {
-    if (!MERGE.has(msh.name) || !msh.material) continue;
-    const key = msh.material.uniqueId;
-    if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key).push(msh);
+    // Instance source meshes are disabled and must stay that way.
+    if (!MERGE.has(msh.name) || !msh.material || !msh.isEnabled(false)) continue;
+    const key = msh.material.uniqueId + '|' + Math.floor(msh.position.x / TILE) +
+                '|' + Math.floor(msh.position.z / TILE);
+    let b = buckets.get(key);
+    if (!b) { b = { arr: [], x0: 1e9, x1: -1e9, z0: 1e9, z1: -1e9 }; buckets.set(key, b); }
+    b.arr.push(msh);
+    b.x0 = Math.min(b.x0, msh.position.x); b.x1 = Math.max(b.x1, msh.position.x);
+    b.z0 = Math.min(b.z0, msh.position.z); b.z1 = Math.max(b.z1, msh.position.z);
   }
-  for (const arr of buckets.values()) {
-    if (arr.length < 2) continue;
-    const merged = Mesh.MergeMeshes(arr, true, true, undefined, false, false);
-    if (merged) merged.name = 'static';
+  for (const b of buckets.values()) {
+    const merged = b.arr.length > 1
+      ? Mesh.MergeMeshes(b.arr, true, true, undefined, false, false)
+      : b.arr[0];
+    if (!merged) continue;
+    merged.name = 'static';
+    // The sand and the sea are single strips hundreds of metres long. They
+    // belong to no one district, so they are never distance-culled.
+    const span = Math.max(b.x1 - b.x0, b.z1 - b.z0);
+    if (span > TILE * 2.5) globalStatics.push(merged);
+    else tileAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2).meshes.push(merged);
+  }
+  // Everything that stayed unmerged - lamp and lane-marking instances, the
+  // traffic signals, the palms - joins the same tiles, so a district that
+  // is switched off is switched off entirely.
+  const DYNAMIC = new Set(['p', 'w', 'ped', 'pedh', 'tr', 'sky', 'r',
+                           'dsky', 'sun', 'g', 'static', 'car']);
+  for (const msh of scene.meshes) {
+    if (DYNAMIC.has(msh.name) || !msh.material || !msh.isEnabled(false)) continue;
+    tileAt(msh.position.x, msh.position.z).meshes.push(msh);
   }
   // Rebuild the mirror list: merged statics, live car parts, the sun.
   mirror.renderList = scene.meshes.filter(msh =>
     msh.name === 'static' || msh.name === 'p' || msh.name === 'w' || msh.name === 'sun');
+}
+
+// How far the city is drawn. Tied to the quality rung, because "render less"
+// is the honest version of "run faster", and the haze hides the edge.
+const DRAW_RANGE = [820, 760, 640, 500];
+let drawRange = DRAW_RANGE[0];
+function updateDistricts(px, pz) {
+  const r = drawRange + TILE * 0.75;
+  const r2 = r * r;
+  for (const t of tiles.values()) {
+    const dx = t.cx - px, dz = t.cz - pz;
+    const want = dx * dx + dz * dz < r2;
+    if (want === t.on) continue;
+    t.on = want;
+    for (const msh of t.meshes) msh.setEnabled(want);
+  }
 }
 
 // ---- performance pass -------------------------------------------------
@@ -204,8 +262,11 @@ for (const msh of scene.meshes) {
   msh.freezeWorldMatrix();
   msh.doNotSyncBoundingInfo = true;
 }
-const FLAT = new Set(['g', 'rd', 'wk', 'kb', 'sl']);
-mirror.renderList = mirror.renderList.filter(msh => !FLAT.has(msh.name));
+// The mirror is the wet ground itself, so anything lying flat on it has
+// nothing to add to its own reflection.
+const FLAT_MATS = new Set(['gm', 'road', 'walk', 'stop']);
+mirror.renderList = mirror.renderList.filter(msh =>
+  !(msh.material && FLAT_MATS.has(msh.material.name)));
 
 // ------------------------------------------------------------- vehicles ----
 // A body built from cross sections rather than from boxes. Each station is
@@ -300,17 +361,18 @@ function buildCar(paintCol, taillit, trimCol) {
   const head = new StandardMaterial('head', scene);
   head.emissiveColor = new Color3(1.35, 1.25, 0.95);
   head.disableLighting = true;
+  const parts = [];
   const part = (w, h, d, x, y, z, mat, rx) => {
     const b = MeshBuilder.CreateBox('p', { width: w, height: h, depth: d }, scene);
     b.position.set(x, y, z); b.parent = root; b.material = mat;
     if (rx) b.rotation.x = rx;
-    mirror.renderList.push(b);
+    parts.push(b);
     return b;
   };
   for (const [sections, mat] of [[BODY_SECTIONS, paint], [CABIN_SECTIONS, blk]]) {
     const m = loftBody(sections, mat, scene);
     m.parent = root;
-    mirror.renderList.push(m);
+    parts.push(m);
   }
   part(1.66, 0.06, 0.34, 0, 0.25, 2.16, blk);        // front splitter
   part(0.46, 0.09, 0.05, -0.52, 0.47, 2.24, head);   // headlights
@@ -342,8 +404,30 @@ function buildCar(paintCol, taillit, trimCol) {
                                     [-0.95, -1.35, 0.86, 0.34], [0.95, -1.35, 0.86, 0.34]]) {
     const w = MeshBuilder.CreateCylinder('w', { diameter: dia, height: wid, tessellation: 16 }, scene);
     w.rotation.z = Math.PI / 2; w.position.set(wx, dia / 2, wz); w.parent = root; w.material = wm;
-    mirror.renderList.push(w);
+    parts.push(w);
   }
+  // Twenty-odd boxes is twenty-odd draw calls, and there are two dozen cars
+  // on the map. Nothing on a car moves relative to the car except the two
+  // indicators, so everything else is welded together per material while the
+  // root is still sitting at the origin - about seven draws a car instead.
+  const loose = new Set([indL, indR]);
+  const byMat = new Map();
+  for (const b of parts) {
+    if (loose.has(b)) continue;
+    const k = b.material.uniqueId;
+    if (!byMat.has(k)) byMat.set(k, []);
+    byMat.get(k).push(b);
+  }
+  const finalParts = [indL, indR];
+  for (const arr of byMat.values()) {
+    const m = arr.length > 1
+      ? Mesh.MergeMeshes(arr, true, true, undefined, false, false) : arr[0];
+    if (!m) continue;
+    m.name = 'p';
+    m.parent = root;
+    finalParts.push(m);
+  }
+  for (const m of finalParts) mirror.renderList.push(m);
   return { root, indL, indR };
 }
 
@@ -386,6 +470,33 @@ function aiInput(d, dt, t) {
 const hud = new Hud(net, cityBits.stations);
 const mission = new Mission(scene, net, buildCar, hud);
 const signals = new Signals(scene, net);
+{
+  // The signals arrive after the district pass, so they get their own.
+  // Poles all share one material and never change, so they merge; the
+  // heads swap material every frame with the phase, so they only join a
+  // district and get culled with it.
+  const byTile = new Map();
+  for (const msh of scene.meshes) {
+    if (msh.name !== 'sigp') continue;
+    const k = Math.floor(msh.position.x / TILE) + '|' + Math.floor(msh.position.z / TILE);
+    let b = byTile.get(k);
+    if (!b) { b = { arr: [], x: 0, z: 0 }; byTile.set(k, b); }
+    b.arr.push(msh); b.x += msh.position.x; b.z += msh.position.z;
+  }
+  for (const b of byTile.values()) {
+    const merged = b.arr.length > 1
+      ? Mesh.MergeMeshes(b.arr, true, true, undefined, false, false) : b.arr[0];
+    if (!merged) continue;
+    merged.name = 'static';
+    merged.freezeWorldMatrix();
+    merged.doNotSyncBoundingInfo = true;
+    tileAt(b.x / b.arr.length, b.z / b.arr.length).meshes.push(merged);
+    mirror.renderList.push(merged);
+  }
+  for (const msh of scene.meshes) {
+    if (msh.name === 'sigh') tileAt(msh.position.x, msh.position.z).meshes.push(msh);
+  }
+}
 const peds = new Peds(scene, net, 42);
 
 // Every cruiser gets a lightbar; pursuit strobes them blue/red.
@@ -859,7 +970,7 @@ const tick = (dt) => {
     }
     for (const p of nightSkies) p.setEnabled(nightOn);
     scene.fogColor.set(0.05 + v * 0.36, 0.03 + v * 0.47, 0.11 + v * 0.52);
-    scene.fogDensity = (0.0017 - v * 0.0006) * (safe.reduceFlash ? 1.6 : 1);
+    scene.fogDensity = (0.0017 - v * 0.0006) * fogScale * (safe.reduceFlash ? 1.6 : 1);
     pipe.imageProcessing.exposure = 1.05 + v * 0.22;
     pipe.imageProcessing.contrast = 1.3 - v * 0.12;
     // The car paint's planar reflection is worth its cost among neon towers.
@@ -867,6 +978,7 @@ const tick = (dt) => {
     mirror.refreshRate = v > 0.5 ? 4 : 2;
   }
 
+  updateDistricts(player.pos.x, player.pos.z);
   coast.update(dt, player, clock, mission.wanted);
   sound.update(dt, Math.min(1, player.speed / 55), turbo.active, mission.wanted > 0);
 
@@ -909,7 +1021,7 @@ scene.onBeforeRenderObservable.add(() =>
   tick(Math.min(0.05, engine.getDeltaTime() / 1000)));
 
 // Handles for tests and the console.
-window.game = { player, traffic, net, hud, tick, mission, coast };
+window.game = { player, traffic, net, hud, tick, mission, coast, tiles };
 
 // ---- intro screen -------------------------------------------------------
 {
@@ -956,12 +1068,21 @@ addEventListener('keydown', (e) => {
 // Three rungs, because a fill-bound frame is not only about resolution: the
 // grain and the chromatic aberration are two more full-screen passes, and
 // on a struggling machine they cost more than they are worth.
-let scaleStep = 0, scaleGoodT = 0, scaleBadT = 0;
+// MEDIUM by default: softer, less busy, and the look preferred over the
+// full-fat rung. The ladder may drop below it on a struggling machine and
+// climb back to it, but only G takes it above.
+const AUTO_BEST = 2;
+let scaleStep = AUTO_BEST, scaleGoodT = 0, scaleBadT = 0;
 // G pins a rung by hand. Once you have pinned one the ladder stops moving,
 // so what you chose is what you get.
 const quality = { manual: false };
 const applyQuality = () => {
   engine.setHardwareScalingLevel(1 + scaleStep * 0.4);
+  drawRange = DRAW_RANGE[scaleStep];
+  // Pull the haze in with the draw range so the edge of the world stays
+  // hidden rather than becoming a line of towers popping in.
+  fogScale = 820 / drawRange;
+  vibeStep = -1;
   // FXAA stays on when reduced flashing is asked for: smoothing sub-pixel
   // edges is exactly what stops thin bright lines strobing.
   pipe.fxaaEnabled = safe.reduceFlash || scaleStep < 3;
@@ -983,12 +1104,12 @@ setInterval(() => {
       applyQuality();
       hud.say('PERFORMANCE MODE — RESOLUTION EASED');
     }
-  } else if (f > 52 && scaleStep > 0) {
+  } else if (f > 52 && scaleStep > AUTO_BEST) {
     scaleGoodT += 0.5;
     if (scaleGoodT > 6) {
       scaleStep--; scaleGoodT = 0;
       applyQuality();
-      if (scaleStep === 0) hud.say('FULL RESOLUTION RESTORED');
+      if (scaleStep === AUTO_BEST) hud.say('QUALITY RESTORED — ' + QNAME[scaleStep]);
     }
   } else { scaleBadT = 0; }
 }, 500);
@@ -996,7 +1117,7 @@ setInterval(() => {
 // If the browser already said this viewer wants reduced motion, honour it
 // from the first frame rather than waiting for someone to press F.
 hud.reduceFlash = safe.reduceFlash;
-if (safe.reduceFlash) applyQuality();
+applyQuality();
 
 const fpsEl = document.getElementById('fps');
 const fuelBar = document.getElementById('fuel');
