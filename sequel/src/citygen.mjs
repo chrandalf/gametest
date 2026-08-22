@@ -62,6 +62,24 @@ function signTexture(scene, word, col) {
   return dt;
 }
 
+// A sign you can read from either side. One plane with backface culling off
+// shows its own mirror image from behind - which is how every word in the
+// city ended up backwards half the time. Two planes back to back, each
+// culled to its front face and nudged a couple of centimetres apart so they
+// cannot z-fight, read correctly from wherever you are standing.
+function twoSidedSign(scene, name, opts, x, y, z, ry, mat) {
+  const nx = Math.sin(ry), nz = Math.cos(ry);
+  const out = [];
+  for (const side of [1, -1]) {
+    const p = MeshBuilder.CreatePlane(name, opts, scene);
+    p.position.set(x + nx * 0.02 * side, y, z + nz * 0.02 * side);
+    p.rotation.y = side > 0 ? ry : ry + Math.PI;
+    p.material = mat;
+    out.push(p);
+  }
+  return out;
+}
+
 export function buildCity(scene, net, mirror) {
   const rand = mulberry(19860508);          // Turbo Esprit's release spring
   const glow = {
@@ -250,7 +268,6 @@ export function buildCity(scene, net, mirror) {
     m.emissiveTexture = signTexture(scene, wd, col);
     m.opacityTexture = m.emissiveTexture;
     m.disableLighting = true;
-    m.backFaceCulling = false;
     return m;
   });
   let signCount = 0;
@@ -281,17 +298,18 @@ export function buildCity(scene, net, mirror) {
         if (rand() < 0.33 && signCount < 40) {
           signCount++;
           const sw = Math.min(14, w * 0.9);
-          const sign = MeshBuilder.CreatePlane('sg', { width: sw, height: sw * 0.25 }, scene);
           const side = rand() < 0.5 ? -1 : 1;
-          if (rand() < 0.5) {
-            sign.position.set(px, Math.min(h - 2, 7 + rand() * 8), pz + side * (d / 2 + 0.3));
-            sign.rotation.y = side < 0 ? Math.PI : 0;
-          } else {
-            sign.position.set(px + side * (w / 2 + 0.3), Math.min(h - 2, 7 + rand() * 8), pz);
-            sign.rotation.y = side < 0 ? -Math.PI / 2 : Math.PI / 2;
+          const sy = Math.min(h - 2, 7 + rand() * 8);
+          const face = rand() < 0.5;
+          const sx = face ? px : px + side * (w / 2 + 0.3);
+          const sz = face ? pz + side * (d / 2 + 0.3) : pz;
+          const sry = face ? (side < 0 ? Math.PI : 0)
+                           : (side < 0 ? -Math.PI / 2 : Math.PI / 2);
+          const mat = signMats[(rand() * signMats.length) | 0];
+          for (const sgm of twoSidedSign(scene, 'sg',
+                { width: sw, height: sw * 0.25 }, sx, sy, sz, sry, mat)) {
+            mirror.renderList.push(sgm);
           }
-          sign.material = signMats[(rand() * signMats.length) | 0];
-          mirror.renderList.push(sign);
         }
       }
     }
@@ -400,7 +418,7 @@ export function buildCity(scene, net, mirror) {
     const gantryMat = new StandardMaterial('gant', scene);
     gantryMat.emissiveTexture = signTex;
     gantryMat.disableLighting = true;
-    gantryMat.backFaceCulling = false;
+
     const postMat = new StandardMaterial('gpost', scene);
     postMat.emissiveColor = new Color3(0.12, 0.13, 0.18);
     postMat.disableLighting = true;
@@ -422,12 +440,11 @@ export function buildCity(scene, net, mirror) {
           e.axis === 0 ? gz + sd * (hw + 0.8) : gz);
         post.material = postMat;
       }
-      const panel = MeshBuilder.CreatePlane('gpan', { width: 11, height: 2.6 }, scene);
-      panel.position.set(gx, 6.2, gz);
-      panel.rotation.y = e.axis === 0
+      const pry = e.axis === 0
         ? (towardB ? -Math.PI / 2 : Math.PI / 2)
         : (towardB ? Math.PI : 0);
-      panel.material = gantryMat;
+      twoSidedSign(scene, 'gpan', { width: 11, height: 2.6 },
+                   gx, 6.2, gz, pry, gantryMat);
     }
   }
 

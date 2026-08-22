@@ -78,7 +78,8 @@ export class Hud {
     // World +z is drawn as map-up; canvas rotation is clockwise-positive
     // with y down, so world yaw maps straight through.
     c.rotate(a);
-    c.fillStyle = Math.sin(this.time * 6) > -0.6 ? '#e8fff4' : 'rgba(232,255,244,0.4)';
+    c.fillStyle = (this.reduceFlash || Math.sin(this.time * 6) > -0.6)
+      ? '#e8fff4' : 'rgba(232,255,244,0.4)';
     c.beginPath();
     c.moveTo(0, -6); c.lineTo(4, 5); c.lineTo(0, 2.4); c.lineTo(-4, 5);
     c.closePath(); c.fill();
@@ -88,7 +89,7 @@ export class Hud {
     const mph = Math.round(player.speed * 2.237);
     this.speedEl.textContent = `${mph} MPH`;
     // Indicators.
-    const blink = Math.sin(this.time * 9) > 0;
+    const blink = this.reduceFlash || Math.sin(this.time * 9) > 0;
     this.indL.style.opacity = player.indicator === -1 && blink ? 1 : 0.12;
     this.indR.style.opacity = player.indicator === 1 && blink ? 1 : 0.12;
     // Status line.

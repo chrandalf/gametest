@@ -15,6 +15,7 @@ import { Plane } from '@babylonjs/core/Maths/math.plane';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
+import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
@@ -51,7 +52,22 @@ const canvas = document.getElementById('c');
 const engine = new Engine(canvas, true);
 const scene = new Scene(engine);
 scene.clearColor = new Color4(0.012, 0.006, 0.035, 1);
+// Distance haze. A neon strip is 20 cm wide: two hundred metres out it is
+// thinner than a pixel, so the rasteriser catches it on one frame and misses
+// it on the next and the whole far half of the city strobes. Fading those
+// lines into the haze before they get that small is the fix - and a neon
+// city with depth in it looks better anyway.
+scene.fogMode = Scene.FOGMODE_EXP2;
+scene.fogDensity = 0.0017;
+scene.fogColor = new Color3(0.05, 0.03, 0.11);
 report('engine up — building the city…');
+
+// Photosensitivity: one switch over everything in the game that pulses. On
+// by default if the browser says this viewer prefers reduced motion, and F
+// toggles it at any time.
+const safe = { reduceFlash: false };
+try { safe.reduceFlash = matchMedia('(prefers-reduced-motion: reduce)').matches; }
+catch (e) { /* not every browser has it */ }
 
 const cam = new FreeCamera('cam', new Vector3(0, 5, -12), scene);
 cam.fov = 0.95;
@@ -116,6 +132,7 @@ for (const [rx, rz, ry] of [[mid, mid + 1250, 0], [mid, mid - 1250, Math.PI],
   p.rotation.y = ry;
   const m = new StandardMaterial('skym', scene);
   m.emissiveTexture = skyTexture(); m.disableLighting = true;
+  m.fogEnabled = false;
   p.material = m;
   nightSkies.push(p);
 }
@@ -124,6 +141,7 @@ sun.position.set(mid, 150, mid + 1240);
 const sunM = new StandardMaterial('sunm', scene);
 sunM.emissiveTexture = sunTexture(); sunM.opacityTexture = sunM.emissiveTexture;
 sunM.disableLighting = true;
+sunM.fogEnabled = false;
 sun.material = sunM;
 for (const [seed, dz, y, col] of [[1.7, 1180, 70, '#241040'], [4.2, 1120, 50, '#160a2b']]) {
   for (const [px2, pz2, ry] of [[mid, mid + dz, 0], [mid, mid - dz, Math.PI],
@@ -134,6 +152,7 @@ for (const [seed, dz, y, col] of [[1.7, 1180, 70, '#241040'], [4.2, 1120, 50, '#
     const m = new StandardMaterial('rm', scene);
     m.emissiveTexture = ridgeTexture(seed, col); m.opacityTexture = m.emissiveTexture;
     m.disableLighting = true;
+    m.fogEnabled = false;
     r.material = m;
     nightSkies.push(r);
   }
@@ -189,15 +208,92 @@ const FLAT = new Set(['g', 'rd', 'wk', 'kb', 'sl']);
 mirror.renderList = mirror.renderList.filter(msh => !FLAT.has(msh.name));
 
 // ------------------------------------------------------------- vehicles ----
+// A body built from cross sections rather than from boxes. Each station is
+// a chamfered rectangle at a point along the car; consecutive stations are
+// skinned with quads and the ends capped. That is what buys the wedge nose,
+// the raked screen, the haunches over the back wheels and the fastback -
+// the things that separate a sports car from a phone lying on the road.
+function loftBody(stations, mat, scene) {
+  const N = 8;
+  const pos = [], idx = [], uvs = [];
+  for (const st of stations) {
+    const cx = st.hw * 0.26, cy = (st.hi - st.lo) * 0.3;
+    const ring = [[-st.hw + cx, st.lo], [st.hw - cx, st.lo],
+                  [st.hw, st.lo + cy], [st.hw, st.hi - cy],
+                  [st.hw - cx, st.hi], [-st.hw + cx, st.hi],
+                  [-st.hw, st.hi - cy], [-st.hw, st.lo + cy]];
+    for (const [x, y] of ring) { pos.push(x, y, st.z); uvs.push(0, 0); }
+  }
+  for (let si = 0; si < stations.length - 1; si++) {
+    const a = si * N, b = a + N;
+    for (let k = 0; k < N; k++) {
+      const k2 = (k + 1) % N;
+      idx.push(a + k, a + k2, b + k2, a + k, b + k2, b + k);
+    }
+  }
+  const last = (stations.length - 1) * N;
+  for (let k = 1; k < N - 1; k++) {
+    idx.push(0, k, k + 1);
+    idx.push(last, last + k + 1, last + k);
+  }
+  const normals = [];
+  VertexData.ComputeNormals(pos, idx, normals);
+  // Winding is easy to get backwards and impossible to see until the car
+  // renders inside out, so check it: the outermost vertex on the right of
+  // the car must have a normal that points right.
+  let far = 0;
+  for (let i = 1; i < pos.length / 3; i++) if (pos[i * 3] > pos[far * 3]) far = i;
+  if (normals[far * 3] < 0) {
+    for (let i = 0; i < idx.length; i += 3) {
+      const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t;
+    }
+    VertexData.ComputeNormals(pos, idx, normals);
+  }
+  const m = new Mesh('p', scene);
+  const vd = new VertexData();
+  vd.positions = pos; vd.indices = idx; vd.normals = normals; vd.uvs = uvs;
+  vd.applyToMesh(m);
+  m.material = mat;
+  return m;
+}
+
+// Lower body: low wedge nose, shoulder rising to the cowl, widest over the
+// back wheels, tail cut off short.
+const BODY_SECTIONS = [
+  { z:  2.30, hw: 0.58, lo: 0.30, hi: 0.44 },
+  { z:  1.95, hw: 0.84, lo: 0.24, hi: 0.53 },
+  { z:  1.45, hw: 0.97, lo: 0.22, hi: 0.62 },
+  { z:  0.80, hw: 0.98, lo: 0.22, hi: 0.71 },
+  { z:  0.20, hw: 0.99, lo: 0.22, hi: 0.78 },
+  { z: -0.60, hw: 1.00, lo: 0.22, hi: 0.80 },
+  { z: -1.35, hw: 1.02, lo: 0.24, hi: 0.80 },
+  { z: -1.95, hw: 0.96, lo: 0.30, hi: 0.77 },
+  { z: -2.30, hw: 0.82, lo: 0.38, hi: 0.71 },
+];
+// Greenhouse: a steeply raked screen, a short flat roof, a fastback.
+const CABIN_SECTIONS = [
+  { z:  0.34, hw: 0.74, lo: 0.76, hi: 0.83 },
+  { z: -0.28, hw: 0.79, lo: 0.78, hi: 1.15 },
+  { z: -1.00, hw: 0.78, lo: 0.78, hi: 1.15 },
+  { z: -1.52, hw: 0.72, lo: 0.78, hi: 0.94 },
+  { z: -1.92, hw: 0.62, lo: 0.78, hi: 0.83 },
+];
+
 function buildCar(paintCol, taillit, trimCol) {
   const root = new TransformNode('car', scene);
+  // No planar mirror on the paint. The mirror is the wet ground plane, so
+  // reflecting it onto bodywork smeared lit windows across the car and made
+  // it read as a flat panel of noise rather than a shape. Paint now reads as
+  // paint: its own colour, lifted enough to be visible at night, shaded by
+  // the ambient so the curves of the loft actually show.
   const paint = new PBRMaterial('paint', scene);
   paint.albedoColor = paintCol;
-  paint.metallic = 0.85; paint.roughness = 0.24;
-  paint.reflectionTexture = mirror;
+  paint.metallic = 0.35; paint.roughness = 0.3;
+  paint.emissiveColor = paintCol.scale(0.16);
   const blk = new PBRMaterial('blk', scene);
-  blk.albedoColor = new Color3(0.02, 0.02, 0.025);
-  blk.metallic = 0.3; blk.roughness = 0.6;
+  blk.albedoColor = new Color3(0.015, 0.02, 0.03);
+  blk.metallic = 0.5; blk.roughness = 0.18;
+  blk.emissiveColor = new Color3(0.02, 0.05, 0.09);
   const lit = new StandardMaterial('lit', scene);
   lit.emissiveColor = taillit ? new Color3(1.7, 0.07, 0.05) : new Color3(0.05, 0.05, 0.05);
   lit.disableLighting = true;
@@ -211,32 +307,41 @@ function buildCar(paintCol, taillit, trimCol) {
     mirror.renderList.push(b);
     return b;
   };
-  part(1.9, 0.5, 4.4, 0, 0.62, 0, paint);
-  part(1.8, 0.32, 1.6, 0, 0.55, 2.6, paint, 0.10);
-  part(1.55, 0.42, 2.0, 0, 1.06, -0.5, blk);
-  part(1.8, 0.06, 0.5, 0, 1.14, -2.1, paint);
-  part(1.72, 0.24, 0.1, 0, 0.72, -2.24, lit);       // tail bar
-  part(0.5, 0.1, 0.06, -0.6, 0.55, 3.38, head);     // headlights
-  part(0.5, 0.1, 0.06, 0.6, 0.55, 3.38, head);
-  // Neon beltline trim: the silhouette, drawn in light. This is what makes
-  // a car readable against the dark instead of a shadow with headlights.
+  for (const [sections, mat] of [[BODY_SECTIONS, paint], [CABIN_SECTIONS, blk]]) {
+    const m = loftBody(sections, mat, scene);
+    m.parent = root;
+    mirror.renderList.push(m);
+  }
+  part(1.66, 0.06, 0.34, 0, 0.25, 2.16, blk);        // front splitter
+  part(0.46, 0.09, 0.05, -0.52, 0.47, 2.24, head);   // headlights
+  part(0.46, 0.09, 0.05, 0.52, 0.47, 2.24, head);
+  part(1.62, 0.16, 0.06, 0, 0.60, -2.30, lit);       // tail bar
+  part(0.10, 0.22, 0.34, -0.70, 0.90, -1.95, blk);   // spoiler struts
+  part(0.10, 0.22, 0.34, 0.70, 0.90, -1.95, blk);
+  part(1.74, 0.07, 0.40, 0, 1.02, -1.98, paint);     // spoiler blade
+  // Neon trim: the silhouette drawn in light. Underglow along the rockers
+  // and a shoulder line down the flanks is what makes a car readable
+  // against the dark instead of a shadow with headlights.
   const trim = new StandardMaterial('trim', scene);
   trim.emissiveColor = trimCol || new Color3(0.55, 0.55, 0.65);
   trim.disableLighting = true;
-  part(0.05, 0.05, 4.3, -0.96, 0.86, 0, trim);
-  part(0.05, 0.05, 4.3, 0.96, 0.86, 0, trim);
-  part(1.9, 0.05, 0.05, 0, 0.86, 2.2, trim);
-  part(1.86, 0.05, 0.05, 0, 0.9, -2.2, trim);
+  part(0.05, 0.05, 3.6, -0.98, 0.24, -0.2, trim);    // rocker underglow
+  part(0.05, 0.05, 3.6, 0.98, 0.24, -0.2, trim);
+  part(0.05, 0.05, 2.5, -1.00, 0.79, -0.95, trim);   // shoulder line
+  part(0.05, 0.05, 2.5, 1.00, 0.79, -0.95, trim);
+  part(1.20, 0.05, 0.05, 0, 0.44, 2.26, trim);       // nose bar
   const ind = new StandardMaterial('ind', scene);
   ind.emissiveColor = new Color3(1.5, 0.75, 0.1);
   ind.disableLighting = true;
-  const indL = part(0.12, 0.12, 0.5, -0.98, 0.62, 1.4, ind);
-  const indR = part(0.12, 0.12, 0.5, 0.98, 0.62, 1.4, ind);
+  const indL = part(0.10, 0.10, 0.44, -1.01, 0.60, 1.5, ind);
+  const indR = part(0.10, 0.10, 0.44, 1.01, 0.60, 1.5, ind);
   const wm = new PBRMaterial('wm', scene);
   wm.albedoColor = new Color3(0.03, 0.03, 0.03); wm.roughness = 0.9;
-  for (const [wx, wz] of [[-0.95, 1.45], [0.95, 1.45], [-0.95, -1.35], [0.95, -1.35]]) {
-    const w = MeshBuilder.CreateCylinder('w', { diameter: 0.76, height: 0.3, tessellation: 14 }, scene);
-    w.rotation.z = Math.PI / 2; w.position.set(wx, 0.38, wz); w.parent = root; w.material = wm;
+  // Fat rears, slimmer fronts - a rear-drive stance.
+  for (const [wx, wz, dia, wid] of [[-0.93, 1.45, 0.74, 0.26], [0.93, 1.45, 0.74, 0.26],
+                                    [-0.95, -1.35, 0.86, 0.34], [0.95, -1.35, 0.86, 0.34]]) {
+    const w = MeshBuilder.CreateCylinder('w', { diameter: dia, height: wid, tessellation: 16 }, scene);
+    w.rotation.z = Math.PI / 2; w.position.set(wx, dia / 2, wz); w.parent = root; w.material = wm;
     mirror.renderList.push(w);
   }
   return { root, indL, indR };
@@ -325,6 +430,7 @@ for (const [rx, rz, ry] of [[mid, mid + 1240, 0], [mid, mid - 1240, Math.PI],
   const dm = new StandardMaterial('dskym', scene);
   dm.emissiveTexture = coastSkyTexture();
   dm.disableLighting = true;
+  dm.fogEnabled = false;
   p.material = dm;
   p.visibility = 0;
   p.setEnabled(false);
@@ -541,6 +647,7 @@ pipe.bloomEnabled = true; pipe.bloomThreshold = 0.8; pipe.bloomWeight = 0.4;
 pipe.bloomScale = 0.4;
 pipe.chromaticAberrationEnabled = true; pipe.chromaticAberration.aberrationAmount = 14;
 pipe.grainEnabled = true; pipe.grain.intensity = 8; pipe.grain.animated = true;
+pipe.fxaaEnabled = true;
 pipe.imageProcessing.vignetteEnabled = true;
 pipe.imageProcessing.vignetteWeight = 1.7;
 pipe.imageProcessing.contrast = 1.3;
@@ -614,7 +721,7 @@ const tick = (dt) => {
 
   playerCar.root.position.set(player.pos.x, 0, player.pos.z);
   playerCar.root.rotation.y = player.pos.yaw;
-  const blink = Math.sin(clock * 9) > 0;
+  const blink = safe.reduceFlash || Math.sin(clock * 9) > 0;
   playerCar.indL.setEnabled(player.indicator === -1 && blink);
   playerCar.indR.setEnabled(player.indicator === 1 && blink);
 
@@ -623,7 +730,7 @@ const tick = (dt) => {
     if (d.blocked) d.beginUTurn();
     d.car.root.position.set(d.pos.x, 0, d.pos.z);
     d.car.root.rotation.y = d.pos.yaw;
-    const b2 = Math.sin(clock * 9 + d.ai.cruise * 20) > 0;
+    const b2 = safe.reduceFlash || Math.sin(clock * 9 + d.ai.cruise * 20) > 0;
     d.car.indL.setEnabled(d.indicator === -1 && b2);
     d.car.indR.setEnabled(d.indicator === 1 && b2);
   }
@@ -751,6 +858,8 @@ const tick = (dt) => {
       p.visibility = v >= 0.98 ? 1 : v;
     }
     for (const p of nightSkies) p.setEnabled(nightOn);
+    scene.fogColor.set(0.05 + v * 0.36, 0.03 + v * 0.47, 0.11 + v * 0.52);
+    scene.fogDensity = (0.0017 - v * 0.0006) * (safe.reduceFlash ? 1.6 : 1);
     pipe.imageProcessing.exposure = 1.05 + v * 0.22;
     pipe.imageProcessing.contrast = 1.3 - v * 0.12;
     // The car paint's planar reflection is worth its cost among neon towers.
@@ -761,9 +870,16 @@ const tick = (dt) => {
   coast.update(dt, player, clock, mission.wanted);
   sound.update(dt, Math.min(1, player.speed / 55), turbo.active, mission.wanted > 0);
 
+  // Lightbars: 1.9 Hz in pursuit, well under the three-per-second the
+  // photosensitivity guidelines draw the line at, and a steady lilac glow
+  // with no alternation at all when reduced flashing is on.
   const strobing = mission.wanted > 0;
   for (let bi = 0; bi < beaconMats.length; bi++) {
-    const on = strobing ? Math.sin(clock * 18 + bi * 2) > 0 : Math.sin(clock * 4 + bi) > 0.85;
+    if (safe.reduceFlash) {
+      beaconMats[bi].emissiveColor.set(1.1, 0.3, 1.4);
+      continue;
+    }
+    const on = strobing ? Math.sin(clock * 12 + bi * 2) > 0 : Math.sin(clock * 4 + bi) > 0.85;
     beaconMats[bi].emissiveColor.set(on ? 0.4 : 1.8, on ? 0.6 : 0.15, on ? 2.2 : 0.15);
   }
   starsEl.textContent = mission.wanted > 0 ? '★'.repeat(mission.wanted) : '';
@@ -807,7 +923,7 @@ window.game = { player, traffic, net, hud, tick, mission, coast };
     'W/S DRIVE · A/D LANES · Q/E INDICATE (HOLD FOR U-TURN)\n' +
     'SPACE FIRE · SHIFT TURBO · GREEN SQUARES SELL PETROL\n' +
     'THE RING ROAD IS THE COAST — GO SEE IT\n' +
-    'M MUSIC · X NEXT TRACK · G GRAPHICS QUALITY\n\n' + rows;
+    'M MUSIC · X NEXT TRACK · G GRAPHICS · F REDUCED FLASHING\n\n' + rows;
 }
 addEventListener('keydown', (e) => {
   if (!run.started && e.code === 'Enter') {
@@ -820,6 +936,13 @@ addEventListener('keydown', (e) => {
     hud.say(sound.toggle() ? 'SOUND ON' : 'SOUND OFF');
   }
   if (e.code === 'KeyX' && sound.started) sound.next();
+  if (e.code === 'KeyF') {
+    safe.reduceFlash = !safe.reduceFlash;
+    hud.reduceFlash = safe.reduceFlash;
+    vibeStep = -1;                       // forces the fog to be re-applied
+    applyQuality();
+    hud.say(safe.reduceFlash ? 'REDUCED FLASHING — ON' : 'REDUCED FLASHING — OFF');
+  }
   if (e.code === 'KeyG') {
     quality.manual = true;
     scaleStep = (scaleStep + 1) % 4;
@@ -839,7 +962,10 @@ let scaleStep = 0, scaleGoodT = 0, scaleBadT = 0;
 const quality = { manual: false };
 const applyQuality = () => {
   engine.setHardwareScalingLevel(1 + scaleStep * 0.4);
-  pipe.grainEnabled = scaleStep < 2;
+  // FXAA stays on when reduced flashing is asked for: smoothing sub-pixel
+  // edges is exactly what stops thin bright lines strobing.
+  pipe.fxaaEnabled = safe.reduceFlash || scaleStep < 3;
+  pipe.grainEnabled = !safe.reduceFlash && scaleStep < 2;
   pipe.chromaticAberrationEnabled = scaleStep < 2;
   // The two most expensive things in the frame, shed last: at the bottom
   // rung the bloom carries the neon on its own.
@@ -866,6 +992,11 @@ setInterval(() => {
     }
   } else { scaleBadT = 0; }
 }, 500);
+
+// If the browser already said this viewer wants reduced motion, honour it
+// from the first frame rather than waiting for someone to press F.
+hud.reduceFlash = safe.reduceFlash;
+if (safe.reduceFlash) applyQuality();
 
 const fpsEl = document.getElementById('fps');
 const fuelBar = document.getElementById('fuel');
