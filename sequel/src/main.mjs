@@ -24,6 +24,7 @@ import { GRID, CELL, buildNetwork, CLASSES } from './network.mjs';
 import { buildCity } from './citygen.mjs';
 import { Driver } from './driver.mjs';
 import { Hud } from './hud.mjs';
+import { Mission } from './mission.mjs';
 
 // The artifact sandbox's permissions policy forbids the Gamepad API, and
 // Chrome makes the mere call throw. Babylon's input system polls it during
@@ -130,13 +131,26 @@ for (const [seed, dz, y, col] of [[1.7, 1180, 70, '#241040'], [4.2, 1120, 50, '#
 }
 
 // ------------------------------------------------------------- the city ----
-const mirror = new MirrorTexture('mir', 1024, scene, true);
+const mirror = new MirrorTexture('mir', 512, scene, true);
 mirror.mirrorPlane = new Plane(0, -1, 0, 0);
 mirror.level = 0.8;
 mirror.renderList.push(sun);
 
 buildCity(scene, net, mirror);
 report('city built — starting traffic…');
+
+// ---- performance pass -------------------------------------------------
+// The city never moves: freeze every static world matrix so Babylon stops
+// recomputing them, and keep the mirror honest - it was re-rendering the
+// ground and the near-coplanar road slabs into itself for nothing.
+const CAR_PARTS = new Set(['p', 'w']);
+for (const msh of scene.meshes) {
+  if (CAR_PARTS.has(msh.name) || msh.name === 'pal') continue;
+  msh.freezeWorldMatrix();
+  msh.doNotSyncBoundingInfo = true;
+}
+const FLAT = new Set(['g', 'rd', 'wk', 'kb', 'sl']);
+mirror.renderList = mirror.renderList.filter(msh => !FLAT.has(msh.name));
 
 // ------------------------------------------------------------- vehicles ----
 function buildCar(paintCol, taillit) {
@@ -217,6 +231,61 @@ function aiInput(d, dt, t) {
            maxSpeed: CLASSES[d.e.cls].limit * a.cruise };
 }
 
+// ---- the hunt: target coupe, police cruiser, mission card --------------
+const hud = new Hud(net);
+const mission = new Mission(scene, net, buildCar, hud);
+{
+  // Police lightbar, wired to the mission so it can strobe in pursuit.
+  const barMat = new StandardMaterial('bar', scene);
+  barMat.emissiveColor = new Color3(1.8, 0.15, 0.15);
+  barMat.disableLighting = true;
+  const bar = MeshBuilder.CreateBox('p', { width: 1.1, height: 0.16, depth: 0.4 }, scene);
+  bar.position.set(0, 1.34, -0.5);
+  bar.parent = mission.policeCar.root;
+  bar.material = barMat;
+  mission.beacon = barMat;
+}
+
+// ---- collisions: longitudinal, in the grammar's terms ------------------
+// Same-lane car following stops AI overlap; hard contact swaps momentum
+// down the lane and tells the mission when the player is the hammer.
+let shake = 0;
+const hitCooldown = new Map();
+function updateCollisions(dt, clock) {
+  const everyone = [player, ...traffic, mission.target, mission.police];
+  for (let i = 0; i < everyone.length; i++) {
+    for (let j = i + 1; j < everyone.length; j++) {
+      const a = everyone[i], b = everyone[j];
+      const dx = a.pos.x - b.pos.x, dz = a.pos.z - b.pos.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > 14 * 14) continue;
+      // Car-following: an AI close behind in the same lane slows to match.
+      if (a.mode === 'edge' && b.mode === 'edge' && a.e === b.e &&
+          a.dir === b.dir && a.lane === b.lane) {
+        const gap = (b.s - a.s) * a.dir;
+        const [lead, tail] = gap > 0 ? [b, a] : [a, b];
+        if (Math.abs(gap) < 13 && tail !== player) {
+          tail.speed = Math.min(tail.speed, Math.max(0, lead.speed * 0.95));
+        }
+      }
+      // Hard contact.
+      if (d2 < 3.4 * 3.4) {
+        const key = i * 100 + j;
+        if ((hitCooldown.get(key) || 0) > clock) continue;
+        hitCooldown.set(key, clock + 0.8);
+        const rel = Math.abs(a.speed - b.speed) + 2;
+        const [fast, slow] = a.speed >= b.speed ? [a, b] : [b, a];
+        slow.speed = Math.min(slow.speed + rel * 0.55, slow.speed + 14);
+        fast.speed = Math.max(0, fast.speed * 0.55);
+        shake = Math.min(1, rel / 14);
+        if (a === player || b === player) {
+          mission.onPlayerImpact(a === player ? b : a, rel);
+        }
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------- post ----
 new GlowLayer('glow', scene, { intensity: 0.55 });
 const pipe = new DefaultRenderingPipeline('pp', true, scene, [cam]);
@@ -240,10 +309,7 @@ addEventListener('keydown', (e) => {
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 
 // -------------------------------------------------------------- the loop ----
-const hud = new Hud(net);
 let clock = 0;
-hud.say('NEON CITY — Q/E indicate, junctions drive themselves', true);
-setTimeout(() => hud.say(''), 6000);
 
 const tick = (dt) => {
   clock += dt;
@@ -260,12 +326,17 @@ const tick = (dt) => {
 
   for (const d of traffic) {
     d.update(dt, aiInput(d, dt, clock));
+    if (d.blocked) d.uTurn();
     d.car.root.position.set(d.pos.x, 0, d.pos.z);
     d.car.root.rotation.y = d.pos.yaw;
     const b2 = Math.sin(clock * 9 + d.ai.cruise * 20) > 0;
     d.car.indL.setEnabled(d.indicator === -1 && b2);
     d.car.indR.setEnabled(d.indicator === 1 && b2);
   }
+
+  mission.update(dt, player, clock);
+  updateCollisions(dt, clock);
+  if (shake > 0.005) shake *= Math.exp(-dt * 5); else shake = 0;
 
   // Chase camera: behind and above, leaning with speed, looking through.
   const back = 8.4 + player.speed * 0.16;
@@ -275,18 +346,29 @@ const tick = (dt) => {
   cam.position.x += (cx - cam.position.x) * k;
   cam.position.z += (cz - cam.position.z) * k;
   cam.position.y += (4.4 + player.speed * 0.05 - cam.position.y) * k;
+  if (shake > 0) {
+    cam.position.x += (Math.random() - 0.5) * shake * 0.7;
+    cam.position.y += (Math.random() - 0.5) * shake * 0.5;
+  }
   cam.setTarget(new Vector3(
     player.pos.x + Math.sin(player.pos.yaw) * 7,
     1.2,
     player.pos.z + Math.cos(player.pos.yaw) * 7));
 
-  hud.update(dt, player, traffic);
+  hud.update(dt, player, [...traffic, ...mission.mapEntries()]);
 };
 scene.onBeforeRenderObservable.add(() =>
   tick(Math.min(0.05, engine.getDeltaTime() / 1000)));
 
 // Handles for tests and the console.
-window.game = { player, traffic, net, hud, tick };
+window.game = { player, traffic, net, hud, tick, mission };
+
+const fpsEl = document.getElementById('fps');
+setInterval(() => {
+  const f = engine.getFps();
+  fpsEl.textContent = f.toFixed(0) + ' FPS';
+  fpsEl.style.color = f > 50 ? '#7dfcf3' : f > 30 ? '#ffd34d' : '#ff5a4d';
+}, 400);
 
 engine.runRenderLoop(() => scene.render());
 addEventListener('resize', () => engine.resize());
