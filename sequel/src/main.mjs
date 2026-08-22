@@ -233,7 +233,7 @@ function tileAt(x, z) {
   // is switched off is switched off entirely.
   const DYNAMIC = new Set(['p', 'w', 'ped', 'pedh', 'tr', 'sky', 'r',
                            'dsky', 'sun', 'g', 'static', 'car',
-                           'cass', 'case']);
+                           'cass', 'case', 'sigl']);
   for (const msh of scene.meshes) {
     if (DYNAMIC.has(msh.name) || !msh.material || !msh.isEnabled(false)) continue;
     // Same rule as the merged geometry: anything longer than a couple of
@@ -489,8 +489,9 @@ const signals = new Signals(scene, net);
   // district and get culled with it.
   const byTile = new Map();
   for (const msh of scene.meshes) {
-    if (msh.name !== 'sigp') continue;
-    const k = Math.floor(msh.position.x / TILE) + '|' + Math.floor(msh.position.z / TILE);
+    if (msh.name !== 'sigp' && msh.name !== 'sigh' && msh.name !== 'sigd') continue;
+    const k = msh.material.uniqueId + '|' + Math.floor(msh.position.x / TILE) +
+              '|' + Math.floor(msh.position.z / TILE);
     let b = byTile.get(k);
     if (!b) { b = { arr: [], x: 0, z: 0 }; byTile.set(k, b); }
     b.arr.push(msh); b.x += msh.position.x; b.z += msh.position.z;
@@ -505,9 +506,7 @@ const signals = new Signals(scene, net);
     tileAt(b.x / b.arr.length, b.z / b.arr.length).meshes.push(merged);
     mirror.renderList.push(merged);
   }
-  for (const msh of scene.meshes) {
-    if (msh.name === 'sigh') tileAt(msh.position.x, msh.position.z).meshes.push(msh);
-  }
+
 }
 const peds = new Peds(scene, net, 42);
 const pickups = new Pickups(scene, net, hud);

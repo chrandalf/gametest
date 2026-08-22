@@ -10,6 +10,18 @@ import { halfWidth } from './network.mjs';
 
 const CYCLE = 14;                  // seconds for the whole loop
 const GREEN = 5.6, AMBER = 1.4;    // per axis: green then amber, then swap
+const RED_AMBER = 1.2;             // British: red and amber together before green
+
+// Lens positions on the head, top to bottom, the way every signal in the
+// country is arranged.
+const LENSES = [['red', 0.52], ['amber', 0], ['green', -0.52]];
+// Which lenses are lit in each aspect.
+const LIT = {
+  red: { red: true },
+  redamber: { red: true, amber: true },
+  amber: { amber: true },
+  green: { green: true },
+};
 
 export class Signals {
   constructor(scene, net) {
@@ -21,11 +33,17 @@ export class Signals {
       m.disableLighting = true;
       return m;
     };
-    this.mats = { red: mk(1.8, 0.1, 0.08), amber: mk(1.6, 0.9, 0.1),
-                  green: mk(0.15, 1.5, 0.4), off: mk(0.05, 0.05, 0.06) };
+    this.mats = { red: mk(2.2, 0.09, 0.06), amber: mk(2.0, 1.0, 0.06),
+                  green: mk(0.12, 1.9, 0.42) };
+    // The unlit lenses are real too - three dark discs on a dark box is what
+    // makes it read as a traffic light rather than a glowing cube.
+    const darkLens = mk(0.035, 0.035, 0.04);
     const poleMat = new StandardMaterial('sigpole', scene);
     poleMat.emissiveColor = new Color3(0.1, 0.1, 0.13);
     poleMat.disableLighting = true;
+    const caseMat = new StandardMaterial('sigcase', scene);
+    caseMat.emissiveColor = new Color3(0.055, 0.058, 0.07);
+    caseMat.disableLighting = true;
 
     for (const n of net.nodes) {
       const live = n.edges.filter(Boolean);
@@ -42,33 +60,71 @@ export class Signals {
         pole.position.set(px, 2.3, pz);
         pole.material = poleMat;
         pole.freezeWorldMatrix();
-        const head = MeshBuilder.CreateBox('sigh', { width: 0.5, height: 0.5, depth: 0.5 }, scene);
-        head.position.set(px, 4.9, pz);
-        head.material = this.mats.red;
-        head.freezeWorldMatrix();
+        // The housing, and behind it a backboard so the lenses read against
+        // the city rather than against whatever happens to be behind them.
+        const box = MeshBuilder.CreateBox('sigh',
+          { width: 0.46, height: 1.72, depth: 0.34 }, scene);
+        box.position.set(px, 4.85, pz);
+        box.material = caseMat;
+        box.freezeWorldMatrix();
+        const board = MeshBuilder.CreateBox('sigh',
+          { width: 0.66, height: 1.92, depth: 0.08 }, scene);
+        board.position.set(px, 4.85, pz);
+        board.material = caseMat;
+        board.freezeWorldMatrix();
+        // Three lenses, dark, and three bright ones sitting a hair proud of
+        // them that switch on and off. Only the lit ones ever draw.
+        // One box per lens, deep enough to poke out of both faces of the
+        // housing, so the same lamp serves both approaches on this axis
+        // without costing a second mesh.
+        const lamps = {};
+        for (const [name, dy] of LENSES) {
+          const dark = MeshBuilder.CreateBox('sigd',
+            { width: 0.26, height: 0.26, depth: 0.42 }, scene);
+          dark.position.set(px, 4.85 + dy, pz);
+          dark.material = darkLens;
+          dark.freezeWorldMatrix();
+          const lit = MeshBuilder.CreateBox('sigl',
+            { width: 0.3, height: 0.3, depth: 0.46 }, scene);
+          lit.position.set(px, 4.85 + dy, pz);
+          lit.material = this.mats[name];
+          lit.freezeWorldMatrix();
+          lit.setEnabled(false);
+          lamps[name] = [lit];
+        }
         // Slots 0/1 are the x-axis approaches, 2/3 the z-axis.
-        node.heads.push({ head, axis: slot < 2 ? 0 : 1 });
+        node.heads.push({ lamps, axis: slot < 2 ? 0 : 1, aspect: null });
       }
       this.nodes.push(node);
       n.signal = node;
     }
   }
 
-  // 'green' | 'amber' | 'red' for travel along `axis` at this node, now.
+  // 'green' | 'amber' | 'red' | 'redamber' for travel along `axis`, now.
   phase(node, axis, clock) {
     const t = (clock + node.off) % CYCLE;
     const half = CYCLE / 2;
     const mine = axis === 0 ? t < half : t >= half;
-    if (!mine) return 'red';
-    const into = axis === 0 ? t : t - half;
-    return into > GREEN ? 'amber' : 'green';
+    if (mine) {
+      const into = axis === 0 ? t : t - half;
+      return into > GREEN ? 'amber' : 'green';
+    }
+    // The warning the real ones give: red and amber together, just before
+    // it is your turn. Still means stop.
+    const untilMine = axis === 0 ? CYCLE - t : half - t;
+    return untilMine <= RED_AMBER ? 'redamber' : 'red';
   }
 
   update(clock) {
     for (const node of this.nodes) {
       for (const h of node.heads) {
         const p = this.phase(node, h.axis, clock);
-        h.head.material = this.mats[p];
+        if (p === h.aspect) continue;        // only on the change
+        h.aspect = p;
+        const on = LIT[p];
+        for (const [name] of LENSES) {
+          for (const lamp of h.lamps[name]) lamp.setEnabled(!!on[name]);
+        }
       }
     }
   }
@@ -89,6 +145,7 @@ export class Signals {
     if (!node.signal) return false;
     const line = e.len - halfWidth('avenue') - 2.6;
     if (!(sBefore < line && sAfter >= line)) return false;
-    return this.phase(node.signal, e.axis, clock) === 'red';
+    const p = this.phase(node.signal, e.axis, clock);
+    return p === 'red' || p === 'redamber';
   }
 }
