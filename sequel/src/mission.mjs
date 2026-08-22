@@ -52,11 +52,12 @@ export const OFFENCES = {
 };
 
 export class Mission {
-  constructor(scene, net, buildCar, hud) {
+  constructor(scene, net, buildCar, hud, player) {
     this.scene = scene;
     this.net = net;
     this.hud = hud;
     this.buildCar = buildCar;
+    this.playerRef = player || null;
     this.level = 1;
     this.state = 'locate';           // locate | intercept | done
     this.doneT = 0;
@@ -82,10 +83,25 @@ export class Mission {
   }
 
   // ------------------------------------------------------------ spawns ----
+  // A spawn is a place to hunt toward, so it must never be beside the
+  // player: a van that dies and "reappears next to you" is the same van
+  // formula landing on your street next level. Walk the deterministic
+  // list from its usual start and take the first edge far enough away.
+  farEdge(list, frac) {
+    const start = ((list.length * frac) | 0) % list.length;
+    const p = this.playerRef;
+    for (let k = 0; k < list.length; k++) {
+      const e = list[(start + k) % list.length];
+      const mx = (e.a.x + e.b.x) / 2, mz = (e.a.z + e.b.z) / 2;
+      if (!p || Math.hypot(mx - p.pos.x, mz - p.pos.z) > 260) return e;
+    }
+    return list[start];
+  }
+
   spawnTarget() {
     const net = this.net;
     const streets = net.edges.filter(e => e.cls === 'street');
-    const e = streets[((streets.length * (0.37 + this.level * 0.19)) | 0) % streets.length];
+    const e = this.farEdge(streets, 0.37 + this.level * 0.19);
     const d = new Driver(net, e, 1, 0, e.len * 0.3);
     d.suspicion = 0;
     d.armoured = this.level >= 3;
@@ -111,7 +127,7 @@ export class Mission {
     if (this.level < 2) { this.van = null; if (this.vanCar) this.vanCar.root.setEnabled(false); return; }
     const net = this.net;
     const roads = net.edges.filter(e => e.cls === 'avenue' || e.cls === 'highway');
-    const e = roads[((roads.length * (0.61 + this.level * 0.13)) | 0) % roads.length];
+    const e = this.farEdge(roads, 0.61 + this.level * 0.13);
     const d = new Driver(net, e, -1, 0, e.len * 0.6);
     d.thinkT = 0;
     d.health = 4 + this.level;
@@ -132,10 +148,13 @@ export class Mission {
       this.hud.say(`VAN HIT · ${v.health} MORE`);
       return;
     }
-    // The drop never arrives. That is worth more than the coupe is.
+    // The drop never arrives. That is worth more than the coupe is - and
+    // it goes out with a bang, because a van that silently winks out reads
+    // as a bug, not a kill.
     const bonus = 300 * this.level;
     if (this.onScore) this.onScore(bonus);
     this.hud.say(`DROP STOPPED · +${bonus} — THE COUPE IS ON ITS OWN`, true);
+    if (this.onBoom) this.onBoom(v.pos.x, v.pos.y, v.pos.z, 'van');
     this.van = null;
     this.vanCar.root.setEnabled(false);
     // A courier with nothing to collect runs for its life.
@@ -274,6 +293,7 @@ export class Mission {
       const base = 500 * this.level;
       const bonus = this.cleanHands ? 250 : 0;
       if (this.onScore) this.onScore(base + bonus);
+      if (this.onBoom) this.onBoom(t.pos.x, t.pos.y, t.pos.z, 'target');
       this.hud.say(`TARGET DISABLED · +${base}${bonus ? ' · CLEAN +250' : ''}`, true);
       // Whatever it was carrying is now lying in the road.
       if (this.onDrop) this.onDrop(t.pos.x, t.pos.y, t.pos.z);

@@ -123,4 +123,17 @@ export class Sound {
   crash(mag) { this.noise(0.25 + mag * 0.15, 0.3 + mag * 0.3, 500); }
   chime() { this.blip(880, 0.12, 0.12, 'sine'); this.blip(1320, 0.2, 0.08, 'sine'); }
   clunk() { this.blip(140, 0.1, 0.15, 'triangle'); }
+  // A vehicle coming apart: a long low rumble under a bass drop.
+  boom() {
+    if (!this.started || !this.on) return;
+    this.noise(0.7, 0.8, 260);
+    this.blip(70, 0.6, 0.3, 'sine');
+  }
+  // An honest cheer for a level: a rising arpeggio and a held top note.
+  fanfare() {
+    if (!this.started || !this.on) return;
+    [523, 659, 784, 1047].forEach((f, i) =>
+      setTimeout(() => this.blip(f, 0.28, 0.13, 'square'), i * 110));
+    setTimeout(() => this.blip(1568, 0.55, 0.09, 'sine'), 460);
+  }
 }

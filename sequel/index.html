@@ -27,6 +27,71 @@
     box-shadow: 0 0 18px rgba(60, 255, 190, 0.25); }
   #diag { position: fixed; left: 22px; bottom: 70px; color: #ffb0c8;
     font: 600 13px monospace; max-width: 70vw; }
+  /* While the front door is up, the game's own HUD stays out of the shot
+     (the FPS counter survives - it is the instrument, not the game). */
+  /* !important because #tgtbox sets display:flex inline. */
+  body.attract #title, body.attract #tgtbox, body.attract #speedbox,
+  body.attract #gauges, body.attract #map, body.attract #stars,
+  body.attract #score, body.attract #whywanted, body.attract #msg {
+    display: none !important; }
+  .mi { text-shadow: 0 1px 8px rgba(0, 0, 0, 0.85); }
+  /* ---- the front door: title + menu over the attract camera ---- */
+  #intro { position: fixed; inset: 0; z-index: 11; display: flex;
+    flex-direction: column; align-items: center; user-select: none;
+    /* A scrim, not a wall: dark at the top and foot so the type reads,
+       nearly clear in the middle so the attract shot IS the background. */
+    background: linear-gradient(rgba(5, 1, 18, 0.72) 0%, rgba(5, 1, 18, 0.10) 34%,
+      rgba(5, 1, 18, 0.12) 62%, rgba(5, 1, 18, 0.82) 100%); }
+  #wordmark { margin-top: 9vh; font: italic 900 clamp(44px, 9vw, 92px) "Arial Black", system-ui, sans-serif;
+    letter-spacing: 0.04em;
+    background: linear-gradient(#8ffcf6 0%, #ffffff 45%, #ff9ad9 55%, #ff2fa8 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 26px rgba(255, 47, 168, 0.65))
+            drop-shadow(0 2px 0 rgba(255, 255, 255, 0.25)); }
+  #strap { color: #7dfcf3; font: 700 12px monospace; letter-spacing: 0.55em;
+    margin: 10px 0 0 0.55em; text-shadow: 0 0 10px rgba(125, 252, 243, 0.6); }
+  #townline { color: #ffd34d; font: 800 13px monospace; letter-spacing: 0.3em;
+    margin: 14px 0 0 0.3em; text-shadow: 0 0 12px rgba(255, 211, 77, 0.6); }
+  #prompt { margin-top: 10vh; color: #fff; font: 700 22px monospace;
+    letter-spacing: 0.2em; animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+  #menu { margin-top: 6vh; display: flex; flex-direction: column;
+    align-items: center; gap: 4px; }
+  .mi { position: relative; color: rgba(190, 230, 235, 0.78);
+    font: 700 19px monospace; letter-spacing: 0.14em; padding: 6px 26px;
+    border-radius: 8px; white-space: pre; }
+  .mi.sel { color: #fff; background: rgba(255, 47, 168, 0.16);
+    box-shadow: 0 0 18px rgba(255, 47, 168, 0.18) inset,
+                0 0 14px rgba(255, 47, 168, 0.22);
+    text-shadow: 0 0 10px rgba(255, 160, 220, 0.8); }
+  #hint { min-height: 18px; margin-top: 8px; color: #7dfcf3;
+    font: 600 12px monospace; letter-spacing: 0.08em;
+    text-shadow: 0 0 8px rgba(125, 252, 243, 0.5); }
+  #panel { margin-top: 3vh; color: #8dffcf; font: 600 13px monospace;
+    text-align: center; line-height: 1.7;
+    text-shadow: 0 0 8px rgba(90, 255, 190, 0.4); }
+  #introfoot { position: absolute; bottom: 22px; left: 0; right: 0;
+    text-align: center; color: rgba(255, 255, 255, 0.45);
+    font: 600 10px monospace; letter-spacing: 0.1em; }
+  /* ---- the big word: level-ups and kills, announced properly ---- */
+  #bigword { position: fixed; inset: 0; display: none; z-index: 9;
+    flex-direction: column; align-items: center; justify-content: center;
+    pointer-events: none; }
+  #bigword.go { display: flex; animation: bwpop 3s ease-out forwards; }
+  #bwmain { font: italic 900 clamp(40px, 9vw, 104px) "Arial Black", system-ui, sans-serif;
+    letter-spacing: 0.05em; white-space: nowrap;
+    background: linear-gradient(#fff9c9 0%, #ffd34d 40%, #ff7a2a 72%, #ff2fa8 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 28px rgba(255, 170, 60, 0.75)); }
+  #bwsub { color: #7dfcf3; font: 800 15px monospace; letter-spacing: 0.5em;
+    margin: 10px 0 0 0.5em; text-shadow: 0 0 14px rgba(125, 252, 243, 0.8); }
+  @keyframes bwpop {
+    0% { opacity: 0; transform: scale(0.6); }
+    12% { opacity: 1; transform: scale(1.06); }
+    20% { transform: scale(1); }
+    78% { opacity: 1; }
+    100% { opacity: 0; transform: scale(1.04); }
+  }
 </style>
 </head>
 <body>
@@ -43,7 +108,7 @@
   <span id="speed">0 MPH</span>
   <span id="indR">&#9654;</span>
 </div>
-<div style="position:fixed;left:26px;bottom:64px;width:170px">
+<div id="gauges" style="position:fixed;left:26px;bottom:64px;width:170px">
   <div style="color:#7dfcf3;font:700 9px monospace;letter-spacing:2px">TURBO</div>
   <div style="height:6px;background:rgba(125,252,243,0.15);border-radius:3px;margin:2px 0 6px">
     <div id="turbo" style="height:100%;width:100%;background:#7dfcf3;border-radius:3px;box-shadow:0 0 8px rgba(125,252,243,0.7)"></div></div>
@@ -58,13 +123,17 @@
 <div id="stars" style="position:fixed;right:22px;top:40px;color:#ffd34d;font:800 18px monospace;text-shadow:0 0 12px rgba(255,180,60,0.7)"></div>
 <div id="whywanted" style="position:fixed;right:22px;top:62px;color:#ffb36b;font:700 10px monospace;letter-spacing:0.06em;text-shadow:0 0 8px rgba(255,150,60,0.6)"></div>
 <div id="score" style="position:fixed;right:22px;top:66px;color:#8dffcf;font:800 16px monospace;text-shadow:0 0 8px rgba(90,255,190,0.5)">000000</div>
-<div id="intro" style="position:fixed;inset:0;background:rgba(3,0,14,0.82);z-index:11;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px">
-  <div style="color:#ff5ad1;font:800 46px monospace;letter-spacing:10px;text-shadow:0 0 24px rgba(255,90,209,0.8)">NEON CITY</div>
-  <div style="color:#7dfcf3;font:700 13px monospace;letter-spacing:3px">A TURBO ESPRIT TRIBUTE</div>
-  <pre id="introtext" style="color:#8dffcf;font:600 13px monospace;text-align:center;line-height:1.7;text-shadow:0 0 8px rgba(90,255,190,0.4)"></pre>
-  <div id="introprompt" style="color:#ffd34d;font:800 16px monospace;letter-spacing:3px;text-shadow:0 0 12px rgba(255,211,77,0.7)">PRESS ENTER TO DRIVE</div>
-  <div style="color:rgba(255,255,255,0.45);font:600 10px monospace;letter-spacing:1px">MUSIC FROM EPIDEMIC SOUND · USED UNDER LICENCE · X SKIPS · M MUTES</div>
+<div id="intro">
+  <div id="wordmark">NEON CITY</div>
+  <div id="strap">A TURBO ESPRIT TRIBUTE</div>
+  <div id="townline"></div>
+  <div id="prompt">PRESS ENTER</div>
+  <div id="menu" style="display:none"></div>
+  <div id="hint"></div>
+  <pre id="panel"></pre>
+  <div id="introfoot">MUSIC FROM EPIDEMIC SOUND · USED UNDER LICENCE · X SKIPS · M MUTES</div>
 </div>
+<div id="bigword"><div id="bwmain"></div><div id="bwsub"></div></div>
 <div id="over" style="display:none;position:fixed;inset:0;background:rgba(3,0,12,0.88);z-index:10;align-items:center;justify-content:center">
   <pre id="ovtext" style="color:#8dffcf;font:700 16px monospace;text-align:center;text-shadow:0 0 12px rgba(90,255,190,0.5);letter-spacing:1px"></pre>
 </div>

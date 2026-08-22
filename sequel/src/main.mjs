@@ -463,9 +463,15 @@ function buildCar(paintCol, taillit, trimCol) {
   return { root, indL, indR, paint };
 }
 
-// The player, starting mid-city on an avenue, pointed somewhere useful.
-const startEdge = net.edges.find(e => e.cls === 'avenue') || net.edges[0];
-const player = new Driver(net, startEdge, 1, 0, startEdge.len * 0.4);
+// The player starts on an avenue that runs toward the sun (+z). It is the
+// attract camera's boulevard - the menu plays over the car cruising it with
+// the sunset dead ahead - and a fine place to begin a run.
+const sunward = net.edges
+  .filter(e => e.cls === 'avenue' && e.axis === 1 &&
+               !e.a.isle && !e.a.sea && !e.b.sea)
+  .sort((a, b) => a.a.j - b.a.j);
+const startEdge = sunward[0] || net.edges.find(e => e.cls === 'avenue') || net.edges[0];
+const player = new Driver(net, startEdge, 1, 0, Math.min(20, startEdge.len * 0.4));
 const playerCar = buildCar(new Color3(0.8, 0.83, 0.9), true, new Color3(0.25, 1.3, 1.6));
 
 // Ambient traffic: the same Driver, piloted by ten lines of AI. This is the
@@ -500,7 +506,7 @@ function aiInput(d, dt, t) {
 
 // ---- the hunt: target coupe, police cruiser, mission card --------------
 const hud = new Hud(net, cityBits.stations);
-const mission = new Mission(scene, net, buildCar, hud);
+const mission = new Mission(scene, net, buildCar, hud, player);
 // The briefing names the quarter, not a compass point.
 mission.districtAt = cityBits.districtAt;
 const signals = new Signals(scene, net);
@@ -597,6 +603,12 @@ const coast2 = { daylight: false };
 
 // The run: score, health, and how it ends.
 const run = { score: 0, health: 100, over: false, reason: '', time: 0, started: false, saved: false };
+// The ledger the game-over screen reads out: the good, the bad, the miles.
+const stats = { coupes: 0, vans: 0, cases: 0, tapes: 0, cleanBonuses: 0,
+                resprays: 0, redsRun: 0, rams: 0, pedsHit: 0, shots: 0,
+                distance: 0, topSpeed: 0, maxWanted: 0 };
+// Easter eggs: each fires once a run.
+const egg = { lotus: false, mph88: false, y1986: false };
 const playerPrev = { e: null, dir: 0, s: 0 };
 let speedTattleT = 0;
 mission.onScore = (n) => { run.score += n; };
@@ -604,19 +616,49 @@ coast.onScore = (n) => { run.score += n; };
 // Pickups: the tape deck and the briefcase.
 pickups.onCassette = (left) => {
   run.score += 120;
+  stats.tapes += 1;
   sound.next();
   hud.say(left ? `CASSETTE FOUND · +120 · ${left} STILL OUT THERE`
                 : 'EVERY CASSETTE FOUND · +120 · SIDE B FOREVER', true);
 };
 pickups.onCase = () => {
   run.score += 250;
+  stats.cases += 1;
   sound.chime();
   hud.say('BRIEFCASE RECOVERED · +250', true);
 };
 pickups.onCaseLost = () => hud.say('THE LAW GOT TO THE BRIEFCASE FIRST');
 mission.onDrop = (x, y, z) => pickups.dropCase(x, y, z);
-// A fresh six every level, somewhere new.
-mission.onLevel = (level) => pickups.scatter(level);
+// A fresh six every level, somewhere new - and a proper cheer, because a
+// line of HUD text is no way to be told you have won a level.
+mission.onLevel = (level) => {
+  pickups.scatter(level);
+  stats.coupes += 1;
+  sound.fanfare();
+  bigWord('LEVEL ' + level, 'THE HUNT GOES ON');
+};
+// Kills explode. A van that silently winks out reads as a bug, not a win.
+mission.onBoom = (x, y, z, kind) => {
+  boom(x, y, z);
+  if (kind === 'van') {
+    stats.vans += 1;
+    bigWord('DROP STOPPED', 'THE COUPE IS ON ITS OWN');
+  } else {
+    bigWord('TARGET DOWN', 'GRAB THE BRIEFCASE');
+  }
+};
+
+// ---- the big word: kills and level-ups, announced properly --------------
+const bigwordEl = document.getElementById('bigword');
+function bigWord(main, sub) {
+  document.getElementById('bwmain').textContent = main;
+  document.getElementById('bwsub').textContent = sub || '';
+  bigwordEl.classList.remove('go');
+  void bigwordEl.offsetWidth;               // restart the CSS animation
+  bigwordEl.classList.add('go');
+  clearTimeout(bigWord._t);
+  bigWord._t = setTimeout(() => bigwordEl.classList.remove('go'), 3100);
+}
 
 // ---- the gun: hitscan forward, tracer pooled ---------------------------
 const tracers = [];
@@ -631,6 +673,38 @@ const tracers = [];
     tracers.push({ mesh: t, life: 0 });
   }
 }
+// ---- explosions: a pooled burst of glowing shards ----------------------
+// Created after the district pass on purpose, so the tiler never captures
+// them; they spray out, tumble, fall, and switch themselves off.
+const shards = [];
+{
+  const sm = new StandardMaterial('shardm', scene);
+  sm.emissiveColor = new Color3(1.9, 0.85, 0.2);
+  sm.disableLighting = true;
+  for (let i = 0; i < 26; i++) {
+    const b = MeshBuilder.CreateBox('shard', { size: 0.34 }, scene);
+    b.material = sm;
+    b.setEnabled(false);
+    shards.push({ mesh: b, life: 0, vx: 0, vy: 0, vz: 0 });
+  }
+}
+function boom(x, y, z) {
+  sound.boom();
+  shake = Math.min(1.4, shake + 0.9);
+  let n = 0;
+  for (const s of shards) {
+    if (s.life > 0) continue;
+    if (++n > 13) break;
+    s.life = 0.9 + Math.random() * 0.5;
+    const a = Math.random() * Math.PI * 2, v = 6 + Math.random() * 12;
+    s.vx = Math.sin(a) * v; s.vz = Math.cos(a) * v;
+    s.vy = 5 + Math.random() * 9;
+    s.mesh.setEnabled(true);
+    s.mesh.position.set(x, y + 0.8, z);
+    s.mesh.scaling.setAll(0.7 + Math.random() * 1.2);
+  }
+}
+
 function showTracer(x0, z0, x1, z1, y) {
   const t = tracers.find(t => t.life <= 0);
   if (!t) return;
@@ -647,6 +721,7 @@ function firePlayerGun(dt) {
   gunT -= dt;
   if (gunT > 0) return;
   gunT = 0.13;
+  stats.shots += 1;
   sound.gun();
   const fx = Math.sin(player.pos.yaw), fz = Math.cos(player.pos.yaw);
   const mx = player.pos.x + fx * 2.4, mz = player.pos.z + fz * 2.4;
@@ -728,9 +803,20 @@ function renderOver() {
   const table = loadScores();
   const rows = table.map((r, i) =>
     `${String(i + 1).padStart(2, ' ')}. ${r.n}  ${String(r.s).padStart(6, ' ')}`).join('\n');
+  // The reckoning: what this run was actually like, both columns.
+  const km = (stats.distance / 1000).toFixed(1);
+  const ledger =
+    `THE GOOD — COUPES ${stats.coupes} · VANS ${stats.vans} · CASES ${stats.cases}` +
+    ` · TAPES ${stats.tapes}\n` +
+    `           CLEAN BONUSES ${stats.cleanBonuses} · RESPRAYS ${stats.resprays}\n` +
+    `THE BAD  — REDS RUN ${stats.redsRun} · CARS RAMMED ${stats.rams}` +
+    ` · PEDESTRIANS HIT ${stats.pedsHit}\n` +
+    `           SHOTS FIRED ${stats.shots} · WORST HEAT ` +
+    `${stats.maxWanted ? '★'.repeat(stats.maxWanted) : 'SPOTLESS'}\n` +
+    `THE MILES — ${km} KM · TOP SPEED ${Math.round(stats.topSpeed * 2.237)} MPH`;
   document.getElementById('ovtext').textContent =
     `${run.reason}\n\nSCORE ${s} · LEVEL ${mission.level}\n` +
-    `SURVIVED ${Math.round(run.time)}s\n\n` +
+    `SURVIVED ${Math.round(run.time)}s IN ${CITY.name}\n\n${ledger}\n\n` +
     (run.saved ? `SAVED · ${initials.padEnd(3, '_')}\n\n${rows}\n\n`
                : `TYPE 3 INITIALS THEN ENTER\n> ${initials.padEnd(3, '_')}\n\n${rows}\n\n`) +
     (run.saved ? `SPACE RESTARTS` : `ENTER SAVES · SPACE RESTARTS`);
@@ -807,11 +893,12 @@ function updateCollisions(dt, clock) {
           if (back.mode === 'edge') back.s = Math.max(0, back.s - rel * 0.14);
           shake = Math.min(1, rel / 11);
           sound.crash(Math.min(1, rel / 16));
-          if (a === player || b === player) {
+          if ((a === player || b === player) && run.started) {
             // Who ran into whom matters: at three stars the police ram you
             // on purpose, and every one of those was being booked as your
             // assault, which walked you to four stars and a shooting in
             // under a minute for doing nothing.
+            if (back === player && rel > 8) stats.rams += 1;
             mission.onPlayerImpact(a === player ? b : a, rel, player, true,
                                    back === player);
           }
@@ -895,6 +982,24 @@ function updateCamera(dt) {
     player.pos.x + fx * v.ahead,
     player.pos.y + v.eye,
     player.pos.z + fz * v.ahead));
+}
+
+// The menu's camera: the poster shot. Low, behind the car, swinging through
+// a slow arc so the wordmark hangs over the boulevard with the sun dead
+// ahead, breathing rather than orbiting.
+function updateAttractCam(dt) {
+  const a = player.pos.yaw + Math.PI + Math.sin(clock * 0.10) * 0.8;
+  const r = 8.6 + Math.sin(clock * 0.063) * 1.8;
+  const tx = player.pos.x + Math.sin(a) * r;
+  const tz = player.pos.z + Math.cos(a) * r;
+  const ty = player.pos.y + 1.7 + Math.sin(clock * 0.045) * 0.5;
+  const k = Math.min(1, dt * 1.8);
+  cam.position.x += (tx - cam.position.x) * k;
+  cam.position.y += (ty - cam.position.y) * k;
+  cam.position.z += (tz - cam.position.z) * k;
+  const fx = Math.sin(player.pos.yaw), fz = Math.cos(player.pos.yaw);
+  cam.setTarget(new Vector3(player.pos.x + fx * 9, player.pos.y + 1.3,
+                            player.pos.z + fz * 9));
 }
 
 // ---- the garage ---------------------------------------------------------
@@ -996,6 +1101,7 @@ function updateGarage(dt, clock) {
       // because a car that goes into a paint shop and comes out the same
       // shade has not been resprayed.
       const fooled = mission.tryDisguise(player, clock);
+      stats.resprays += 1;
       resprayIdx = (resprayIdx + 1) % RESPRAY.length;
       const [name, col] = RESPRAY[resprayIdx];
       playerCar.paint.albedoColor.copyFrom(col);
@@ -1050,21 +1156,54 @@ const tick = (dt) => {
   turbo.active = (keys.ShiftLeft || keys.ShiftRight) && throttle > 0 &&
                  turbo.charge > 0.03 && tank.fuel > 0;
   turbo.charge = Math.max(0, Math.min(1,
-    turbo.charge + (turbo.active ? -0.28 : 0.07) * dt));
+    turbo.charge + (turbo.active ? -0.28 : (egg.lotus ? 0.105 : 0.07)) * dt));
   if (turbo.active && player.mode === 'edge') player.speed += 16 * dt;
 
-  // Fuel: burns with speed, faster on turbo; empty means a crawl.
-  tank.fuel = Math.max(0, tank.fuel -
-    (0.06 + player.speed * 0.014 + (turbo.active ? 0.5 : 0)) * dt);
-  if (tank.fuel < 25 && !tank.low) { tank.low = true;
-    hud.say('FUEL LOW — GREEN SQUARES SELL PETROL'); }
-  if (tank.fuel > 40) tank.low = false;
+  // Fuel: burns with speed, faster on turbo; empty means a crawl. The
+  // attract car burns nothing - a menu must never eat the tank.
+  if (live) {
+    tank.fuel = Math.max(0, tank.fuel -
+      (0.06 + player.speed * 0.014 + (turbo.active ? 0.5 : 0)) * dt);
+    if (tank.fuel < 25 && !tank.low) { tank.low = true;
+      hud.say('FUEL LOW — GREEN SQUARES SELL PETROL'); }
+    if (tank.fuel > 40) tank.low = false;
+  }
   let cap = CLASSES[player.e.cls].limit * (turbo.active ? 3.2 : 2.2);
   if (tank.fuel <= 0) cap = 5;
-  player.update(dt, { throttle, steer, maxSpeed: cap });
+  if (live) {
+    player.update(dt, { throttle, steer, maxSpeed: cap });
+  } else {
+    // Attract mode: while the menu is up, the car cruises the sunward
+    // boulevard on its own - and when it runs out of boulevard (or gets
+    // turned off it), it cuts back to the top and comes down again.
+    player.intent = 'straight';
+    player.update(dt, { throttle: 0.5, steer: 0, maxSpeed: 6.5 });
+    if (player.mode === 'edge' &&
+        (player.e.cls !== 'avenue' || player.e.axis !== 1 ||
+         player.pos.z > net.zs[GRID - 1] - 80)) {
+      player.e = startEdge; player.dir = 1; player.lane = 0; player.s = 6;
+      player.lat = 0; player.latV = 0; player.speed = 5; player.mode = 'edge';
+      player.place();
+    }
+  }
 
-  updateGarage(dt, clock);
-  signpostGarage(dt);
+  if (live) {
+    updateGarage(dt, clock);
+    signpostGarage(dt);
+    stats.distance += player.speed * dt;
+    stats.topSpeed = Math.max(stats.topSpeed, player.speed);
+    stats.maxWanted = Math.max(stats.maxWanted, mission.wanted);
+    // 88 on the dial has meant something since 1985.
+    if (!egg.mph88 && player.speed * 2.237 >= 88) {
+      egg.mph88 = true;
+      bigWord('88 MPH', 'TEMPORAL VELOCITY ACHIEVED');
+    }
+    if (!egg.y1986 && run.score >= 1986) {
+      egg.y1986 = true;
+      sound.chime();
+      hud.say('SCORE 1986 — A FINE YEAR', true);
+    }
+  }
 
   playerCar.root.position.set(player.pos.x, player.pos.y, player.pos.z);
   playerCar.root.rotation.y = player.pos.yaw;
@@ -1092,6 +1231,7 @@ const tick = (dt) => {
     if (clean.t >= 60) {
       clean.t = 0;
       run.score += 100;
+      stats.cleanBonuses += 1;
       hud.say('CLEAN DRIVING BONUS · +100');
     }
   }
@@ -1100,35 +1240,50 @@ const tick = (dt) => {
   for (const t of tracers) {
     if (t.life > 0) { t.life -= dt; if (t.life <= 0) t.mesh.setEnabled(false); }
   }
+  for (const s of shards) {
+    if (s.life <= 0) continue;
+    s.life -= dt;
+    s.vy -= 26 * dt;
+    s.mesh.position.x += s.vx * dt;
+    s.mesh.position.y = Math.max(0.15, s.mesh.position.y + s.vy * dt);
+    s.mesh.position.z += s.vz * dt;
+    s.mesh.rotation.x += dt * 7;
+    s.mesh.rotation.y += dt * 9;
+    if (s.life <= 0) s.mesh.setEnabled(false);
+  }
 
   signals.update(clock);
   peds.update(dt);
   if ((Math.floor(clock) % 5) === 0) peds.recycle();
 
-  // Player over a pedestrian at speed: the city notices.
-  if (player.speed > 4) {
+  // Player over a pedestrian at speed: the city notices. Not in attract
+  // mode - nothing the menu's self-driving car does can be held against
+  // the player.
+  if (live && player.speed > 4) {
     const victim = player.pos.y < 2 ? peds.hitCheck(player.pos.x, player.pos.z) : null;
     if (victim) {
       run.score = Math.max(0, run.score - 150);
       shake = Math.max(shake, 0.5);
+      stats.pedsHit += 1;
       mission.onPedHit(player, true);
     }
   }
 
   // Red light running: witnessed if the wrong eyes are close.
   if (player.mode === 'edge') {
-    if (playerPrev.e === player.e && playerPrev.dir === player.dir &&
+    if (live && playerPrev.e === player.e && playerPrev.dir === player.dir &&
         signals.ranRed(player.e, player.dir, playerPrev.s, player.s, clock)) {
       // Running a red used to PAY 15 points, which argued with everything
       // else the game says about driving well. Now it just costs you the
       // clean-driving clock, plus whatever the witnesses make of it.
       clean.t = 0;
+      stats.redsRun += 1;
       mission.witnessed('redLight', player, true);
     }
     playerPrev.e = player.e; playerPrev.dir = player.dir; playerPrev.s = player.s;
   }
   // Speeding right past a cruiser is a star on its own.
-  if (player.speed > CLASSES[player.e.cls].limit * 1.5 &&
+  if (live && player.speed > CLASSES[player.e.cls].limit * 1.5 &&
       mission.nearestPoliceDist(player) < 22 && clock > speedTattleT) {
     speedTattleT = clock + 12;
     const o = OFFENCES.speeding;
@@ -1168,7 +1323,7 @@ const tick = (dt) => {
   updateCollisions(dt, clock);
   if (shake > 0.005) shake *= Math.exp(-dt * 5); else shake = 0;
 
-  updateCamera(dt);
+  if (live) updateCamera(dt); else updateAttractCam(dt);
   // The car paint's planar reflection is worth its cost among neon towers.
   // Out on the ring it reflects sky and sea, so it can crawl - and that is
   // true whether or not the coast is in daylight.
@@ -1287,64 +1442,174 @@ scene.onBeforeRenderObservable.add(() =>
 // bot needs to play it without reaching into module scope.
 window.game = {
   player, traffic, net, hud, tick, mission, coast, tiles, pickups,
-  run, tank, turbo, garage, peds, signals, coast2, city: CITY, clean,
+  run, tank, turbo, garage, peds, signals, coast2, city: CITY, clean, stats,
   zones: cityBits.zones, districtAt: cityBits.districtAt,
   stations: cityBits.stations,
   nav: { nodeAhead, headingSlot, turnOptions },
 };
 
-// ---- intro screen -------------------------------------------------------
-{
-  const table = loadScores();
-  const rows = table.length
-    ? 'HALL OF FAME\n' + table.slice(0, 5).map((r, i) =>
-        `${i + 1}. ${r.n}  ${r.s}`).join('\n')
+// ---- the front door -----------------------------------------------------
+// Two screens over the attract camera, in the first game's style: the
+// title, then a menu - W/S chooses, A/D changes, Enter picks.
+const menuEls = {
+  prompt: document.getElementById('prompt'),
+  menu: document.getElementById('menu'),
+  hint: document.getElementById('hint'),
+  panel: document.getElementById('panel'),
+  town: document.getElementById('townline'),
+};
+const menuPrefs = { music: true };
+let menuScreen = 'title';
+let menuSel = 0;
+let menuTyped = '';
+const RULES_TEXT =
+  'YOU ARE A COURIER HUNTER. THE JOB, IN ORDER:\n\n' +
+  '1  THE RADIO CALLS WHERE THE BLACK COUPE WAS SEEN — GO THERE\n' +
+  '2  FIND IT, THEN RAM OR SHOOT IT UNTIL IT STOPS\n' +
+  '3  FROM LEVEL 2 AN ARMOURED VAN BRINGS IT A DROP — STOP THE VAN\n' +
+  '   FIRST, OR THE MEETING LEAVES THE COUPE ARMOURED\n' +
+  '4  A STOPPED COUPE DROPS A BRIEFCASE — TAKE IT BEFORE THE LAW DOES\n' +
+  '5  STARS ARE FOR WHAT GETS SEEN · TRAFFIC OFFENCES TOP OUT AT 2★\n' +
+  '   VIOLENCE GOES FURTHER · ONLY KILLING REACHES 5★\n' +
+  '6  AT 3★ THEY RAM AND CAN BUST YOU · AT 4★ THEY SHOOT\n' +
+  '7  LIE LOW, OR BUY A RESPRAY AT A GARAGE, TO SHED THE HEAT\n' +
+  '8  GREEN SQUARES ARE GARAGES: PETROL, PAINT AND PANEL WORK\n' +
+  '9  CLEAN DRIVING PAYS · SIX CASSETTES ARE HIDDEN IN EVERY TOWN';
+const CONTROLS_TEXT =
+  'W/S DRIVE · A/D CHANGE LANE · Q/E INDICATE (HOLD FOR U-TURN)\n' +
+  'SPACE FIRE · SHIFT TURBO · SLOW INTO A GARAGE SPUR TO BE SERVED\n' +
+  'THE RING ROAD IS THE COAST — GO SEE IT\n\n' +
+  'IN GAME: C CAMERA · G QUALITY · F REDUCED FLASHING\n' +
+  'B COAST DAYLIGHT · M MUSIC · X NEXT TRACK';
+function fameText() {
+  const t = loadScores();
+  return t.length
+    ? 'HALL OF FAME\n\n' + t.slice(0, 8).map((r, i) => `${i + 1}. ${r.n}  ${r.s}`).join('\n')
     : 'NO SCORES YET — BE FIRST';
-  document.getElementById('introtext').textContent =
-    `TOWN · ${CITY.name} — ◄ ► PICKS ANOTHER\n\n` +
-    'FIND THE BLACK COUPE · RAM OR SHOOT IT · DODGE THE LAW\n' +
-    'W/S DRIVE · A/D LANES · Q/E INDICATE (HOLD FOR U-TURN)\n' +
-    'SPACE FIRE · SHIFT TURBO · GREEN SQUARES SELL PETROL\n' +
-    'THE RING ROAD IS THE COAST — GO SEE IT\n' +
-    'M MUSIC · X TRACK · C CAMERA · B COAST DAYLIGHT · G GRAPHICS · F FLASHING\n\n' + rows;
 }
-addEventListener('keydown', (e) => {
-  if (!run.started && e.code === 'Enter') {
-    run.started = true;
-    document.getElementById('intro').style.display = 'none';
-    sound.start();
-    mission.announce();
-  }
-  // On the intro screen the arrows pick the town. The choice goes in the
-  // hash and the page reloads into it - the city is baked at boot, so a
-  // different seed means building it again from the ground.
-  if (!run.started && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
-    const n = (cityIdx + (e.code === 'ArrowRight' ? 1 : CITIES.length - 1)) % CITIES.length;
-    location.hash = 'city' + n;
+function menuItems() {
+  return [
+    { id: 'drive', label: 'DRIVE', hint: 'find the black coupe · dodge the law' },
+    { id: 'rules', label: 'THE RULES', hint: 'what a courier hunter actually does' },
+    { id: 'town', label: `TOWN  <  ${CITY.name}  >`,
+      hint: 'four towns, four maps — switching rebuilds the city' },
+    { id: 'camera', label: `CAMERA  <  ${VIEWS[view].name}  >`,
+      hint: 'chase · close · bonnet · far' },
+    { id: 'graphics', label: `GRAPHICS  <  ${QNAME[scaleStep]}  >`,
+      hint: 'eases off on its own when the frame rate sags' },
+    { id: 'music', label: `MUSIC  <  ${menuPrefs.music ? 'ON' : 'OFF'}  >`,
+      hint: 'the licensed tape deck · X skips in game' },
+    { id: 'flash', label: `REDUCED FLASHING  <  ${safe.reduceFlash ? 'ON' : 'OFF'}  >`,
+      hint: 'steadier lights for photosensitive players' },
+    { id: 'controls', label: 'CONTROLS' },
+    { id: 'fame', label: 'HALL OF FAME' },
+  ];
+}
+function renderMenu() {
+  const title = menuScreen === 'title';
+  menuEls.town.textContent = title ? 'TOWN · ' + CITY.name : '';
+  menuEls.prompt.style.display = title ? '' : 'none';
+  menuEls.menu.style.display = title ? 'none' : '';
+  if (title) { menuEls.hint.textContent = ''; menuEls.panel.textContent = ''; return; }
+  const items = menuItems();
+  menuEls.menu.textContent = '';
+  items.forEach((it, i) => {
+    const d = document.createElement('div');
+    d.className = 'mi' + (i === menuSel ? ' sel' : '');
+    d.textContent = i === menuSel ? `▸ ${it.label} ◂` : it.label;
+    menuEls.menu.appendChild(d);
+  });
+  menuEls.hint.textContent = items[menuSel].hint || 'W/S CHOOSE · A/D CHANGE · ENTER PICKS · ESC BACK';
+}
+function menuAdjust(id, dir) {
+  if (id === 'town') {
+    // The city is baked at boot, so another seed means building it again
+    // from the ground: the choice rides the hash through a reload.
+    location.hash = 'city' + ((cityIdx + dir + CITIES.length) % CITIES.length);
     location.reload();
+    return;
   }
+  if (id === 'camera') cycleView(dir);
+  else if (id === 'graphics') { quality.manual = true; scaleStep = (scaleStep + dir + 4) % 4; applyQuality(); }
+  else if (id === 'music') menuPrefs.music = !menuPrefs.music;
+  else if (id === 'flash') toggleFlash();
+  menuEls.panel.textContent = '';
+  renderMenu();
+}
+function startGame() {
+  run.started = true;
+  document.getElementById('intro').style.display = 'none';
+  document.body.classList.remove('attract');   // the HUD comes back on
+  sound.start();
+  if (!menuPrefs.music) sound.toggle();
+  mission.announce();
+}
+document.body.classList.add('attract');
+function menuKey(code) {
+  // Typing T-U-R-B-O anywhere on the front door earns the white Lotus.
+  if (/^Key[A-Z]$/.test(code)) {
+    menuTyped = (menuTyped + code[3]).slice(-5);
+    if (!egg.lotus && menuTyped === 'TURBO') {
+      egg.lotus = true;
+      playerCar.paint.albedoColor.set(0.92, 0.92, 0.95);
+      playerCar.paint.emissiveColor.set(0.16, 0.16, 0.17);
+      bigWord('TURBO', 'THE WHITE LOTUS · QUICKER SPOOL');
+      return;
+    }
+  }
+  if (menuScreen === 'title') {
+    if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+      menuScreen = 'menu'; menuSel = 0; renderMenu();
+    }
+    return;
+  }
+  const items = menuItems();
+  if (code === 'ArrowUp' || code === 'KeyW') {
+    menuSel = (menuSel + items.length - 1) % items.length;
+    menuEls.panel.textContent = ''; renderMenu();
+  } else if (code === 'ArrowDown' || code === 'KeyS') {
+    menuSel = (menuSel + 1) % items.length;
+    menuEls.panel.textContent = ''; renderMenu();
+  } else if (code === 'ArrowLeft' || code === 'KeyA') menuAdjust(items[menuSel].id, -1);
+  else if (code === 'ArrowRight' || code === 'KeyD') menuAdjust(items[menuSel].id, 1);
+  else if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+    const id = items[menuSel].id;
+    if (id === 'drive') startGame();
+    else if (id === 'rules') menuEls.panel.textContent = RULES_TEXT;
+    else if (id === 'controls') menuEls.panel.textContent = CONTROLS_TEXT;
+    else if (id === 'fame') menuEls.panel.textContent = fameText();
+    else menuAdjust(id, 1);
+  } else if (code === 'Escape') { menuScreen = 'title'; renderMenu(); }
+}
+renderMenu();
+
+function cycleView(dir) {
+  view = (view + dir + VIEWS.length) % VIEWS.length;
+  cam.fov = VIEWS[view].fov;
+  // From the bonnet you are the car, so the car itself gets out of the way.
+  playerCar.root.setEnabled(VIEWS[view].name !== 'BONNET');
+  if (run.started) hud.say('CAMERA · ' + VIEWS[view].name);
+}
+function toggleFlash() {
+  safe.reduceFlash = !safe.reduceFlash;
+  hud.reduceFlash = safe.reduceFlash;
+  vibeStep = -1;                       // forces the fog to be re-applied
+  applyQuality();
+  if (run.started) hud.say(safe.reduceFlash ? 'REDUCED FLASHING — ON' : 'REDUCED FLASHING — OFF');
+}
+
+addEventListener('keydown', (e) => {
+  if (!run.started) { menuKey(e.code); return; }
   if (e.code === 'KeyM' && sound.started) {
     hud.say(sound.toggle() ? 'SOUND ON' : 'SOUND OFF');
   }
   if (e.code === 'KeyX' && sound.started) sound.next();
-  if (e.code === 'KeyF') {
-    safe.reduceFlash = !safe.reduceFlash;
-    hud.reduceFlash = safe.reduceFlash;
-    vibeStep = -1;                       // forces the fog to be re-applied
-    applyQuality();
-    hud.say(safe.reduceFlash ? 'REDUCED FLASHING — ON' : 'REDUCED FLASHING — OFF');
-  }
+  if (e.code === 'KeyF') toggleFlash();
   if (e.code === 'KeyB') {
     coast2.daylight = !coast2.daylight;
     hud.say(coast2.daylight ? 'COAST DAYLIGHT — ON' : 'COAST DAYLIGHT — OFF (NEON)');
   }
-  if (e.code === 'KeyC') {
-    view = (view + 1) % VIEWS.length;
-    cam.fov = VIEWS[view].fov;
-    // From the bonnet you are the car, so the car itself gets out of the way.
-    playerCar.root.setEnabled(VIEWS[view].name !== 'BONNET');
-    hud.say('CAMERA · ' + VIEWS[view].name);
-  }
+  if (e.code === 'KeyC') cycleView(1);
   if (e.code === 'KeyG') {
     quality.manual = true;
     scaleStep = (scaleStep + 1) % 4;

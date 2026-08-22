@@ -94,6 +94,14 @@ Also `CITIES` (the four towns and their seeds; hash-selected on the intro)
 and the clean-driving bonus (`clean` — a minute with no heat, no shunt, no
 red run pays 100).
 
+**The front door** lives here too: title → menu (`menuKey`, `menuItems`,
+`RULES_TEXT`) over an attract mode — pre-start the car self-drives the
+sunward boulevard (`startEdge`) and `updateAttractCam` holds the poster
+shot. Everything the attract car does is gated off the law and the tank
+by `live`. Plus `boom`/`shards` (explosions), `bigWord` (level/kill word
+art), `stats` (the game-over ledger) and `egg` (TURBO typed on the menu,
+88 mph, score 1986).
+
 Things that live here and are easy to hunt for:
 - **Districts / streaming** — `TILE`, `tileAt`, `updateDistricts`,
   `DRAW_RANGE`. Static geometry is merged **per tile per material**; merge
