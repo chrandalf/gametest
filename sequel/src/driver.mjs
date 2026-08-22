@@ -85,13 +85,14 @@ export class Driver {
     const st = input.steer || 0;
     // The lane magnet relaxes while the pilot is genuinely steering, or the
     // spring wins every arm-wrestle and no lane change can ever happen.
-    const spring = 9 * (1 - Math.min(1, Math.abs(st)) * 0.82);
-    this.latV += (st * 10.5 - this.latV * 4.5 - this.lat * spring) * dt;
+    const spring = 9 * (1 - Math.min(1, Math.abs(st)) * 0.85);
+    this.latV += (st * 12 - this.latV * 4.5 - this.lat * spring) * dt;
     this.lat += this.latV * dt * Math.min(1, this.speed / 4 + 0.15);
     const half = c.laneW * 0.5;
-    if (this.lat > half * 0.9 && st > 0.4 && this.lane < this.lanesPer() - 1) {
+    // About half a second of held steer commits the change.
+    if (this.lat > half * 0.62 && st > 0.35 && this.lane < this.lanesPer() - 1) {
       this.lane += 1; this.lat -= c.laneW;           // slid left, kerbward
-    } else if (this.lat < -half * 0.9 && st < -0.4 && this.lane > 0) {
+    } else if (this.lat < -half * 0.62 && st < -0.35 && this.lane > 0) {
       this.lane -= 1; this.lat += c.laneW;           // slid right, centreward
     }
     // Soft wall at the lane envelope: the assist never leaves the tarmac.
@@ -121,7 +122,20 @@ export class Driver {
       this.s = Math.min(this.s, stopAt);
       if (this.speed < 0.5) { this.speed = 0; this.blocked = true; }
     }
+    // Blocked at a dead end: holding brake spins the car round - the 1986
+    // answer to every cul-de-sac. (A real reverse gear can come later.)
+    if (this.blocked && input.throttle < 0) this.uTurn();
     this.place();
+  }
+
+  uTurn() {
+    this.dir = -this.dir;
+    this.s = Math.max(0, this.e.len - this.s);
+    this.lane = 0;
+    this.lat = 0; this.latV = 0;
+    this.speed = 0;
+    this.intent = 'straight';
+    this.blocked = false;
   }
 
   // How far before the node centre the arc begins: at the crossing road's

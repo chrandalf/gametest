@@ -2,7 +2,7 @@
 // data the cars drive on - in the green/cyan line-graphics style of an
 // imagined 1985 police terminal. North-up, player as a heading wedge.
 'use strict';
-import { GRID, CELL, CLASSES } from './network.mjs';
+// Reads only the network object handed in; no grid assumptions.
 
 export class Hud {
   constructor(net) {
@@ -21,9 +21,9 @@ export class Hud {
   }
 
   worldToMap(x, z) {
-    const size = (GRID - 1) * CELL;
+    const ext = this.net.extent;
     const pad = 12;
-    const s = (this.map.width - pad * 2) / size;
+    const s = (this.map.width - pad * 2) / Math.max(ext.x, ext.z);
     return [pad + x * s, this.map.height - pad - z * s];
   }
 

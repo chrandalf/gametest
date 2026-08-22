@@ -70,9 +70,9 @@ export function buildCity(scene, net, mirror) {
   };
 
   // ---- ground: one city-wide wet mirror plane -------------------------
-  const size = (GRID - 1) * CELL;
-  const ground = MeshBuilder.CreateGround('g', { width: size + 260, height: size + 260 }, scene);
-  ground.position.set(size / 2, 0, size / 2);
+  const ext = net.extent;
+  const ground = MeshBuilder.CreateGround('g', { width: ext.x + 320, height: ext.z + 320 }, scene);
+  ground.position.set(ext.x / 2, 0, ext.z / 2);
   const gm = new PBRMaterial('gm', scene);
   gm.albedoColor = new Color3(0.012, 0.012, 0.022);
   gm.metallic = 0.75; gm.roughness = 0.34;
@@ -91,6 +91,19 @@ export function buildCity(scene, net, mirror) {
   laneDashProto.setEnabled(false);
   const dashes = [];
 
+  // Sidewalks and kerbs: the lit-enough strip that separates carriageway
+  // from block-shadow, so the darkness stops being misleading.
+  const walkMat = new PBRMaterial('walk', scene);
+  walkMat.albedoColor = new Color3(0.045, 0.05, 0.075);
+  walkMat.metallic = 0.1; walkMat.roughness = 0.85;
+  walkMat.emissiveColor = new Color3(0.022, 0.028, 0.042);
+  const kerbMat = new StandardMaterial('kerb', scene);
+  kerbMat.emissiveColor = new Color3(0.16, 0.17, 0.22);
+  kerbMat.disableLighting = true;
+  const stopMat = new StandardMaterial('stop', scene);
+  stopMat.emissiveColor = new Color3(0.85, 0.88, 0.95);
+  stopMat.disableLighting = true;
+
   for (const e of net.edges) {
     const hw = halfWidth(e.cls);
     const c = CLASSES[e.cls];
@@ -101,6 +114,50 @@ export function buildCity(scene, net, mirror) {
     slab.position.set(cx, 0.045, cz);
     slab.material = roadMat;
     mirror.renderList.push(slab);
+
+    // Sidewalk slabs and kerb strips down both sides, full edge length.
+    for (const sd of [-1, 1]) {
+      const wk = MeshBuilder.CreateBox('wk', {
+        width: e.axis === 0 ? e.len : 3,
+        height: 0.16,
+        depth: e.axis === 0 ? 3 : e.len,
+      }, scene);
+      wk.position.set(
+        e.axis === 0 ? cx : cx + sd * (hw + 1.6),
+        0.08,
+        e.axis === 0 ? cz + sd * (hw + 1.6) : cz);
+      wk.material = walkMat;
+      const kb = MeshBuilder.CreateBox('kb', {
+        width: e.axis === 0 ? e.len : 0.22,
+        height: 0.2,
+        depth: e.axis === 0 ? 0.22 : e.len,
+      }, scene);
+      kb.position.set(
+        e.axis === 0 ? cx : cx + sd * (hw + 0.12),
+        0.1,
+        e.axis === 0 ? cz + sd * (hw + 0.12) : cz);
+      kb.material = kerbMat;
+    }
+    // Stop lines where the carriageway meets each junction box: one white
+    // bar per approach, on the left-hand-traffic side.
+    if (e.cls !== 'highway') {
+      const c2 = CLASSES[e.cls];
+      const barW = c2.lanesPer * c2.laneW;
+      for (const end of [0, 1]) {
+        const inset = halfWidth('avenue') + 2.2;
+        const along = end === 0 ? inset : e.len - inset;
+        const side = end === 0 ? -1 : 1;   // approach side for each travel dir
+        const bx = e.axis === 0 ? e.a.x + along : e.a.x - side * (0.9 + barW / 2);
+        const bz = e.axis === 0 ? e.a.z + side * (0.9 + barW / 2) : e.a.z + along;
+        const bar = MeshBuilder.CreateBox('sl', {
+          width: e.axis === 0 ? 0.35 : barW,
+          height: 0.055,
+          depth: e.axis === 0 ? barW : 0.35,
+        }, scene);
+        bar.position.set(bx, 0.1, bz);
+        bar.material = stopMat;
+      }
+    }
 
     // Neon edge lines, inset from the junction boxes; the Neon Drive look.
     const edgeInset = halfWidth('highway') + 2;
@@ -160,7 +217,7 @@ export function buildCity(scene, net, mirror) {
   for (const e of net.edges) {
     if (e.cls === 'highway') continue;               // ring road glows on its own
     const hw = halfWidth(e.cls);
-    for (let s = CELL * 0.28; s < e.len - CELL * 0.2; s += CELL * 0.44) {
+    for (let s = e.len * 0.24; s < e.len * 0.9; s += Math.max(26, e.len * 0.4)) {
       for (const sd of [-1, 1]) {
         const px = e.axis === 0 ? e.a.x + s : e.a.x + sd * (hw + 1.4);
         const pz = e.axis === 0 ? e.a.z + sd * (hw + 1.4) : e.a.z + s;
@@ -198,9 +255,10 @@ export function buildCity(scene, net, mirror) {
   for (let bj = 0; bj < GRID - 1; bj++) {
     for (let bi = 0; bi < GRID - 1; bi++) {
       // Block interior bounds, inset from the widest surrounding road.
-      const pad = halfWidth('avenue') + 3.5;
-      const x0 = bi * CELL + pad, x1 = (bi + 1) * CELL - pad;
-      const z0 = bj * CELL + pad, z1 = (bj + 1) * CELL - pad;
+      const pad = halfWidth('avenue') + 5;
+      const x0 = net.xs[bi] + pad, x1 = net.xs[bi + 1] - pad;
+      const z0 = net.zs[bj] + pad, z1 = net.zs[bj + 1] - pad;
+      if (x1 - x0 < 10 || z1 - z0 < 10) continue;
       const bw = x1 - x0, bd = z1 - z0;
       // Downtown rises toward the middle; the rim stays low industrial.
       const dc = Math.hypot(bi - centre, bj - centre) / centre;
@@ -263,8 +321,8 @@ export function buildCity(scene, net, mirror) {
     for (let s = 14; s < e.len - 8; s += 26) {
       // Outboard side only (away from the city interior).
       const sd = (e.axis === 0)
-        ? (e.a.z < CELL ? -1 : 1)
-        : (e.a.x < CELL ? -1 : 1);
+        ? (e.a.z < ext.z / 2 ? -1 : 1)
+        : (e.a.x < ext.x / 2 ? -1 : 1);
       const pl = MeshBuilder.CreatePlane('pal', { width: 8, height: 16 }, scene);
       pl.position.set(
         e.axis === 0 ? e.a.x + s : e.a.x + sd * (hw + 4),

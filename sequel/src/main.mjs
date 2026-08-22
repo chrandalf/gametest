@@ -56,9 +56,11 @@ hemi.intensity = 0.22;
 hemi.diffuse = new Color3(0.45, 0.35, 0.75);
 hemi.groundColor = new Color3(0.05, 0.02, 0.1);
 
+// The network first: the backdrop wraps whatever size the city came out.
+const net = buildNetwork();
+
 // ------------------------------------------------------------- backdrop ----
-const size = (GRID - 1) * CELL;
-const mid = size / 2;
+const mid = Math.max(net.extent.x, net.extent.z) / 2;
 function skyTexture() {
   const dt = new DynamicTexture('sky', { width: 64, height: 512 }, scene, true);
   const x = dt.getContext();
@@ -133,7 +135,6 @@ mirror.mirrorPlane = new Plane(0, -1, 0, 0);
 mirror.level = 0.8;
 mirror.renderList.push(sun);
 
-const net = buildNetwork();
 buildCity(scene, net, mirror);
 report('city built — starting traffic…');
 
@@ -184,7 +185,7 @@ function buildCar(paintCol, taillit) {
 
 // The player, starting mid-city on an avenue, pointed somewhere useful.
 const startEdge = net.edges.find(e => e.cls === 'avenue') || net.edges[0];
-const player = new Driver(net, startEdge, 1, 0, CELL * 0.4);
+const player = new Driver(net, startEdge, 1, 0, startEdge.len * 0.4);
 const playerCar = buildCar(new Color3(0.55, 0.02, 0.03), true);
 
 // Ambient traffic: the same Driver, piloted by ten lines of AI. This is the
@@ -198,7 +199,7 @@ const traffic = [];
 for (let k = 0; k < 14; k++) {
   const e = net.edges[(k * 37) % net.edges.length];
   const lane = k % CLASSES[e.cls].lanesPer;
-  const d = new Driver(net, e, k % 2 ? 1 : -1, lane, (k * 19) % CELL);
+  const d = new Driver(net, e, k % 2 ? 1 : -1, lane, (k * 19) % Math.max(24, e.len - 12));
   d.ai = { nextThink: 2 + k, cruise: 0.5 + (k % 5) * 0.09 };
   d.car = buildCar(TRAFFIC_COLOURS[k % TRAFFIC_COLOURS.length], true);
   traffic.push(d);
