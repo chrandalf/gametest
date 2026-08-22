@@ -32,6 +32,13 @@ function quadrantName(x, z, ext) {
   return `${z > ext.z / 2 ? 'NORTH' : 'SOUTH'}-${x > ext.x / 2 ? 'EAST' : 'WEST'}`;
 }
 
+// The middle of the quadrant a point is in - somewhere to send a driver who
+// has been told a district and nothing more.
+function quadrantPoint(x, z, ext) {
+  return { x: (x > ext.x / 2 ? 0.72 : 0.28) * ext.x,
+           z: (z > ext.z / 2 ? 0.72 : 0.28) * ext.z };
+}
+
 // Every way to earn a star, what it is called, and how far it can take you.
 export const OFFENCES = {
   speeding: { stars: 1, cap: 2, why: 'SPEEDING PAST A PATROL' },
@@ -91,6 +98,8 @@ export class Mission {
                                      new Color3(0.75, 0.06, 0.05));
     }
     this.target = d;
+    this.lastSeen = null;
+    this.searchPoint = null;
     this.spawnVan();
   }
 
@@ -211,17 +220,21 @@ export class Mission {
   }
 
   // ------------------------------------------------------------ impacts ----
-  onPlayerImpact(other, speed, player, pedsNear) {
+  // `atFault` is true only when the player was the one doing the running
+  // into. Contact you did not start is not an offence - otherwise a cruiser
+  // that rams you on purpose books you for it.
+  onPlayerImpact(other, speed, player, pedsNear, atFault) {
     if (other === this.target && this.state !== 'done') {
       if (speed > 6) this.damageTarget(1, player);
     } else if (other === this.van) {
       // Loaded and armoured: ramming it hurts you more than it.
       if (speed > 6) this.damageVan(0.6, player);
     } else if (this.police.includes(other)) {
+      if (!atFault) return;
       const o = OFFENCES.assault;
       this.bumpWanted(o.stars, o.why, o.cap);
       this.cleanHands = false;
-    } else if (speed > 8) {
+    } else if (speed > 8 && atFault) {
       this.witnessed('ramming', player, pedsNear);
     }
   }
@@ -459,8 +472,17 @@ export class Mission {
     return out;
   }
 
+  // Something to steer at, always. With a fix, the target; without one, the
+  // last place it was seen; and failing that the middle of the district the
+  // briefing named - because "NO FIX, SEARCH THE DISTRICT" with the arrow
+  // pointing nowhere is not a direction, it is a shrug.
   bearingPoint() {
     if (this.state !== 'locate') return this.target.pos;
-    return this.lastSeen || null;
+    if (this.lastSeen) return this.lastSeen;
+    if (!this.searchPoint) {
+      this.searchPoint = quadrantPoint(this.target.pos.x, this.target.pos.z,
+                                       this.net.extent);
+    }
+    return this.searchPoint;
   }
 }

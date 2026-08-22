@@ -22,7 +22,8 @@ import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTextur
 import { MirrorTexture } from '@babylonjs/core/Materials/Textures/mirrorTexture';
 import { GlowLayer } from '@babylonjs/core/Layers/glowLayer';
 import { DefaultRenderingPipeline } from '@babylonjs/core/PostProcesses/RenderPipeline/Pipelines/defaultRenderingPipeline';
-import { GRID, CELL, buildNetwork, CLASSES } from './network.mjs';
+import { GRID, CELL, buildNetwork, CLASSES, nodeAhead, headingSlot, turnOptions }
+  from './network.mjs';
 import { buildCity } from './citygen.mjs';
 import { Driver } from './driver.mjs';
 import { Hud } from './hud.mjs';
@@ -630,7 +631,9 @@ function firePlayerGun(dt) {
     const d = Math.hypot(dx, dz);
     if (d > bestD || d < 1) return;
     const ang = Math.abs(wrapA(Math.atan2(dx, dz) - player.pos.yaw));
-    if (ang < 0.09) { best = obj; bestD = d; bestKind = kind; }
+    // A five degree cone was tight enough that two moving cars almost
+    // never lined up; eight is still aiming.
+    if (ang < 0.14) { best = obj; bestD = d; bestKind = kind; }
   };
   const T = mission.target;
   consider(T, T.pos.x, T.pos.z, 'target', T.pos.y);
@@ -763,8 +766,13 @@ function updateCollisions(dt, clock) {
         if (front.mode === 'edge') front.s = Math.min(front.e.len, front.s + overlap * 0.4);
         // Impulse, gated so one crash is one crash.
         const key = i * 100 + j;
+        // Longer gate on anything involving the player. Two or three
+        // cruisers taking turns at four tenths of a second apart could hold
+        // you at a dead stop indefinitely - not a bust, not an escape, just
+        // a stall you could not drive out of.
+        const gate = (a === player || b === player) ? 1.1 : 0.4;
         if ((hitCooldown.get(key) || 0) <= clock) {
-          hitCooldown.set(key, clock + 0.4);
+          hitCooldown.set(key, clock + gate);
           const rel = Math.abs(back.speed - front.speed) + 2;
           front.speed = Math.min(front.speed + rel * 0.65, front.speed + 16);
           // The bounce: the rammer is thrown back off the contact, hard.
@@ -773,7 +781,12 @@ function updateCollisions(dt, clock) {
           shake = Math.min(1, rel / 11);
           sound.crash(Math.min(1, rel / 16));
           if (a === player || b === player) {
-            mission.onPlayerImpact(a === player ? b : a, rel, player, true);
+            // Who ran into whom matters: at three stars the police ram you
+            // on purpose, and every one of those was being booked as your
+            // assault, which walked you to four stars and a shooting in
+            // under a minute for doing nothing.
+            mission.onPlayerImpact(a === player ? b : a, rel, player, true,
+                                   back === player);
           }
         } else {
           // Still touching inside the gate: keep speeds honest.
@@ -824,6 +837,112 @@ addEventListener('keyup', (e) => { keys[e.code] = false; });
 
 // -------------------------------------------------------------- the loop ----
 let clock = 0;
+// ---- the garage ---------------------------------------------------------
+// Pull onto a service spur and stop, and a man comes out of the hut and
+// works down the list: fills the tank, gives it a coat of paint - which is
+// the respray, so it is also how you lose the police - and beats the panels
+// back out. Then he waves you off and you U-turn back onto the street.
+const attendant = (() => {
+  const skin = new StandardMaterial('attS', scene);
+  skin.emissiveColor = new Color3(0.55, 0.42, 0.3);
+  skin.disableLighting = true;
+  const overalls = new StandardMaterial('attO', scene);
+  overalls.emissiveColor = new Color3(0.2, 0.45, 0.32);
+  overalls.disableLighting = true;
+  const root = new TransformNode('att', scene);
+  const body = MeshBuilder.CreateBox('atb', { width: 0.5, height: 1.15, depth: 0.34 }, scene);
+  body.position.y = 0.58; body.material = overalls; body.parent = root;
+  const head = MeshBuilder.CreateBox('atb', { width: 0.3, height: 0.3, depth: 0.3 }, scene);
+  head.position.y = 1.32; head.material = skin; head.parent = root;
+  const arm = MeshBuilder.CreateBox('atb', { width: 0.16, height: 0.75, depth: 0.16 }, scene);
+  arm.position.set(0.34, 0.72, 0.1); arm.material = overalls; arm.parent = root;
+  root.setEnabled(false);
+  return { root, arm };
+})();
+
+const SERVICE = [
+  { key: 'fuel',   say: 'FILLING HER UP',        secs: 0 },
+  { key: 'paint',  say: 'A COAT OF PAINT',       secs: 3.2 },
+  { key: 'repair', say: 'BEATING THE PANELS OUT', secs: 0 },
+];
+const garage = { at: null, stage: -1, t: 0, said: '' };
+
+// Getting IN was the hard part: a spur is easy to miss at speed, so the
+// junction before one says so, and says which way to indicate.
+let signT = 0, signedNode = null;
+function signpostGarage(dt) {
+  signT -= dt;
+  if (player.mode !== 'edge' || player.e.cls === 'service') return;
+  const node = nodeAhead(player.e, player.dir);
+  const togo = player.dir > 0 ? player.e.len - player.s : player.s;
+  if (togo > 75 || togo < 12) { if (togo > 90) signedNode = null; return; }
+  if (signedNode === node || signT > 0) return;
+  const opts = turnOptions(node, headingSlot(player.e, player.dir));
+  for (const [side, o] of Object.entries(opts)) {
+    if (!o || o.e.cls !== 'service') continue;
+    signedNode = node;
+    signT = 6;
+    hud.say(side === 'straight'
+      ? 'GARAGE STRAIGHT ON'
+      : `GARAGE ${side.toUpperCase()} — INDICATE ${side === 'left' ? 'Q' : 'E'}`, true);
+    break;
+  }
+}
+
+function updateGarage(dt, clock) {
+  const onSpur = player.mode === 'edge' && player.e.cls === 'service';
+  const st = onSpur ? cityBits.stations.find(s2 => s2.edge === player.e) : null;
+  if (!st || player.speed > 1.4) {
+    if (garage.at) {
+      garage.at = null; garage.stage = -1; garage.said = '';
+      attendant.root.setEnabled(false);
+    }
+    return;
+  }
+  if (garage.at !== st) {
+    garage.at = st; garage.stage = 0; garage.t = 0; garage.said = '';
+    attendant.root.setEnabled(true);
+  }
+  // He stands at the driver's door and works.
+  const ax = st.x + st.ax * 2.6, az = st.z + st.az * 2.6;
+  const k = Math.min(1, dt * 3);
+  attendant.root.position.x += (ax - attendant.root.position.x) * k;
+  attendant.root.position.z += (az - attendant.root.position.z) * k;
+  attendant.root.rotation.y = Math.atan2(player.pos.x - ax, player.pos.z - az);
+  attendant.arm.rotation.x = Math.sin(clock * 7) * 0.6 - 0.5;
+
+  if (garage.stage >= SERVICE.length) return;
+  const job = SERVICE[garage.stage];
+  let done = false;
+  if (job.key === 'fuel') {
+    tank.fuel = Math.min(100, tank.fuel + 34 * dt);
+    done = tank.fuel > 99.5;
+  } else if (job.key === 'paint') {
+    garage.t += dt;
+    if (garage.t > job.secs) {
+      // The respray only takes if nobody in blue is watching; either way
+      // the paint is fresh and the stage is finished.
+      mission.tryDisguise(player, clock);
+      done = true;
+    }
+  } else {
+    run.health = Math.min(100, run.health + 30 * dt);
+    done = run.health > 99.5;
+  }
+  if (garage.said !== job.key) {
+    garage.said = job.key;
+    hud.say(job.say + '…');
+  }
+  if (done) {
+    garage.stage += 1;
+    garage.t = 0;
+    if (garage.stage >= SERVICE.length) {
+      sound.chime();
+      hud.say('ALL DONE — HOLD THE INDICATOR TO SWING HER ROUND', true);
+    }
+  }
+}
+
 // The tank and the turbo: Turbo Esprit's two pressures. Fuel burns with
 // distance and speed; the turbo drains fast, recharges slow, and shoves.
 const tank = { fuel: 100, low: false };
@@ -865,17 +984,8 @@ const tick = (dt) => {
   if (tank.fuel <= 0) cap = 5;
   player.update(dt, { throttle, steer, maxSpeed: cap });
 
-  // Refuelling: stopped beside a pump.
-  for (const st of cityBits.stations) {
-    if (Math.hypot(player.pos.x - st.x, player.pos.z - st.z) < 8 &&
-        player.speed < 1.5 && tank.fuel < 99.5) {
-      tank.fuel = Math.min(100, tank.fuel + 20 * dt);
-      if (Math.floor(clock * 2) % 2 === 0) hud.say('FUELLING…');
-      mission.tryDisguise(player, clock);
-      if (tank.fuel > 99 && tank.chimed !== true) { tank.chimed = true; sound.chime(); }
-      if (tank.fuel < 60) tank.chimed = false;
-    }
-  }
+  updateGarage(dt, clock);
+  signpostGarage(dt);
 
   playerCar.root.position.set(player.pos.x, player.pos.y, player.pos.z);
   playerCar.root.rotation.y = player.pos.yaw;
@@ -1072,22 +1182,31 @@ const tick = (dt) => {
       ? ' · VAN ' + Math.round(Math.hypot(mission.van.pos.x - player.pos.x,
                                           mission.van.pos.z - player.pos.z)) + 'm'
       : '';
+    const lead = mission.state !== 'locate' ? ''
+      : mission.lastSeen ? 'LAST SEEN ' : 'SEARCH ';
     tgtdEl.textContent = secs
       ? 'BRIEFCASE · ' + secs + 's'
-      : (mission.state === 'locate' ? 'LAST SEEN ' : '') + Math.round(dTgt) + 'm' + van;
+      : lead + Math.round(dTgt) + 'm' + van;
     tgtBox.style.opacity = mission.state === 'done' ? 0 : 1;
     tgtBox.style.color = mission.state === 'locate' ? '#ff9a8a' : '#ff5a4d';
   } else {
     tgtBox.style.opacity = 0.35;
     tgtEl.style.transform = 'none';
-    tgtdEl.textContent = 'NO FIX — SEARCH THE DISTRICT';
+    tgtdEl.textContent = 'NO FIX';
   }
 };
 scene.onBeforeRenderObservable.add(() =>
   tick(Math.min(0.05, engine.getDeltaTime() / 1000)));
 
 // Handles for tests and the console.
-window.game = { player, traffic, net, hud, tick, mission, coast, tiles, pickups };
+// The handle tests and the console drive the game through. Everything a
+// bot needs to play it without reaching into module scope.
+window.game = {
+  player, traffic, net, hud, tick, mission, coast, tiles, pickups,
+  run, tank, turbo, garage, peds, signals,
+  stations: cityBits.stations,
+  nav: { nodeAhead, headingSlot, turnOptions },
+};
 
 // ---- intro screen -------------------------------------------------------
 {

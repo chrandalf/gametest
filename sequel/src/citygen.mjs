@@ -855,48 +855,92 @@ export function buildCity(scene, net, mirror) {
     }
   }
 
-  // ---- petrol stations: three, spread out, with lit forecourts ---------
-  // Fuel is a clock, and these are where you wind it. Green on the map.
+  // ---- garages: the forecourt at the end of each service spur ----------
+  // The network put a short road here; this dresses it. Canopy on posts,
+  // two pumps, a hut with an attendant in it, and a big green sign you can
+  // see from the junction so you know which turning to indicate for.
   const stations = [];
-  const streets = net.edges.filter(e => e.cls === 'street' && e.len > 46);
-  const gasSign = new StandardMaterial('gas', scene);
-  gasSign.emissiveTexture = signTexture(scene, 'GAS', '#4dff88');
-  gasSign.opacityTexture = gasSign.emissiveTexture;
-  gasSign.disableLighting = true; gasSign.backFaceCulling = false;
-  const padMat = new StandardMaterial('pad', scene);
-  padMat.emissiveColor = new Color3(0.10, 0.55, 0.30);
-  padMat.disableLighting = true;
-  const pumpMat = new PBRMaterial('pump', scene);
-  pumpMat.albedoColor = new Color3(0.05, 0.3, 0.15);
-  pumpMat.metallic = 0.3; pumpMat.roughness = 0.5;
-  pumpMat.emissiveColor = new Color3(0.05, 0.4, 0.18);
-  for (const frac of [0.18, 0.52, 0.86]) {
-    const e = streets[(streets.length * frac) | 0];
-    const hw = halfWidth(e.cls);
-    const sMid = e.len / 2;
-    const sd = 1;
-    const px = e.axis === 0 ? e.a.x + sMid : e.a.x + sd * (hw + 6.5);
-    const pz = e.axis === 0 ? e.a.z + sd * (hw + 6.5) : e.a.z + sMid;
-    // Forecourt pad, glowing faintly green, flush with the sidewalk.
-    const pad = MeshBuilder.CreateBox('pad', {
-      width: e.axis === 0 ? 13 : 9, height: 0.14, depth: e.axis === 0 ? 9 : 13,
-    }, scene);
-    pad.position.set(px, 0.07, pz);
-    pad.material = padMat;
-    // Pumps and the sign.
-    for (const o of [-2.6, 2.6]) {
-      const pump = MeshBuilder.CreateBox('pump', { width: 0.7, height: 1.3, depth: 0.5 }, scene);
-      pump.position.set(e.axis === 0 ? px + o : px, 0.65, e.axis === 0 ? pz : pz + o);
-      pump.material = pumpMat;
+  {
+    const gasSign = new StandardMaterial('gas', scene);
+    gasSign.emissiveTexture = signTexture(scene, 'GAS', '#4dff88');
+    gasSign.opacityTexture = gasSign.emissiveTexture;
+    gasSign.disableLighting = true; gasSign.backFaceCulling = false;
+    const padMat = new StandardMaterial('pad', scene);
+    padMat.emissiveColor = new Color3(0.10, 0.55, 0.30);
+    padMat.disableLighting = true;
+    const pumpMat = new PBRMaterial('pump', scene);
+    pumpMat.albedoColor = new Color3(0.05, 0.3, 0.15);
+    pumpMat.metallic = 0.3; pumpMat.roughness = 0.5;
+    pumpMat.emissiveColor = new Color3(0.05, 0.4, 0.18);
+    const hutMat = new PBRMaterial('hut', scene);
+    hutMat.albedoColor = new Color3(0.09, 0.11, 0.13);
+    hutMat.metallic = 0.2; hutMat.roughness = 0.7;
+    hutMat.emissiveColor = new Color3(0.06, 0.09, 0.08);
+    const canopyMat = new StandardMaterial('canopy', scene);
+    canopyMat.emissiveColor = new Color3(0.14, 0.30, 0.22);
+    canopyMat.disableLighting = true;
+    const stripMat = neonMat(scene, 0.25, 1.6, 0.8, 'gasneon');
+
+    for (const f of net.forecourts) {
+      // Along the spur, and across it.
+      const ax = f.axis === 0 ? 1 : 0, az = f.axis === 0 ? 0 : 1;
+      const px = f.x + f.dx * 5, pz = f.z + f.dz * 5;   // just past the dead end
+      const W = 22, D = 17;
+      const pad = MeshBuilder.CreateBox('pad', {
+        width: f.axis === 0 ? D : W, height: 0.14, depth: f.axis === 0 ? W : D,
+      }, scene);
+      pad.position.set(px, 0.07, pz);
+      pad.material = padMat;
+      // Neon rim so it reads as somewhere to go, not a car park.
+      for (const sd of [-1, 1]) {
+        const line = MeshBuilder.CreateBox('el', {
+          width: f.axis === 0 ? D : W, height: 0.07, depth: f.axis === 0 ? W : D,
+        }, scene);
+        line.scaling.set(1, 1, 1);
+        line.position.set(px + ax * sd * (f.axis === 0 ? 0 : W / 2),
+                          0.15, pz + az * sd * (f.axis === 0 ? 0 : W / 2));
+        line.material = stripMat;
+        line.scaling.x = f.axis === 0 ? 1 : 0.02;
+        line.scaling.z = f.axis === 0 ? 0.02 : 1;
+      }
+      // Pumps either side of where the car stops.
+      const sx = f.x - f.dx * 4, sz = f.z - f.dz * 4;      // the stopping spot
+      for (const o of [-4.6, 4.6]) {
+        const pump = MeshBuilder.CreateBox('pump',
+          { width: 0.8, height: 1.5, depth: 0.6 }, scene);
+        pump.position.set(sx + ax * o, 0.75, sz + az * o);
+        pump.material = pumpMat;
+        const cap = MeshBuilder.CreateBox('el',
+          { width: 0.9, height: 0.1, depth: 0.7 }, scene);
+        cap.position.set(sx + ax * o, 1.56, sz + az * o);
+        cap.material = stripMat;
+      }
+      // Canopy on four posts, over the pumps.
+      const roof = MeshBuilder.CreateBox('gpan', {
+        width: f.axis === 0 ? 13 : 15, height: 0.5, depth: f.axis === 0 ? 15 : 13,
+      }, scene);
+      roof.position.set(sx, 5.4, sz);
+      roof.material = canopyMat;
+      for (const oa of [-6, 6]) for (const ob of [-5.5, 5.5]) {
+        const post = MeshBuilder.CreateBox('gp',
+          { width: 0.4, height: 5.2, depth: 0.4 }, scene);
+        post.position.set(sx + ax * oa + f.dx * ob, 2.6, sz + az * oa + f.dz * ob);
+        post.material = hutMat;
+      }
+      // The hut, at the back.
+      const hut = MeshBuilder.CreateBox('b', {
+        width: f.axis === 0 ? 6 : 7, height: 3.4, depth: f.axis === 0 ? 7 : 6,
+      }, scene);
+      hut.position.set(px + f.dx * 4, 1.7, pz + f.dz * 4);
+      hut.material = hutMat;
+      // The sign, on the junction side so you can see it coming.
+      const sg = MeshBuilder.CreatePlane('gassg', { width: 9, height: 2.3 }, scene);
+      sg.position.set(f.node.x - f.dx * 12, 7.2, f.node.z - f.dz * 12);
+      sg.billboardMode = 2;
+      sg.material = gasSign;
+      stations.push({ x: sx, z: sz, node: f.node, edge: f.edge,
+                      dx: f.dx, dz: f.dz, axis: f.axis, ax, az });
     }
-    const sg = MeshBuilder.CreatePlane('gassg', { width: 8, height: 2 }, scene);
-    sg.position.set(px, 6.4, pz);
-    sg.billboardMode = 2;
-    sg.material = gasSign;
-    // The refuel spot is kerbside on the carriageway, beside the pad.
-    const rx = e.axis === 0 ? px : e.a.x + sd * (hw - 1.8);
-    const rz = e.axis === 0 ? e.a.z + sd * (hw - 1.8) : pz;
-    stations.push({ x: rx, z: rz });
   }
 
   // ---- roadworks: a coned-off kerb lane on two avenues -----------------

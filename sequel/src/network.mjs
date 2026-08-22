@@ -33,6 +33,7 @@ export const CLASSES = {
   highway: { lanesPer: 3, laneW: 3.7, limit: 30, colour: [1.45, 0.30, 0.95] },
   express: { lanesPer: 3, laneW: 3.5, limit: 34, colour: [0.35, 0.80, 1.70] },
   ramp:    { lanesPer: 2, laneW: 3.6, limit: 20, colour: [1.60, 0.85, 0.20] },
+  service: { lanesPer: 1, laneW: 4.2, limit: 8,  colour: [0.35, 1.60, 0.75] },
 };
 
 // How high the deck flies.
@@ -274,6 +275,47 @@ export function buildNetwork() {
     e.a.edges[slotA] = null;
     e.b.edges[slotB] = null;
   }
+  // ---- forecourts: a spur you turn into --------------------------------
+  // A garage used to be a patch of ground beside a street that you had to
+  // nudge up against at walking pace. It is a road now: a short spur off a
+  // junction, so the indicator gets you in exactly like anywhere else, and
+  // a dead end at the far end, so the U-turn gets you out.
+  const SPUR = 30;
+  const forecourts = [];
+  {
+    const DIR = [[0, 1, 0], [1, -1, 0], [2, 0, 1], [3, 0, -1]];
+    const wanted = 4;
+    // Spread them: walk the interior nodes in a stride so they do not all
+    // end up in one district.
+    const cand = [];
+    for (let j = 1; j < GRID - 1; j++) {
+      for (let i = 1; i < GRID - 1; i++) cand.push(at(i, j));
+    }
+    for (let k = 0; k < cand.length && forecourts.length < wanted; k++) {
+      const n = cand[(k * 37 + 5) % cand.length];
+      if (!n || n.forecourt) continue;
+      const live = n.edges.filter(Boolean);
+      if (live.length < 2 || live.some(q => q.cls === 'highway')) continue;
+      // Never next to another one.
+      if (forecourts.some(f => Math.hypot(f.node.x - n.x, f.node.z - n.z) < 190)) continue;
+      const free = DIR.filter(([slot]) => !n.edges[slot]);
+      if (!free.length) continue;
+      const [slot, dx, dz] = free[(k * 7) % free.length];
+      const fx = n.x + dx * SPUR, fz = n.z + dz * SPUR;
+      const f = { i: 700 + forecourts.length, j: 700 + forecourts.length,
+                  x: fx, z: fz, y: 0, forecourt: true,
+                  edges: [null, null, null, null] };
+      nodes.push(f);
+      const axis = dx !== 0 ? 0 : 1;
+      const lower = (axis === 0 ? (n.x < fx) : (n.z < fz)) ? n : f;
+      const upper = lower === n ? f : n;
+      const e = link(lower, upper, axis, 'service');
+      n.forecourt = true;
+      forecourts.push({ node: f, parent: n, edge: e, x: fx, z: fz,
+                        dx, dz, axis });
+    }
+  }
+
   const live = edges.filter(e => !e.dead);
   live.forEach((e, i) => { e.id = i; });
   let bx0 = 1e9, bx1 = -1e9, bz0 = 1e9, bz1 = -1e9;
@@ -282,7 +324,7 @@ export function buildNetwork() {
     bz0 = Math.min(bz0, n.z); bz1 = Math.max(bz1, n.z);
   }
   return { nodes, edges: live, at, xs, zs, deckY: DECK_Y,
-           island, bridges, isleAt: (i, j) => island[j * IGRID + i],
+           island, bridges, forecourts, isleAt: (i, j) => island[j * IGRID + i],
            IGRID, IPITCH, IX0, IZ0,
            bounds: { x0: bx0, x1: bx1, z0: bz0, z1: bz1 },
            extent: { x: xs[GRID - 1], z: zs[GRID - 1] } };
