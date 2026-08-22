@@ -25,6 +25,9 @@ const neonMat = (scene, r, g, b, name) => {
   const m = new StandardMaterial(name || 'nm', scene);
   m.emissiveColor = new Color3(r, g, b);
   m.disableLighting = true;
+  // Depth bias: thin glowing strips lying on the road z-fight at range and
+  // read as flicker; pulling them a hair toward the camera settles them.
+  m.zOffset = -2;
   return m;
 };
 

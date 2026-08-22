@@ -13,6 +13,7 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Color3, Color4 } from '@babylonjs/core/Maths/math.color';
 import { Plane } from '@babylonjs/core/Maths/math.plane';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
+import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
@@ -28,6 +29,7 @@ import { Mission } from './mission.mjs';
 import { Signals } from './lights.mjs';
 import { Peds } from './peds.mjs';
 import { Coast } from './outrun.mjs';
+import { Sound } from './sound.mjs';
 
 // The artifact sandbox's permissions policy forbids the Gamepad API, and
 // Chrome makes the mere call throw. Babylon's input system polls it during
@@ -53,6 +55,7 @@ report('engine up — building the city…');
 
 const cam = new FreeCamera('cam', new Vector3(0, 5, -12), scene);
 cam.fov = 0.95;
+cam.minZ = 1.2;
 cam.maxZ = 2600;
 
 const hemi = new HemisphericLight('h', new Vector3(0, 1, 0), scene);
@@ -141,6 +144,31 @@ mirror.renderList.push(sun);
 
 const cityBits = buildCity(scene, net, mirror);
 report('city built — starting traffic…');
+
+// ---- merge pass: the 9-fps fix ----------------------------------------
+// Every kerb, neon line and tower was its own draw call - then the mirror
+// drew them all again, then the glow layer again. Merge all static
+// geometry per material into a handful of meshes.
+{
+  const MERGE = new Set(['rd', 'wk', 'kb', 'sl', 'el', 'ml', 'b', 'sg',
+                         'pad', 'pump', 'sand', 'sea', 'gp', 'gpan',
+                         'cone', 'barr', 'pole']);
+  const buckets = new Map();
+  for (const msh of scene.meshes.slice()) {
+    if (!MERGE.has(msh.name) || !msh.material) continue;
+    const key = msh.material.uniqueId;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(msh);
+  }
+  for (const arr of buckets.values()) {
+    if (arr.length < 2) continue;
+    const merged = Mesh.MergeMeshes(arr, true, true, undefined, false, false);
+    if (merged) merged.name = 'static';
+  }
+  // Rebuild the mirror list: merged statics, live car parts, the sun.
+  mirror.renderList = scene.meshes.filter(msh =>
+    msh.name === 'static' || msh.name === 'p' || msh.name === 'w' || msh.name === 'sun');
+}
 
 // ---- performance pass -------------------------------------------------
 // The city never moves: freeze every static world matrix so Babylon stops
@@ -265,6 +293,8 @@ function dressPolice(d) {
 for (const d of mission.police) dressPolice(d);
 mission.onPoliceSpawn = dressPolice;
 
+const sound = new Sound();
+
 // ---- the coast layer: OutRun lives on the ring road --------------------
 const coast = new Coast(net, buildCar, hud);
 coast.announceBack = () => mission.announce();
@@ -297,7 +327,7 @@ for (const [rx, rz, ry] of [[mid, mid + 1240, 0], [mid, mid - 1240, Math.PI],
 let vibe = 0;
 
 // The run: score, health, and how it ends.
-const run = { score: 0, health: 100, over: false, reason: '', time: 0 };
+const run = { score: 0, health: 100, over: false, reason: '', time: 0, started: false, saved: false };
 const playerPrev = { e: null, dir: 0, s: 0 };
 let speedTattleT = 0;
 mission.onScore = (n) => { run.score += n; };
@@ -332,6 +362,7 @@ function firePlayerGun(dt) {
   gunT -= dt;
   if (gunT > 0) return;
   gunT = 0.13;
+  sound.gun();
   const fx = Math.sin(player.pos.yaw), fz = Math.cos(player.pos.yaw);
   const mx = player.pos.x + fx * 2.4, mz = player.pos.z + fz * 2.4;
   // Nearest thing inside a tight forward cone, out to 65 m.
@@ -403,8 +434,9 @@ function renderOver() {
   document.getElementById('ovtext').textContent =
     `${run.reason}\n\nSCORE ${s} · LEVEL ${mission.level}\n` +
     `SURVIVED ${Math.round(run.time)}s\n\n` +
-    `TYPE 3 INITIALS THEN ENTER\n> ${initials.padEnd(3, '_')}\n\n${rows}\n\n` +
-    `ENTER SAVES · SPACE RESTARTS`;
+    (run.saved ? `SAVED · ${initials.padEnd(3, '_')}\n\n${rows}\n\n`
+               : `TYPE 3 INITIALS THEN ENTER\n> ${initials.padEnd(3, '_')}\n\n${rows}\n\n`) +
+    (run.saved ? `SPACE RESTARTS` : `ENTER SAVES · SPACE RESTARTS`);
 }
 addEventListener('keydown', (e) => {
   if (!run.over) return;
@@ -412,7 +444,8 @@ addEventListener('keydown', (e) => {
     initials += e.code[3]; renderOver();
   } else if (e.code === 'Backspace') {
     initials = initials.slice(0, -1); renderOver();
-  } else if (e.code === 'Enter' && initials.length > 0) {
+  } else if (e.code === 'Enter' && initials.length > 0 && !run.saved) {
+    run.saved = true;                      // one entry per run, like the arcade
     const table = loadScores();
     table.push({ n: initials.padEnd(3, '_'), s: Math.round(run.score) });
     table.sort((a, b) => b.s - a.s);
@@ -445,23 +478,35 @@ function updateCollisions(dt, clock) {
           tail.speed = Math.min(tail.speed, Math.max(0, lead.speed * 0.95));
         }
       }
-      // Hard contact: separate the bodies, trade the momentum, make it felt.
-      if (d2 < 3.6 * 3.6) {
+      // Hard contact: continuous separation every frame (nobody phases
+      // through, nobody drives over) plus a proper bounce on the impulse.
+      if (d2 < 3.3 * 3.3) {
+        const d = Math.sqrt(d2) || 0.1;
+        const overlap = 3.3 - d;
+        // Who is in front of whom, along each car's own heading.
+        const aft = (v, ox, oz) =>
+          (Math.sin(v.pos.yaw) * ox + Math.cos(v.pos.yaw) * oz) > 0;
+        const bAheadOfA = aft(a, b.pos.x - a.pos.x, b.pos.z - a.pos.z);
+        const back = bAheadOfA ? a : b, front = bAheadOfA ? b : a;
+        if (back.mode === 'edge') back.s = Math.max(0, back.s - overlap * 0.7);
+        if (front.mode === 'edge') front.s = Math.min(front.e.len, front.s + overlap * 0.4);
+        // Impulse, gated so one crash is one crash.
         const key = i * 100 + j;
-        if ((hitCooldown.get(key) || 0) > clock) continue;
-        hitCooldown.set(key, clock + 0.35);
-        const rel = Math.abs(a.speed - b.speed) + 2;
-        const [fast, slow] = a.speed >= b.speed ? [a, b] : [b, a];
-        // The struck car lurches, the striker loses most of the difference -
-        // nobody phases through anybody.
-        slow.speed = Math.min(slow.speed + rel * 0.6, slow.speed + 16);
-        fast.speed = Math.max(0, slow.speed * 0.4 + fast.speed * 0.25);
-        const overlap = 3.6 - Math.sqrt(d2);
-        if (fast.mode === 'edge') fast.s = Math.max(0, fast.s - overlap);
-        if (slow.mode === 'edge') slow.s = Math.min(slow.e.len, slow.s + overlap * 0.5);
-        shake = Math.min(1, rel / 12);
-        if (a === player || b === player) {
-          mission.onPlayerImpact(a === player ? b : a, rel, player, true);
+        if ((hitCooldown.get(key) || 0) <= clock) {
+          hitCooldown.set(key, clock + 0.4);
+          const rel = Math.abs(back.speed - front.speed) + 2;
+          front.speed = Math.min(front.speed + rel * 0.65, front.speed + 16);
+          // The bounce: the rammer is thrown back off the contact, hard.
+          back.speed = Math.max(0, front.speed * 0.2);
+          if (back.mode === 'edge') back.s = Math.max(0, back.s - rel * 0.14);
+          shake = Math.min(1, rel / 11);
+          sound.crash(Math.min(1, rel / 16));
+          if (a === player || b === player) {
+            mission.onPlayerImpact(a === player ? b : a, rel, player, true);
+          }
+        } else {
+          // Still touching inside the gate: keep speeds honest.
+          back.speed = Math.min(back.speed, front.speed + 1);
         }
       }
     }
@@ -501,9 +546,10 @@ const holdT = { q: 0, e: 0 };
 const tick = (dt) => {
   clock += dt;
   if (run.over) return;
+  const live = run.started;
 
-  const throttle = (keys.KeyW || keys.ArrowUp) ? 1 : (keys.KeyS || keys.ArrowDown) ? -1 : 0;
-  const steer = ((keys.KeyA || keys.ArrowLeft) ? 1 : 0) + ((keys.KeyD || keys.ArrowRight) ? -1 : 0);
+  const throttle = live ? ((keys.KeyW || keys.ArrowUp) ? 1 : (keys.KeyS || keys.ArrowDown) ? -1 : 0) : 0;
+  const steer = live ? (((keys.KeyA || keys.ArrowLeft) ? 1 : 0) + ((keys.KeyD || keys.ArrowRight) ? -1 : 0)) : 0;
 
   // Hold an indicator ~2 s to swing a full U-turn.
   if (keys.KeyQ && holdT.q !== Infinity && clock - holdT.q > 1.9 && player.mode === 'edge') {
@@ -539,6 +585,8 @@ const tick = (dt) => {
       tank.fuel = Math.min(100, tank.fuel + 20 * dt);
       if (Math.floor(clock * 2) % 2 === 0) hud.say('FUELLING…');
       mission.tryDisguise(player, clock);
+      if (tank.fuel > 99 && tank.chimed !== true) { tank.chimed = true; sound.chime(); }
+      if (tank.fuel < 60) tank.chimed = false;
     }
   }
 
@@ -559,10 +607,12 @@ const tick = (dt) => {
   }
 
   if (run.over) { hud.update(dt, player, [...traffic, ...mission.mapEntries()]); return; }
-  run.time += dt;
-  run.score += dt * 2 * (1 + mission.wanted * 0.5);
+  if (live) {
+    run.time += dt;
+    run.score += dt * 2 * (1 + mission.wanted * 0.5);
+  }
 
-  if (keys.Space) firePlayerGun(dt); else gunT = Math.min(gunT, 0.05);
+  if (keys.Space && live) firePlayerGun(dt); else gunT = Math.min(gunT, 0.05);
   for (const t of tracers) {
     if (t.life > 0) { t.life -= dt; if (t.life <= 0) t.mesh.setEnabled(false); }
   }
@@ -660,6 +710,7 @@ const tick = (dt) => {
   pipe.imageProcessing.contrast = 1.3 - vibe * 0.12;
 
   coast.update(dt, player, clock, mission.wanted);
+  sound.update(dt, Math.min(1, player.speed / 55), turbo.active, mission.wanted > 0);
 
   const strobing = mission.wanted > 0;
   for (let bi = 0; bi < beaconMats.length; bi++) {
@@ -694,6 +745,32 @@ scene.onBeforeRenderObservable.add(() =>
 
 // Handles for tests and the console.
 window.game = { player, traffic, net, hud, tick, mission, coast };
+
+// ---- intro screen -------------------------------------------------------
+{
+  const table = loadScores();
+  const rows = table.length
+    ? 'HALL OF FAME\n' + table.slice(0, 5).map((r, i) =>
+        `${i + 1}. ${r.n}  ${r.s}`).join('\n')
+    : 'NO SCORES YET — BE FIRST';
+  document.getElementById('introtext').textContent =
+    'FIND THE BLACK COUPE · RAM OR SHOOT IT · DODGE THE LAW\n' +
+    'W/S DRIVE · A/D LANES · Q/E INDICATE (HOLD FOR U-TURN)\n' +
+    'SPACE FIRE · SHIFT TURBO · GREEN SQUARES SELL PETROL\n' +
+    'THE RING ROAD IS THE COAST — GO SEE IT\n\n' + rows;
+}
+addEventListener('keydown', (e) => {
+  if (!run.started && e.code === 'Enter') {
+    run.started = true;
+    document.getElementById('intro').style.display = 'none';
+    sound.start();
+    mission.announce();
+  }
+  if (e.code === 'KeyM' && sound.started) {
+    hud.say(sound.toggle() ? 'SOUND ON' : 'SOUND OFF');
+  }
+  if (e.code === 'KeyX' && sound.started) sound.next();
+});
 
 const fpsEl = document.getElementById('fps');
 const fuelBar = document.getElementById('fuel');
