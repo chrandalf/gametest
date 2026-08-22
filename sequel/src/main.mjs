@@ -196,7 +196,8 @@ function tileAt(x, z) {
   const MERGE = new Set(['rd', 'wk', 'kb', 'sl', 'el', 'ml', 'b', 'sg',
                          'pad', 'pump', 'sand', 'sea', 'gp', 'gpan',
                          'cone', 'barr', 'pole', 'dk', 'prp', 'dd', 'pier',
-                         'twl', 'bod', 'parapole', 'shade', 'ib', 'iland']);
+                         'twl', 'bod', 'parapole', 'shade', 'ib', 'iland',
+                         'trunk', 'leaf', 'grass', 'crate', 'stack']);
   // Where each merged mesh sits has to be worked out from the meshes going
   // into it. A merged mesh's world bounding box is not computed until it is
   // first rendered, so reading it here hands back zeroes and files half the
@@ -440,7 +441,7 @@ function buildCar(paintCol, taillit, trimCol) {
     finalParts.push(m);
   }
   for (const m of finalParts) mirror.renderList.push(m);
-  return { root, indL, indR };
+  return { root, indL, indR, paint };
 }
 
 // The player, starting mid-city on an avenue, pointed somewhere useful.
@@ -481,6 +482,8 @@ function aiInput(d, dt, t) {
 // ---- the hunt: target coupe, police cruiser, mission card --------------
 const hud = new Hud(net, cityBits.stations);
 const mission = new Mission(scene, net, buildCar, hud);
+// The briefing names the quarter, not a compass point.
+mission.districtAt = cityBits.districtAt;
 const signals = new Signals(scene, net);
 {
   // The signals arrive after the district pass, so they get their own.
@@ -901,6 +904,17 @@ const SERVICE = [
   { key: 'paint',  say: 'A COAT OF PAINT',       secs: 3.2 },
   { key: 'repair', say: 'BEATING THE PANELS OUT', secs: 0 },
 ];
+// You do not come out of a respray the colour you went in.
+const RESPRAY = [
+  ['PEARL', new Color3(0.80, 0.83, 0.90)],
+  ['OXBLOOD', new Color3(0.42, 0.05, 0.08)],
+  ['MIDNIGHT', new Color3(0.06, 0.10, 0.30)],
+  ['SAND', new Color3(0.62, 0.52, 0.28)],
+  ['JADE', new Color3(0.06, 0.38, 0.26)],
+  ['SLATE', new Color3(0.20, 0.22, 0.26)],
+  ['VIOLET', new Color3(0.30, 0.10, 0.42)],
+];
+let resprayIdx = 0;
 const garage = { at: null, stage: -1, t: 0, said: '' };
 
 // Getting IN was the hard part: a spur is easy to miss at speed, so the
@@ -956,9 +970,16 @@ function updateGarage(dt, clock) {
   } else if (job.key === 'paint') {
     garage.t += dt;
     if (garage.t > job.secs) {
-      // The respray only takes if nobody in blue is watching; either way
-      // the paint is fresh and the stage is finished.
-      mission.tryDisguise(player, clock);
+      // The respray only fools the police if nobody in blue is watching -
+      // but the paint is fresh either way, and it is a different colour,
+      // because a car that goes into a paint shop and comes out the same
+      // shade has not been resprayed.
+      const fooled = mission.tryDisguise(player, clock);
+      resprayIdx = (resprayIdx + 1) % RESPRAY.length;
+      const [name, col] = RESPRAY[resprayIdx];
+      playerCar.paint.albedoColor.copyFrom(col);
+      playerCar.paint.emissiveColor.copyFrom(col.scale(0.16));
+      if (!fooled) hud.say('RESPRAYED ' + name);
       done = true;
     }
   } else {
@@ -1097,6 +1118,9 @@ const tick = (dt) => {
   }
 
   // AI shots land as health damage, dodgeable by speed.
+  // In the garage you are off the board: the doors are shut, and a
+  // gunfight in a paint shop is nobody's idea of a good time.
+  mission.playerSafe = !!garage.at;
   mission.update(dt, player, clock);
   for (const sh of mission.shots) {
     showTracer(sh.from.x, sh.from.z, sh.to.x, sh.to.z, player.pos.y + 0.9);
@@ -1231,6 +1255,7 @@ scene.onBeforeRenderObservable.add(() =>
 window.game = {
   player, traffic, net, hud, tick, mission, coast, tiles, pickups,
   run, tank, turbo, garage, peds, signals, coast2,
+  zones: cityBits.zones, districtAt: cityBits.districtAt,
   stations: cityBits.stations,
   nav: { nodeAhead, headingSlot, turnOptions },
 };

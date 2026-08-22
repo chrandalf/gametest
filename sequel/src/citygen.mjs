@@ -445,17 +445,87 @@ export function buildCity(scene, net, mirror) {
     }
   }
 
-  // ---- blocks: buildings, some wearing signs --------------------------
+  // ---- districts: the city has quarters, and they look like it --------
+  // Every block belongs to one, and a district decides what gets built on
+  // it - how tall, how dense, what the windows are lit with, how much neon
+  // it wears and what stands between the buildings. Borders wobble so the
+  // map does not read as four quadrants drawn with a ruler.
   const winTex = windowTexture(scene, rand);
-  const towerMats = [];
-  for (let k = 0; k < 4; k++) {
-    const m = new PBRMaterial('tw' + k, scene);
-    m.albedoColor = new Color3(0.016, 0.016, 0.03 + k * 0.004);
-    m.metallic = 0.15; m.roughness = 0.75;
-    m.emissiveTexture = winTex;
-    m.emissiveColor = new Color3(0.55 + k * 0.05, 0.5 + k * 0.05, 0.45);
-    towerMats.push(m);
+  const litWindows = (warm, density) => {
+    const dt = new DynamicTexture('win' + warm + density, { width: 256, height: 512 }, scene, true);
+    const x = dt.getContext();
+    x.fillStyle = '#04040a'; x.fillRect(0, 0, 256, 512);
+    for (let r = 0; r < 24; r++) for (let c = 0; c < 8; c++) {
+      if (rand() > density) continue;
+      x.fillStyle = rand() < warm ? '#ffd9a0' : '#9fd8ff';
+      x.fillRect(c * 32 + 9, r * 21 + 5, 16, 11);
+    }
+    dt.update();
+    return dt;
+  };
+  const towerFamily = (name, tex, tint, count) => {
+    const out = [];
+    for (let k = 0; k < count; k++) {
+      const m = new PBRMaterial(name + k, scene);
+      m.albedoColor = new Color3(0.016, 0.016, 0.03 + k * 0.004);
+      m.metallic = 0.15; m.roughness = 0.75;
+      m.emissiveTexture = tex;
+      m.emissiveColor = new Color3(tint[0] + k * 0.05, tint[1] + k * 0.05, tint[2]);
+      out.push(m);
+    }
+    return out;
+  };
+  const glassTex = litWindows(0.25, 0.5);     // cold, densely occupied
+  const warmTex = litWindows(0.9, 0.3);       // homes, half the lights off
+  const shedTex = litWindows(0.6, 0.06);      // sheds barely have windows
+  const FAMILIES = {
+    glass: towerFamily('twg', glassTex, [0.5, 0.58, 0.62], 4),
+    strip: towerFamily('tws', winTex, [0.7, 0.45, 0.6], 3),
+    warm:  towerFamily('tww', warmTex, [0.62, 0.46, 0.3], 3),
+    shed:  towerFamily('twd', shedTex, [0.22, 0.24, 0.26], 2),
+  };
+  const DISTRICTS = {
+    downtown:    { label: 'DOWNTOWN',   fam: 'glass', h: [30, 48], n: [2, 4], w: 0.36, sign: 0.40, prop: null },
+    strip:       { label: 'THE STRIP',  fam: 'strip', h: [12, 16], n: [3, 5], w: 0.30, sign: 0.90, prop: null },
+    residential: { label: 'THE TERRACES', fam: 'warm', h: [8, 9],  n: [3, 5], w: 0.28, sign: 0.05, prop: 'tree' },
+    industrial:  { label: 'THE WORKS',  fam: 'shed',  h: [6, 6],   n: [2, 3], w: 0.46, sign: 0.04, prop: 'stack' },
+    docks:       { label: 'THE DOCKS',  fam: 'shed',  h: [7, 7],   n: [2, 3], w: 0.44, sign: 0.08, prop: 'container' },
+    park:        { label: 'THE PARK',   fam: 'warm',  h: [0, 0],   n: [0, 0], w: 0,    sign: 0,    prop: 'park' },
+  };
+
+  // Deterministic per-block hash, so the zoning is the same city every time.
+  const blockHash = (bi, bj) => {
+    const h = Math.sin(bi * 127.1 + bj * 311.7) * 43758.5453;
+    return h - Math.floor(h);
+  };
+  const centre = (GRID - 1) / 2;
+  const zones = [];
+  for (let bj = 0; bj < GRID - 1; bj++) {
+    zones.push([]);
+    for (let bi = 0; bi < GRID - 1; bi++) {
+      const hsh = blockHash(bi, bj);
+      const dc = Math.hypot(bi - centre + 0.5, bj - centre + 0.5) / centre;
+      let z;
+      if (dc < 0.34 + hsh * 0.12) z = 'downtown';
+      else if (hsh < 0.07) z = 'park';
+      else {
+        // Quadrants, with a wobble on each border.
+        const j = (blockHash(bj, bi) - 0.5) * 1.6;
+        const east = bi + j > centre - 0.5, north = bj + j > centre - 0.5;
+        z = east ? (north ? 'strip' : 'docks') : (north ? 'residential' : 'industrial');
+      }
+      zones[bj].push(z);
+    }
   }
+  // Which district a point in the world is in - the briefing uses it.
+  const districtAt = (x, z) => {
+    let bi = 0, bj = 0;
+    while (bi < GRID - 2 && x > net.xs[bi + 1]) bi += 1;
+    while (bj < GRID - 2 && z > net.zs[bj + 1]) bj += 1;
+    const key = (zones[bj] && zones[bj][bi]) || 'downtown';
+    return DISTRICTS[key].label;
+  };
+
   const signMats = SIGN_WORDS.map((wd, i) => {
     const col = SIGN_COLS[i % SIGN_COLS.length];
     const m = new StandardMaterial('sm' + i, scene);
@@ -466,7 +536,38 @@ export function buildCity(scene, net, mirror) {
   });
   let signCount = 0;
 
-  const centre = (GRID - 1) / 2;
+  // Props that give a quarter its character at street level.
+  const foliage = new StandardMaterial('leaf', scene);
+  foliage.emissiveColor = new Color3(0.06, 0.20, 0.10);
+  foliage.disableLighting = true;
+  const trunkMat = new StandardMaterial('trunk', scene);
+  trunkMat.emissiveColor = new Color3(0.09, 0.07, 0.05);
+  trunkMat.disableLighting = true;
+  const grassMat = new StandardMaterial('grass', scene);
+  grassMat.emissiveColor = new Color3(0.035, 0.10, 0.055);
+  grassMat.disableLighting = true;
+  const CRATE = [[0.55, 0.20, 0.16], [0.16, 0.38, 0.50], [0.50, 0.42, 0.14],
+                 [0.18, 0.46, 0.28]].map(([r, g, b], k) => {
+    const m = new StandardMaterial('crate' + k, scene);
+    m.emissiveColor = new Color3(r * 0.45, g * 0.45, b * 0.45);
+    m.disableLighting = true;
+    return m;
+  });
+  const stackMat = new StandardMaterial('stack', scene);
+  stackMat.emissiveColor = new Color3(0.10, 0.10, 0.12);
+  stackMat.disableLighting = true;
+  const tree = (px, pz, scale) => {
+    const t = MeshBuilder.CreateBox('trunk', { width: 0.4, height: 2.4 * scale, depth: 0.4 }, scene);
+    t.position.set(px, 1.2 * scale, pz);
+    t.material = trunkMat;
+    const c = MeshBuilder.CreateCylinder('leaf', {
+      diameterTop: 0.2, diameterBottom: 3.4 * scale, height: 4.4 * scale, tessellation: 7,
+    }, scene);
+    c.position.set(px, 2.4 * scale + 2.2 * scale, pz);
+    c.material = foliage;
+  };
+
+  // ---- blocks: buildings, some wearing signs --------------------------
   for (let bj = 0; bj < GRID - 1; bj++) {
     for (let bi = 0; bi < GRID - 1; bi++) {
       // Block interior bounds, inset from the widest surrounding road.
@@ -475,21 +576,58 @@ export function buildCity(scene, net, mirror) {
       const z0 = net.zs[bj] + pad, z1 = net.zs[bj + 1] - pad;
       if (x1 - x0 < 10 || z1 - z0 < 10) continue;
       const bw = x1 - x0, bd = z1 - z0;
-      // Downtown rises toward the middle; the rim stays low industrial.
-      const dc = Math.hypot(bi - centre, bj - centre) / centre;
-      const tall = dc < 0.45 ? 3 : dc < 0.8 ? 2 : 1;
-      const n = 2 + (rand() * 2 | 0);
+      const D = DISTRICTS[zones[bj][bi]];
+      const mats = FAMILIES[D.fam];
+
+      if (D.prop === 'park') {
+        const lawn = MeshBuilder.CreateBox('grass',
+          { width: bw, height: 0.1, depth: bd }, scene);
+        lawn.position.set((x0 + x1) / 2, 0.08, (z0 + z1) / 2);
+        lawn.material = grassMat;
+        for (let k = 0; k < 7; k++) {
+          tree(x0 + 2 + rand() * (bw - 4), z0 + 2 + rand() * (bd - 4), 0.9 + rand() * 0.5);
+        }
+        continue;
+      }
+
+      const n = D.n[0] + (rand() * (D.n[1] - D.n[0] + 1) | 0);
       for (let k = 0; k < n; k++) {
-        const w = bw * (0.34 + rand() * 0.22), d = bd * (0.34 + rand() * 0.22);
-        const h = tall === 3 ? 26 + rand() * 44 : tall === 2 ? 12 + rand() * 18 : 6 + rand() * 8;
-        const px = x0 + w / 2 + rand() * (bw - w);
-        const pz = z0 + d / 2 + rand() * (bd - d);
+        const w = bw * (D.w + rand() * 0.22), d = bd * (D.w + rand() * 0.22);
+        const h = D.h[0] + rand() * Math.max(1, D.h[1] - D.h[0]) + rand() * D.h[0] * 0.5;
+        const px = x0 + w / 2 + rand() * Math.max(0, bw - w);
+        const pz = z0 + d / 2 + rand() * Math.max(0, bd - d);
         const b = MeshBuilder.CreateBox('b', { width: w, height: h, depth: d }, scene);
         b.position.set(px, h / 2, pz);
-        b.material = towerMats[(rand() * towerMats.length) | 0];
+        b.material = mats[(rand() * mats.length) | 0];
         mirror.renderList.push(b);
+        // A chimney on the works, containers on the docks, trees on the
+        // terraces: one thing per quarter that you notice from the road.
+        if (D.prop === 'stack' && k === 0) {
+          const st = MeshBuilder.CreateBox('stack',
+            { width: 1.6, height: h + 16, depth: 1.6 }, scene);
+          st.position.set(px + w * 0.3, (h + 16) / 2, pz + d * 0.3);
+          st.material = stackMat;
+          const tip = MeshBuilder.CreateBox('el', { width: 2, height: 0.5, depth: 2 }, scene);
+          tip.position.set(px + w * 0.3, h + 16.2, pz + d * 0.3);
+          tip.material = glow.pink;
+        } else if (D.prop === 'container' && k < 2) {
+          for (let c2 = 0; c2 < 3 + (rand() * 3 | 0); c2++) {
+            const cw = 5.4, ch = 2.4, cd = 2.4;
+            const box = MeshBuilder.CreateBox('crate',
+              { width: cw, height: ch, depth: cd }, scene);
+            box.position.set(x0 + 3 + rand() * Math.max(1, bw - 8),
+                             ch / 2 + (rand() < 0.4 ? ch : 0),
+                             z0 + 3 + rand() * Math.max(1, bd - 8));
+            box.material = CRATE[(rand() * CRATE.length) | 0];
+          }
+        } else if (D.prop === 'tree' && k === 0) {
+          for (let t2 = 0; t2 < 3; t2++) {
+            tree(x0 + 1.5 + rand() * Math.max(1, bw - 3),
+                 z0 + 1.5 + rand() * Math.max(1, bd - 3), 0.7 + rand() * 0.4);
+          }
+        }
         // Some buildings wear a neon sign facing the nearest road.
-        if (rand() < 0.33 && signCount < 40) {
+        if (rand() < D.sign && signCount < 60) {
           signCount++;
           const sw = Math.min(14, w * 0.9);
           const side = rand() < 0.5 ? -1 : 1;
@@ -508,6 +646,7 @@ export function buildCity(scene, net, mirror) {
       }
     }
   }
+  const towerMats = FAMILIES.glass;   // the island borrows downtown's look
 
   // ---- palms along the ring road --------------------------------------
   const palmTex = (() => {
@@ -992,5 +1131,5 @@ export function buildCity(scene, net, mirror) {
     roadworks.push({ e, dir: 1, lane, s0: s0 - 6, s1: s1 + 3 });
   }
 
-  return { glow, stations, roadworks, surf };
+  return { glow, stations, roadworks, surf, districtAt, zones };
 }

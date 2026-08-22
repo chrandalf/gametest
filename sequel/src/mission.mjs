@@ -167,7 +167,9 @@ export class Mission {
   }
 
   announce() {
-    const q = quadrantName(this.target.pos.x, this.target.pos.z, this.net.extent);
+    const q = this.districtAt
+      ? this.districtAt(this.target.pos.x, this.target.pos.z)
+      : quadrantName(this.target.pos.x, this.target.pos.z, this.net.extent);
     this.hud.say(`LEVEL ${this.level} · LOCATE BLACK COUPE · LAST SEEN ${q}` +
       (this.target.armoured ? ' · ARMOURED' : '') +
       (this.van ? ' · A VAN IS BRINGING THE DROP' : ''), true);
@@ -428,16 +430,17 @@ export class Mission {
       p.update(dt, { throttle: 1, steer: 0, indicate: pInd,
                      maxSpeed: CLASSES[p.e.cls].limit * aggr });
       if (p.blocked) p.beginUTurn();
-      // Four stars: they shoot.
-      if (this.wanted >= 4) {
+      // Four stars: they shoot - but not at a car in a garage.
+      if (this.wanted >= 4 && !this.playerSafe) {
         p.fireT -= dt;
         if (p.fireT <= 0 && dp < 30) {
           p.fireT = 1.1;
           this.shots.push({ from: p.pos, to: player.pos, hurt: 6, kind: 'police' });
         }
       }
-      // Busted: pinned slow at two stars or more.
-      if (this.wanted >= 2 && dp < 7 && player.speed < 3) {
+      // Busted: pinned slow at two stars or more. Stopped in a garage is
+      // not pinned.
+      if (this.wanted >= 2 && dp < 7 && player.speed < 3 && !this.playerSafe) {
         p.bustT += dt;
         if (p.bustT > 2.5) this.busted = true;
       } else p.bustT = 0;
