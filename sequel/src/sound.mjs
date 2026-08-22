@@ -95,7 +95,9 @@ export class Sound {
     if (sirenOn) {
       this.sirenPhase += dt * 2.2;
       this.sirenOsc.frequency.value = (Math.sin(this.sirenPhase * Math.PI) > 0) ? 740 : 560;
-      this.sirenGain.gain.value = 0.045;
+      // A third of its old level. A square wave through phone speakers at
+      // 0.045 was not a siren, it was a siege.
+      this.sirenGain.gain.value = 0.014;
     } else {
       this.sirenGain.gain.value = 0;
     }
