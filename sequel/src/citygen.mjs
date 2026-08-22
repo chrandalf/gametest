@@ -6,6 +6,8 @@ import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
+import { Mesh } from '@babylonjs/core/Meshes/mesh';
+import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { GRID, CELL, CLASSES, halfWidth, lanePos } from './network.mjs';
 
@@ -253,11 +255,12 @@ export function buildCity(scene, net, mirror) {
     }
   }
 
-  // ---- the expressway: decks, slip roads, piers ------------------------
-  // Everything up here is the same edge data as the streets, only with ends
-  // at different heights. A flat deck is a box; a slip road is the same box
-  // tilted by its own grade. Portal frames straddle the street below rather
-  // than standing in it.
+  // ---- the crossings: causeways, spans, slip roads, piers --------------
+  // Every piece is a slab built straight into world space from the four
+  // lateral offsets it has at each end. That is what lets a deck taper:
+  // a ramp can be as wide as the road it leaves at one end and its own
+  // width at the other, and the neon down its edges follows the flare
+  // instead of stopping dead where the width changes.
   {
     const deckMat = new PBRMaterial('deck', scene);
     deckMat.albedoColor = new Color3(0.030, 0.030, 0.044);
@@ -265,88 +268,130 @@ export function buildCity(scene, net, mirror) {
     const concrete = new PBRMaterial('conc', scene);
     concrete.albedoColor = new Color3(0.055, 0.055, 0.072);
     concrete.metallic = 0.1; concrete.roughness = 0.85;
-    concrete.emissiveColor = new Color3(0.022, 0.024, 0.034);
+    concrete.emissiveColor = new Color3(0.024, 0.026, 0.036);
 
-    // A box laid along an edge, tilted to match its grade. `alongLen` runs
-    // with the road, `acrossLen` spans it; which of those is width and
-    // which is depth depends on the edge's axis.
-    const onDeck = (e, name, alongLen, h, acrossLen, offAcross, offUp, offAlong, mat) => {
-      const grade = Math.atan2(e.b.y - e.a.y, e.len);
-      const cx = (e.a.x + e.b.x) / 2, cz = (e.a.z + e.b.z) / 2;
-      const cy = (e.a.y + e.b.y) / 2;
-      const along0 = e.axis === 0 ? alongLen : acrossLen;
-      const across0 = e.axis === 0 ? acrossLen : alongLen;
-      const box = MeshBuilder.CreateBox(name,
-        { width: along0, height: h, depth: across0 }, scene);
-      const t = offAlong || 0;
-      if (e.axis === 0) {
-        box.position.set(cx + t, cy + offUp + t * Math.tan(grade), cz + offAcross);
-        box.rotation.z = grade;
-      } else {
-        box.position.set(cx + offAcross, cy + offUp + t * Math.tan(grade), cz + t);
-        box.rotation.x = -grade;
+    // Four lateral offsets - left and right at each end - swept from a to b.
+    // Positive is to the left of travel from a toward b.
+    const slab = (e, name, mat, aL, aR, bL, bR, top, thick, sA, sB) => {
+      const lx = e.axis === 0 ? 0 : 1, lz = e.axis === 0 ? -1 : 0;
+      // Ends can stop short of the nodes, so a parapet never runs into a
+      // junction box at ground level.
+      const f0 = Math.min(0.45, (sA || 0) / e.len);
+      const f1 = 1 - Math.min(0.45, (sB || 0) / e.len);
+      const mix = (u, v, f) => u + (v - u) * f;
+      const ends = [f0, f1].map((f) => ({
+        x: mix(e.a.x, e.b.x, f), z: mix(e.a.z, e.b.z, f),
+        y: mix(e.a.y, e.b.y, f) + top,
+        l: mix(aL, bL, f), r: mix(aR, bR, f),
+      }));
+      const cx = (ends[0].x + ends[1].x) / 2;
+      const cy = (ends[0].y + ends[1].y) / 2;
+      const cz = (ends[0].z + ends[1].z) / 2;
+      const P = (which, side, dy) => {
+        const n = ends[which];
+        const off = side === 0 ? n.l : n.r;
+        return [n.x + lx * off - cx, n.y + dy - cy, n.z + lz * off - cz];
+      };
+      const top4 = [P(0, 0, 0), P(0, 1, 0), P(1, 1, 0), P(1, 0, 0)];
+      const bot4 = [P(0, 0, -thick), P(0, 1, -thick),
+                    P(1, 1, -thick), P(1, 0, -thick)];
+      const pos = [];
+      for (const p of top4) pos.push(...p);
+      for (const p of bot4) pos.push(...p);
+      const idx = [
+        0, 1, 2, 0, 2, 3,           // top
+        6, 5, 4, 7, 6, 4,           // bottom
+        0, 4, 5, 0, 5, 1,           // side a-left to a-right
+        2, 6, 7, 2, 7, 3,
+        1, 5, 6, 1, 6, 2,
+        3, 7, 4, 3, 4, 0,
+      ];
+      const normals = [];
+      VertexData.ComputeNormals(pos, idx, normals);
+      // Make sure the top face points up rather than into the deck.
+      if (normals[1] < 0) {
+        for (let i = 0; i < idx.length; i += 3) {
+          const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t;
+        }
+        VertexData.ComputeNormals(pos, idx, normals);
       }
-      box.material = mat;
-      return box;
+      const m = new Mesh(name, scene);
+      const vd = new VertexData();
+      vd.positions = pos; vd.indices = idx; vd.normals = normals;
+      vd.uvs = new Array((pos.length / 3) * 2).fill(0);
+      vd.applyToMesh(m);
+      m.position.set(cx, cy, cz);
+      m.material = mat;
+      return m;
     };
 
     for (const e of net.edges) {
       if (e.cls !== 'express' && e.cls !== 'ramp') continue;
-      const hw = halfWidth(e.cls);
       const c = CLASSES[e.cls];
-      const grade = Math.atan2(e.b.y - e.a.y, e.len);
-      const run = e.len / Math.cos(grade);
+      const own = halfWidth(e.cls);
+      const wA = e.hwA || own, wB = e.hwB || own;
+      const lane = Math.min(wA, wB);          // the carriageway itself
 
-      // Deck: thick enough to read as a structure from underneath.
-      onDeck(e, 'dk', run, 0.95, hw * 2, 0, -0.42, 0, deckMat);
-
-      // Parapets, with a neon strip along the top of each.
-      for (const sd of [-1, 1]) {
-        onDeck(e, 'prp', run, 1.05, 0.55, sd * (hw + 0.25), 0.5, 0, concrete);
-        onDeck(e, 'el', run, 0.16, 0.22, sd * (hw + 0.25), 1.05, 0,
-               e.cls === 'ramp' ? glow.amber : glow.blue);
-        // And one at deck level, so the carriageway edge glows too.
-        onDeck(e, 'el', run - 1, 0.06, 0.18, sd * (hw - 0.35), 0.07, 0,
-               e.cls === 'ramp' ? glow.amber : glow.cyan);
+      // Where this deck meets an ordinary road, everything that stands up
+      // off it stops short of the junction box.
+      const iA = e.joinA ? e.joinA + 3 : 0.5;
+      const iB = e.joinB ? e.joinB + 3 : 0.5;
+      // The deck stops short of a junction box too: inside one, the road
+      // slab is the surface, and a rising deck under it is just a lip to
+      // catch a wheel on.
+      slab(e, 'dk', deckMat, wA, -wA, wB, -wB, -0.08, 1.0, iA * 0.5, iB * 0.5);
+      for (const sd of [1, -1]) {
+        // Parapet and its neon, both following the flare.
+        slab(e, 'prp', concrete, sd * (wA + 0.55), sd * wA,
+             sd * (wB + 0.55), sd * wB, 0.86, 1.05, iA, iB);
+        slab(e, 'el', e.cls === 'ramp' ? glow.amber : glow.blue,
+             sd * (wA + 0.55), sd * (wA + 0.33), sd * (wB + 0.55), sd * (wB + 0.33),
+             0.95, 0.14, iA, iB);
+        // Carriageway edge line, hugging the deck edge.
+        slab(e, 'el', e.cls === 'ramp' ? glow.amber : glow.cyan,
+             sd * (wA - 0.15), sd * (wA - 0.33), sd * (wB - 0.15), sd * (wB - 0.33),
+             0.02, 0.06, iA * 0.4, iB * 0.4);
       }
-      // Centre line.
-      onDeck(e, 'ml', run - 2, 0.055, 0.14, 0, 0.07, 0, glow.white);
-      // Lane dividers.
+      slab(e, 'ml', glow.white, 0.08, -0.08, 0.08, -0.08, 0.02, 0.055,
+           iA * 0.4, iB * 0.4);
+      // Lane dividers, on the carriageway's own constant width.
       for (let k = 1; k < c.lanesPer; k++) {
-        for (const sd of [-1, 1]) {
-          const off = (0.9 + k * c.laneW) * sd;
-          for (let t = -run / 2 + 3; t < run / 2 - 3; t += 8) {
-            onDeck(e, 'dd', 2.6, 0.05, 0.2, off, 0.07, t, glow.amber);
+        for (const sd of [1, -1]) {
+          const off = sd * Math.min(0.9 + k * c.laneW, lane - 0.6);
+          for (let t = 4; t < e.len - 4; t += 9) {
+            const f0 = t / e.len, f1 = (t + 2.6) / e.len;
+            const seg = { axis: e.axis, len: 2.6,
+              a: { x: e.a.x + (e.b.x - e.a.x) * f0, y: e.a.y + (e.b.y - e.a.y) * f0,
+                   z: e.a.z + (e.b.z - e.a.z) * f0 },
+              b: { x: e.a.x + (e.b.x - e.a.x) * f1, y: e.a.y + (e.b.y - e.a.y) * f1,
+                   z: e.a.z + (e.b.z - e.a.z) * f1 } };
+            slab(seg, 'dd', glow.amber, off + 0.1, off - 0.1, off + 0.1, off - 0.1,
+                 0.02, 0.05);
           }
         }
       }
 
-      // Portal frames: two legs either side of whatever is underneath, a
-      // beam across, every forty metres or so.
-      const legOut = hw - 3.5;
-      const step = Math.max(26, e.len / Math.round(e.len / 38));
-      for (let t = -e.len / 2 + step * 0.5; t < e.len / 2 - 2; t += step) {
-        const fx = e.axis === 0 ? (e.a.x + e.b.x) / 2 + t : (e.a.x + e.b.x) / 2;
-        const fz = e.axis === 0 ? (e.a.z + e.b.z) / 2 : (e.a.z + e.b.z) / 2 + t;
-        const deckY = e.a.y + (e.b.y - e.a.y) * (t / e.len + 0.5);
-        if (deckY < 3) continue;                    // too low to need a leg
-        for (const sd of [-1, 1]) {
-          const leg = MeshBuilder.CreateBox('pier', {
-            width: 1.5, height: deckY - 0.9, depth: 1.5,
-          }, scene);
-          leg.position.set(
-            e.axis === 0 ? fx : fx + sd * legOut,
-            (deckY - 0.9) / 2,
-            e.axis === 0 ? fz + sd * legOut : fz);
-          leg.material = concrete;
-        }
-        const beam = MeshBuilder.CreateBox('pier', {
-          width: e.axis === 0 ? 1.5 : legOut * 2 + 1.5,
-          height: 1.0,
-          depth: e.axis === 0 ? legOut * 2 + 1.5 : 1.5,
+      // Piers. Out over the water a single column reads better than the
+      // straddle frames a road over a street needs, and there is nothing
+      // underneath to straddle.
+      const step = Math.max(28, e.len / Math.max(1, Math.round(e.len / 46)));
+      for (let t = step * 0.5; t < e.len - 4; t += step) {
+        const f = t / e.len;
+        const px = e.a.x + (e.b.x - e.a.x) * f;
+        const pz = e.a.z + (e.b.z - e.a.z) * f;
+        const py = e.a.y + (e.b.y - e.a.y) * f;
+        if (py < 3.2) continue;
+        const col = MeshBuilder.CreateBox('pier',
+          { width: 3.2, height: py - 1.9, depth: 3.2 }, scene);
+        col.position.set(px, (py - 1.9) / 2 - 0.5, pz);
+        col.material = concrete;
+        const cap = MeshBuilder.CreateBox('pier', {
+          width: e.axis === 0 ? 3.4 : (wA + wB) * 0.9,
+          height: 0.9,
+          depth: e.axis === 0 ? (wA + wB) * 0.9 : 3.4,
         }, scene);
-        beam.position.set(fx, deckY - 1.35, fz);
-        beam.material = concrete;
+        cap.position.set(px, py - 1.5, pz);
+        cap.material = concrete;
       }
     }
   }
@@ -476,7 +521,7 @@ export function buildCity(scene, net, mirror) {
     seaMat.specularPower = 48;
     seaMat.emissiveColor = new Color3(0.04, 0.13, 0.24);
     const hwHalf = halfWidth('highway');
-    const sandW = 34, seaW = 380;
+    const sandW = 34, seaW = 620;
     const rim = hwHalf + 2.2;
     const strips = [
       // [cx, cz, w, d] sand then sea on each of the four sides
@@ -634,6 +679,96 @@ export function buildCity(scene, net, mirror) {
       for (let z = 24; z < ext.z - 24; z += 34 + rand() * 40) {
         cluster(cx0 + (rand() - 0.5) * sandW * 0.3, z, false);
       }
+    }
+  }
+
+  // ---- the island: the city you can see across the water ---------------
+  // Small, dense and bright, so from the beach road it reads as a skyline
+  // out at sea rather than as scenery. Its towers are never distance-culled
+  // for exactly that reason: the lights across the water are the point.
+  {
+    const IX0 = net.IX0, IZ0 = net.IZ0, IP = net.IPITCH, IG = net.IGRID;
+    const x0 = IX0 - 46, x1 = IX0 + (IG - 1) * IP + 46;
+    const z0 = IZ0 - 46, z1 = IZ0 + (IG - 1) * IP + 46;
+    const rockMat = new StandardMaterial('rock', scene);
+    rockMat.diffuseColor = new Color3(0.30, 0.27, 0.22);
+    rockMat.specularColor = new Color3(0.04, 0.04, 0.05);
+    rockMat.emissiveColor = new Color3(0.14, 0.12, 0.10);
+    // Lights across water cut through haze; the land they stand on does not.
+    // So the island's windows, beacons and shoreline neon opt out of the
+    // fog and the rock does not - which is exactly how a city looks from
+    // the far side of a bay at night.
+    const isleTowers = [0, 1, 2].map((k) => {
+      const m = new PBRMaterial('itw' + k, scene);
+      m.albedoColor = new Color3(0.02, 0.02, 0.035);
+      m.metallic = 0.15; m.roughness = 0.7;
+      m.emissiveTexture = winTex;
+      m.emissiveColor = new Color3(1.5 + k * 0.15, 1.35 + k * 0.12, 1.05);
+      m.fogEnabled = false;
+      return m;
+    });
+    const isleNeon = (r, g, b) => {
+      const m = new StandardMaterial('ineon', scene);
+      m.emissiveColor = new Color3(r, g, b);
+      m.disableLighting = true;
+      m.fogEnabled = false;
+      return m;
+    };
+    const isleBeacon = isleNeon(2.2, 0.45, 1.5);
+    const isleShore = isleNeon(0.35, 1.5, 2.1);
+    const land = MeshBuilder.CreateBox('iland', {
+      width: x1 - x0, height: 0.34, depth: z1 - z0,
+    }, scene);
+    land.position.set((x0 + x1) / 2, -0.09, (z0 + z1) / 2);
+    land.material = rockMat;
+    // A shelf of sand around it so it meets the water, not a cliff.
+    const beachMat = new StandardMaterial('isand', scene);
+    beachMat.diffuseColor = new Color3(0.5, 0.41, 0.26);
+    beachMat.emissiveColor = new Color3(0.13, 0.1, 0.06);
+    const shelf = MeshBuilder.CreateBox('iland', {
+      width: x1 - x0 + 30, height: 0.2, depth: z1 - z0 + 30,
+    }, scene);
+    shelf.position.set((x0 + x1) / 2, -0.14, (z0 + z1) / 2);
+    shelf.material = beachMat;
+
+    // Towers in the island's four blocks: taller and closer together than
+    // the mainland's, so the silhouette carries across the water.
+    for (let bj = 0; bj < IG - 1; bj++) {
+      for (let bi = 0; bi < IG - 1; bi++) {
+        const pad = halfWidth('avenue') + 4;
+        const bx0 = IX0 + bi * IP + pad, bx1 = IX0 + (bi + 1) * IP - pad;
+        const bz0 = IZ0 + bj * IP + pad, bz1 = IZ0 + (bj + 1) * IP - pad;
+        if (bx1 - bx0 < 8 || bz1 - bz0 < 8) continue;
+        const n = 2 + (rand() * 2 | 0);
+        for (let k = 0; k < n; k++) {
+          const w = (bx1 - bx0) * (0.4 + rand() * 0.28);
+          const d = (bz1 - bz0) * (0.4 + rand() * 0.28);
+          const h = 34 + rand() * 58;
+          const b = MeshBuilder.CreateBox('ib', { width: w, height: h, depth: d }, scene);
+          b.position.set(bx0 + w / 2 + rand() * (bx1 - bx0 - w), h / 2,
+                         bz0 + d / 2 + rand() * (bz1 - bz0 - d));
+          b.material = isleTowers[(rand() * isleTowers.length) | 0];
+        }
+      }
+    }
+    // A beacon on the tallest corner, and neon along the shoreline, so the
+    // island is unmistakable from the mainland at night.
+    for (const [bx, bz] of [[x0 + 8, z0 + 8], [x1 - 8, z0 + 8],
+                            [x0 + 8, z1 - 8], [x1 - 8, z1 - 8]]) {
+      const mast = MeshBuilder.CreateBox('ib', { width: 1.2, height: 46, depth: 1.2 }, scene);
+      mast.position.set(bx, 23, bz);
+      mast.material = isleTowers[0];
+      const lamp = MeshBuilder.CreateBox('ib', { width: 4.2, height: 4.2, depth: 4.2 }, scene);
+      lamp.position.set(bx, 48, bz);
+      lamp.material = isleBeacon;
+    }
+    for (const [cx, cz, w, d] of [[(x0 + x1) / 2, z0, x1 - x0, 0.5],
+                                  [(x0 + x1) / 2, z1, x1 - x0, 0.5],
+                                  [x0, (z0 + z1) / 2, 0.5, z1 - z0],
+                                  [x1, (z0 + z1) / 2, 0.5, z1 - z0]]) {
+      const line = MeshBuilder.CreateBox('ib', { width: w, height: 0.45, depth: d }, scene);
+      line.position.set(cx, 0.28, cz);
+      line.material = isleShore;
     }
   }
 

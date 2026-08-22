@@ -9,7 +9,7 @@
 // positions, never assumes a pitch. CELL survives as the average, for
 // callers that want a "roughly one block" distance.
 export const GRID = 11;          // GRID x GRID junctions
-export const CELL = 84;          // average metres between junction centres
+export const CELL = 67;          // average metres between junction centres
 
 function mulberry(seed) {
   let a = seed >>> 0;
@@ -32,7 +32,7 @@ export const CLASSES = {
   avenue:  { lanesPer: 2, laneW: 3.4, limit: 19, colour: [0.30, 0.95, 1.40] },
   highway: { lanesPer: 3, laneW: 3.7, limit: 30, colour: [1.45, 0.30, 0.95] },
   express: { lanesPer: 3, laneW: 3.5, limit: 34, colour: [0.35, 0.80, 1.70] },
-  ramp:    { lanesPer: 1, laneW: 3.8, limit: 16, colour: [1.60, 0.85, 0.20] },
+  ramp:    { lanesPer: 2, laneW: 3.6, limit: 20, colour: [1.60, 0.85, 0.20] },
 };
 
 // How high the deck flies.
@@ -92,34 +92,20 @@ export function buildNetwork() {
     }
   }
 
-  // ---- the expressway: two elevated decks crossing above the city -----
-  // A second layer of nodes, directly above the middle row and the middle
-  // column, sharing one junction in the centre. It is the same grammar the
-  // whole game runs on - indicate, commit, arc - only nine metres up, so
-  // traffic, the police and the map all understand it for free.
+  // ---- out to sea: the bridges and the island ------------------------
+  // The elevated roads used to cross the middle of the city, which put a
+  // concrete deck over the best streets in it and a ramp over the beach
+  // road. They now do something worth building: they leave from two corners,
+  // run out over the water on piers, and land on an island with a city of
+  // its own on it - the lights you can see across the water from the beach.
   //
-  // Slip roads are the interesting part. A node carries one edge per
-  // compass direction, so a ramp cannot simply be bolted onto a junction
-  // that is already a crossroads; instead each ramp TAKES OVER the street
-  // corridor it climbs, replacing that street. Nothing ever has to cross
-  // anything else at the same height, and the deck stays the only thing
-  // bridging over the city.
+  // Each crossing is a chain of ordinary edges whose ends sit at different
+  // heights: a flat causeway off the corner (so nothing elevated ever
+  // overlaps the ring road), a climb over the shallows, a long span, and a
+  // descent onto the island.
   const degree = (n) => n.edges.filter(Boolean).length;
-  const DI = Math.floor(GRID / 2), DJ = Math.floor(GRID / 2);
-  const DECK_FROM = 2, DECK_TO = GRID - 3;
-  const deck = new Map();
-  const upperOf = (i, j) => {
-    const k = i + ':' + j;
-    let n = deck.get(k);
-    if (!n) {
-      const g = at(i, j);
-      n = { i, j, x: g.x, z: g.z, y: DECK_Y, up: true, ground: g,
-            edges: [null, null, null, null] };
-      deck.set(k, n);
-      nodes.push(n);
-    }
-    return n;
-  };
+  const extX = xs[GRID - 1], extZ = zs[GRID - 1];
+  const CAUSEWAY = 62;          // flat, clear of the ring junction
   const link = (a, b, axis, cls) => {
     const e = { id: edges.length, a, b, axis, cls,
                 len: axis === 0 ? b.x - a.x : b.z - a.z };
@@ -128,78 +114,98 @@ export function buildNetwork() {
     b.edges[axis === 0 ? 1 : 3] = e;
     return e;
   };
-  for (let i = DECK_FROM; i < DECK_TO; i++) {
-    link(upperOf(i, DJ), upperOf(i + 1, DJ), 0, 'express');
+  let seaId = 0;
+  const seaNode = (x, z, y) => {
+    const n = { i: 900 + seaId, j: 900 + seaId, x, z, y, sea: true,
+                edges: [null, null, null, null] };
+    seaId += 1;
+    nodes.push(n);
+    return n;
+  };
+
+  // The island: a small grid of its own, sitting out in the water.
+  const IGRID = 3, IPITCH = 74;
+  const IX0 = extX + 250, IZ0 = extZ / 2 - IPITCH;
+  // The crossings run out to the island's middle column, so the bend and
+  // the span sit exactly on its spine - a four metre kink at a junction
+  // would put half the carriageway in the sea.
+  const SPINE_X = IX0 + IPITCH;
+  const island = [];
+  for (let j = 0; j < IGRID; j++) {
+    for (let i = 0; i < IGRID; i++) {
+      const n = { i: 800 + i, j: 800 + j, x: IX0 + i * IPITCH, z: IZ0 + j * IPITCH,
+                  y: 0, isle: true, edges: [null, null, null, null] };
+      island.push(n);
+      nodes.push(n);
+    }
   }
-  for (let j = DECK_FROM; j < DECK_TO; j++) {
-    link(upperOf(DI, j), upperOf(DI, j + 1), 1, 'express');
+  const isleAt = (i, j) => island[j * IGRID + i];
+  for (let j = 0; j < IGRID; j++) {
+    for (let i = 0; i < IGRID; i++) {
+      const mid = (i === 1 || j === 1) ? 'avenue' : 'street';
+      if (i < IGRID - 1) link(isleAt(i, j), isleAt(i + 1, j), 0, j === 1 ? 'avenue' : mid);
+      if (j < IGRID - 1) link(isleAt(i, j), isleAt(i, j + 1), 1, i === 1 ? 'avenue' : mid);
+    }
   }
 
-  // A slip road climbs two blocks, which is a grade you can drive rather
-  // than a wall, and it TAKES OVER that street corridor entirely - the
-  // streets underneath it are removed, so nothing is ever buried under a
-  // ramp and the deck stays the only thing bridging over the city.
-  const killEdge = (e) => {
-    e.dead = true;
-    e.a.edges[e.axis === 0 ? 0 : 2] = null;
-    e.b.edges[e.axis === 0 ? 1 : 3] = null;
+  // The two crossings. Both leave the +x side of the city, from its corners,
+  // and bend out over the water to meet the island's spine.
+  const bridges = [];
+  const crossing = (corner, gateway, towardPlus) => {
+    const sgn = towardPlus ? 1 : -1;
+    // The causeway lifts a little off the junction, so its deck clears the
+    // sand and the water instead of being buried in them.
+    const cw = seaNode(corner.x + CAUSEWAY, corner.z, 1.2);
+    const top = seaNode(SPINE_X, corner.z, DECK_Y);
+    bridges.push(link(corner, cw, 0, 'ramp'));       // flat, over the sand
+    bridges.push(link(cw, top, 0, 'ramp'));          // the climb
+    // Bend, then the long span, then the run down onto the island.
+    const foot = seaNode(top.x, gateway.z - sgn * 120, DECK_Y);
+    const spanA = sgn > 0 ? top : foot, spanB = sgn > 0 ? foot : top;
+    bridges.push(link(spanA, spanB, 1, 'express'));
+    const rampA = sgn > 0 ? foot : gateway, rampB = sgn > 0 ? gateway : foot;
+    bridges.push(link(rampA, rampB, 1, 'ramp'));
+    return top;
   };
-  const reviveEdge = (e) => {
-    e.dead = false;
-    e.a.edges[e.axis === 0 ? 0 : 2] = e;
-    e.b.edges[e.axis === 0 ? 1 : 3] = e;
-  };
-  const allConnected = () => {
-    const seen = new Set([nodes[0]]);
-    const q = [nodes[0]];
-    while (q.length) {
-      const n = q.pop();
-      for (const e of n.edges) {
-        if (!e || e.dead) continue;
-        const m = e.a === n ? e.b : e.a;
-        if (!seen.has(m)) { seen.add(m); q.push(m); }
+  crossing(at(GRID - 1, 0), isleAt(1, 0), true);
+  crossing(at(GRID - 1, GRID - 1), isleAt(1, IGRID - 1), false);
+
+  // How wide the deck is at each end of a slip road. A ramp that simply
+  // stops being three lanes wide and starts being two looks drawn on; a
+  // ramp that flares out to meet whatever it joins looks built. Each end
+  // takes the width of the widest road it meets there.
+  for (const e of edges) {
+    if (e.cls !== 'ramp' && e.cls !== 'express') continue;
+    // The widest ordinary road this end meets, if any. It sets both the
+    // width the deck flares to AND how far the parapets must stop short -
+    // a wall run all the way into a junction box is a wall you can drive
+    // into from the road below.
+    // Ordinary road at this end, if any: that is what the parapets have to
+    // stop short of. Nothing at deck height needs the same care - there is
+    // no traffic underneath a junction that is already in the air.
+    const grounded = (n) => {
+      let w = 0;
+      for (const q of n.edges) {
+        if (!q || q === e || q.cls === 'ramp' || q.cls === 'express') continue;
+        w = Math.max(w, halfWidth(q.cls));
       }
-    }
-    return seen.size === nodes.length;
-  };
-  const slipRoad = (axis, fixed, kGround, kDeck) => {
-    const lo = Math.min(kGround, kDeck), hi = Math.max(kGround, kDeck);
-    const corridor = [];
-    for (let k = lo; k < hi; k++) {
-      const n = axis === 0 ? at(k, fixed) : at(fixed, k);
-      const e = n.edges[axis === 0 ? 0 : 2];
-      if (!e || e.dead) continue;
-      if (e.cls !== 'street' && e.cls !== 'avenue') return null;   // never the ring
-      corridor.push(e);
-    }
-    const g = axis === 0 ? at(kGround, fixed) : at(fixed, kGround);
-    const u = axis === 0 ? upperOf(kDeck, fixed) : upperOf(fixed, kDeck);
-    const a = kGround < kDeck ? g : u, b = kGround < kDeck ? u : g;
-    const sa = axis === 0 ? 0 : 2, sb = axis === 0 ? 1 : 3;
-    corridor.forEach(killEdge);
-    if (a.edges[sa] || b.edges[sb]) { corridor.forEach(reviveEdge); return null; }
-    const e = link(a, b, axis, 'ramp');
-    if (!allConnected()) {
-      edges.pop();
-      a.edges[sa] = null; b.edges[sb] = null;
-      corridor.forEach(reviveEdge);
-      return null;
-    }
-    return e;
-  };
-  const ramps = [];
-  // Both ends of both decks come down to the ring, so the expressway is
-  // always enterable and never a dead end in the sky.
-  ramps.push(slipRoad(0, DJ, 0, DECK_FROM));
-  ramps.push(slipRoad(0, DJ, GRID - 1, DECK_TO));
-  ramps.push(slipRoad(1, DI, 0, DECK_FROM));
-  ramps.push(slipRoad(1, DI, GRID - 1, DECK_TO));
-  // Mid-city slips: off the side of each deck, two blocks down to a street.
-  for (const i of [DI - 2, DI + 2]) {
-    if (i >= DECK_FROM && i <= DECK_TO) ramps.push(slipRoad(1, i, DJ + 2, DJ));
-  }
-  for (const j of [DJ - 2, DJ + 2]) {
-    if (j >= DECK_FROM && j <= DECK_TO) ramps.push(slipRoad(0, j, DI + 2, DI));
+      return w;
+    };
+    // Width at each end: the wider of this road and whatever it meets, so
+    // both sides of every junction agree and the deck flares into it
+    // instead of stepping.
+    const widest = (n) => {
+      let w = halfWidth(e.cls);
+      for (const q of n.edges) {
+        if (!q || q === e) continue;
+        w = Math.max(w, halfWidth(q.cls));
+      }
+      return w;
+    };
+    e.joinA = grounded(e.a);
+    e.joinB = grounded(e.b);
+    e.hwA = widest(e.a);
+    e.hwB = widest(e.b);
   }
 
   // Now make it a CITY, not graph paper: delete a share of the streets,
@@ -239,8 +245,15 @@ export function buildNetwork() {
   }
   const live = edges.filter(e => !e.dead);
   live.forEach((e, i) => { e.id = i; });
+  let bx0 = 1e9, bx1 = -1e9, bz0 = 1e9, bz1 = -1e9;
+  for (const n of nodes) {
+    bx0 = Math.min(bx0, n.x); bx1 = Math.max(bx1, n.x);
+    bz0 = Math.min(bz0, n.z); bz1 = Math.max(bz1, n.z);
+  }
   return { nodes, edges: live, at, xs, zs, deckY: DECK_Y,
-           ramps: ramps.filter(Boolean),
+           island, bridges, isleAt: (i, j) => island[j * IGRID + i],
+           IGRID, IPITCH, IX0, IZ0,
+           bounds: { x0: bx0, x1: bx1, z0: bz0, z1: bz1 },
            extent: { x: xs[GRID - 1], z: zs[GRID - 1] } };
 }
 

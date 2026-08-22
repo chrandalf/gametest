@@ -194,11 +194,12 @@ function tileAt(x, z) {
   const MERGE = new Set(['rd', 'wk', 'kb', 'sl', 'el', 'ml', 'b', 'sg',
                          'pad', 'pump', 'sand', 'sea', 'gp', 'gpan',
                          'cone', 'barr', 'pole', 'dk', 'prp', 'dd', 'pier',
-                         'twl', 'bod', 'parapole', 'shade']);
+                         'twl', 'bod', 'parapole', 'shade', 'ib', 'iland']);
   // Where each merged mesh sits has to be worked out from the meshes going
   // into it. A merged mesh's world bounding box is not computed until it is
   // first rendered, so reading it here hands back zeroes and files half the
   // city under the wrong district.
+  const ALWAYS = new Set(['ib', 'iland']);
   const buckets = new Map();
   for (const msh of scene.meshes.slice()) {
     // Instance source meshes are disabled and must stay that way.
@@ -220,7 +221,9 @@ function tileAt(x, z) {
     // The sand and the sea are single strips hundreds of metres long. They
     // belong to no one district, so they are never distance-culled.
     const span = Math.max(b.x1 - b.x0, b.z1 - b.z0);
-    if (span > TILE * 2.5) globalStatics.push(merged);
+    // The island is always drawn, wherever you are: its lights across the
+    // water are how you know it is there at all.
+    if (span > TILE * 2.5 || ALWAYS.has(b.arr[0].name)) globalStatics.push(merged);
     else tileAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2).meshes.push(merged);
   }
   // Everything that stayed unmerged - lamp and lane-marking instances, the

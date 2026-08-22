@@ -21,11 +21,17 @@ export class Hud {
     this.drawBase();
   }
 
+  // The map covers everything the network reaches, which since the
+  // crossings were built means the island as well as the city.
   worldToMap(x, z) {
-    const ext = this.net.extent;
-    const pad = 12;
-    const s = (this.map.width - pad * 2) / Math.max(ext.x, ext.z);
-    return [pad + x * s, this.map.height - pad - z * s];
+    const b = this.net.bounds ||
+      { x0: 0, z0: 0, x1: this.net.extent.x, z1: this.net.extent.z };
+    const pad = 10;
+    const w = b.x1 - b.x0, h = b.z1 - b.z0;
+    const span = Math.max(w, h);
+    const s = (this.map.width - pad * 2) / span;
+    const ox = pad + (span - w) * s / 2, oz = pad + (span - h) * s / 2;
+    return [ox + (x - b.x0) * s, this.map.height - oz - (z - b.z0) * s];
   }
 
   drawBase() {
