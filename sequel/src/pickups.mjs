@@ -127,7 +127,9 @@ export class Pickups {
   mapEntries() {
     const out = this.tapes.filter(t => t.live).map(t => ({
       pos: { x: t.mesh.position.x, z: t.mesh.position.z },
-      mapColour: 'rgba(255, 210, 70, 0.85)',
+      // Violet, decisively: in van-amber these six dots read as the
+      // armoured van teleporting round the town.
+      mapColour: 'rgba(200, 120, 255, 0.95)',
     }));
     if (this.caseLive) {
       out.push({ pos: { x: this.case.position.x, z: this.case.position.z },

@@ -129,6 +129,25 @@ export class Mission {
     const roads = net.edges.filter(e => e.cls === 'avenue' || e.cls === 'highway');
     const e = this.farEdge(roads, 0.61 + this.level * 0.13);
     const d = new Driver(net, e, -1, 0, e.len * 0.6);
+    // The exchange is a PLACE. The van used to steer at wherever the coupe
+    // happened to be while the coupe steered at the van, so the pair
+    // orbited each other and the van read as wandering at random. Now the
+    // meet is picked when the van sets out - a junction a couple of blocks
+    // from the coupe and not next to the player - and the van drives there
+    // and waits like a vehicle with a job.
+    {
+      const t = this.target;
+      let best = null, bd = 1e9;
+      for (const n of net.nodes) {
+        if (n.sea || n.forecourt || n.edges.filter(Boolean).length < 3) continue;
+        const dc = Math.hypot(n.x - t.pos.x, n.z - t.pos.z);
+        const dp = this.playerRef
+          ? Math.hypot(n.x - this.playerRef.pos.x, n.z - this.playerRef.pos.z) : 1e9;
+        const score = Math.abs(dc - 170) + (dp < 220 ? (220 - dp) * 2 : 0);
+        if (score < bd) { bd = score; best = n; }
+      }
+      this.meet = best ? { x: best.x, z: best.z } : { x: t.pos.x, z: t.pos.z };
+    }
     d.thinkT = 0;
     d.health = 4 + this.level;
     d.maxHealth = d.health;
@@ -398,7 +417,7 @@ export class Mission {
       tInd = fleeing
         ? chooseTurn(t, player.pos.x, player.pos.z, true)
         : this.van
-          ? chooseTurn(t, this.van.pos.x, this.van.pos.z, false)
+          ? chooseTurn(t, this.meet.x, this.meet.z, false)
           : (Math.random() < 0.5 ? 'straight' : Math.random() < 0.5 ? 'left' : 'right');
     }
     const fleeMult = 1.45 + this.level * 0.07;
@@ -424,13 +443,15 @@ export class Mission {
       const v = this.van;
       v.thinkT -= dt;
       let vInd;
+      // Drive to the rendezvous; arrived, pull up and wait for the coupe.
+      const toMeet = Math.hypot(v.pos.x - this.meet.x, v.pos.z - this.meet.z);
+      const arrived = toMeet < 30;
       if (v.thinkT <= 0) {
         v.thinkT = 2.2;
-        // It is driving to the meeting, not away from you.
-        vInd = chooseTurn(v, t.pos.x, t.pos.z, false);
+        vInd = arrived ? 'straight' : chooseTurn(v, this.meet.x, this.meet.z, false);
       }
-      v.update(dt, { throttle: 1, steer: 0, indicate: vInd,
-                     maxSpeed: CLASSES[v.e.cls].limit * 0.8 });
+      v.update(dt, { throttle: arrived ? -1 : 1, steer: 0, indicate: vInd,
+                     maxSpeed: arrived ? 3 : CLASSES[v.e.cls].limit * 0.8 });
       if (v.blocked) v.beginUTurn();
       this.vanCar.root.position.set(v.pos.x, v.pos.y, v.pos.z);
       this.vanCar.root.rotation.y = v.pos.yaw;
