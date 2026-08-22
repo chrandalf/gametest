@@ -85,19 +85,22 @@ export class Sound {
     return this.on;
   }
 
-  // Per-frame: engine pitch/volume from speed, siren wail when hot.
-  update(dt, speed01, turbo, sirenOn) {
+  // Per-frame: engine pitch/volume from speed. The siren is positional:
+  // `siren01` is how close the nearest cruiser is (0 = out of earshot,
+  // 1 = on your bumper), so the wail swells as they close and is silent
+  // when the law is streets away - and even at point blank it sits at a
+  // third of its old level, because a square wave through phone speakers
+  // at 0.045 was not a siren, it was a siege.
+  update(dt, speed01, turbo, siren01) {
     if (!this.started || !this.on) return;
     const f = 40 + speed01 * 160 + (turbo ? 40 : 0);
     this.engineOsc[0].frequency.value = f;
     this.engineOsc[1].frequency.value = f * 1.007 + 1.5;
     this.engineGain.gain.value = 0.05 + speed01 * 0.10 + (turbo ? 0.05 : 0);
-    if (sirenOn) {
+    if (siren01 > 0) {
       this.sirenPhase += dt * 2.2;
       this.sirenOsc.frequency.value = (Math.sin(this.sirenPhase * Math.PI) > 0) ? 740 : 560;
-      // A third of its old level. A square wave through phone speakers at
-      // 0.045 was not a siren, it was a siege.
-      this.sirenGain.gain.value = 0.014;
+      this.sirenGain.gain.value = 0.014 * Math.min(1, siren01);
     } else {
       this.sirenGain.gain.value = 0;
     }

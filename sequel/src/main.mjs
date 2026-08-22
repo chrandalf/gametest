@@ -1416,7 +1416,13 @@ const tick = (dt) => {
   pickups.update(dt, player);
   updateDistricts(player.pos.x, player.pos.z);
   coast.update(dt, player, clock, mission.wanted);
-  sound.update(dt, Math.min(1, player.speed / 55), turbo.active, mission.wanted > 0);
+  // The siren carries by distance: nothing until a cruiser is within
+  // ninety metres, full (quiet) wail with one on your bumper.
+  {
+    const copD = mission.wanted > 0 ? mission.nearestPoliceDist(player) : 1e9;
+    const siren01 = Math.max(0, Math.min(1, (90 - copD) / 70));
+    sound.update(dt, Math.min(1, player.speed / 55), turbo.active, siren01);
+  }
 
   // Lightbars: 1.9 Hz in pursuit, well under the three-per-second the
   // photosensitivity guidelines draw the line at, and a steady lilac glow
