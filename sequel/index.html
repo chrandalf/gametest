@@ -73,6 +73,32 @@
   #introfoot { position: absolute; bottom: 22px; left: 0; right: 0;
     text-align: center; color: rgba(255, 255, 255, 0.45);
     font: 600 10px monospace; letter-spacing: 0.1em; }
+  /* ---- touch controls: thumbs on glass, shown only on coarse pointers
+         once the run starts ---- */
+  #touch { display: none; }
+  body.touchmode #touch { display: block; }
+  .tbtn { position: fixed; z-index: 8; display: flex; align-items: center;
+    justify-content: center; border-radius: 50%;
+    background: rgba(20, 8, 40, 0.42); border: 1px solid rgba(125, 252, 243, 0.35);
+    color: #7dfcf3; font: 800 15px monospace; letter-spacing: 0.04em;
+    text-shadow: 0 0 8px rgba(125, 252, 243, 0.7);
+    touch-action: none; user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent; }
+  .tbtn.on { background: rgba(255, 47, 168, 0.35);
+    border-color: rgba(255, 154, 217, 0.8); color: #fff; }
+  #tA { left: 16px; bottom: 18px; width: 68px; height: 68px; font-size: 26px; }
+  #tD { left: 96px; bottom: 18px; width: 68px; height: 68px; font-size: 26px; }
+  #tQ { left: 16px; bottom: 100px; width: 52px; height: 52px; }
+  #tE { left: 112px; bottom: 100px; width: 52px; height: 52px; }
+  #tW { right: 16px; bottom: 18px; width: 76px; height: 76px; }
+  #tS { right: 104px; bottom: 18px; width: 60px; height: 60px; }
+  #tF { right: 16px; bottom: 108px; width: 60px; height: 60px; }
+  #tT { right: 104px; bottom: 92px; width: 52px; height: 52px; }
+  #tC { right: 172px; bottom: 18px; width: 44px; height: 44px; font-size: 12px; }
+  /* The HUD moves out from under the thumbs. */
+  body.touchmode #map { right: 12px; bottom: 180px; width: 132px; height: 132px; }
+  body.touchmode #speedbox { left: 20px; bottom: 164px; }
+  body.touchmode #gauges { left: 20px; bottom: 208px; }
   /* ---- the big word: level-ups and kills, announced properly ---- */
   #bigword { position: fixed; inset: 0; display: none; z-index: 9;
     flex-direction: column; align-items: center; justify-content: center;
@@ -132,6 +158,17 @@
   <div id="hint"></div>
   <pre id="panel"></pre>
   <div id="introfoot">MUSIC FROM EPIDEMIC SOUND · USED UNDER LICENCE · X SKIPS · M MUTES</div>
+</div>
+<div id="touch">
+  <div class="tbtn" id="tA" data-k="KeyA">&#9664;</div>
+  <div class="tbtn" id="tD" data-k="KeyD">&#9654;</div>
+  <div class="tbtn" id="tQ" data-k="KeyQ">&#8678;</div>
+  <div class="tbtn" id="tE" data-k="KeyE">&#8680;</div>
+  <div class="tbtn" id="tW" data-k="KeyW">GAS</div>
+  <div class="tbtn" id="tS" data-k="KeyS">BRK</div>
+  <div class="tbtn" id="tF" data-k="Space">FIRE</div>
+  <div class="tbtn" id="tT" data-k="ShiftLeft">TRB</div>
+  <div class="tbtn" id="tC" data-k="KeyC">CAM</div>
 </div>
 <div id="bigword"><div id="bwmain"></div><div id="bwsub"></div></div>
 <div id="over" style="display:none;position:fixed;inset:0;background:rgba(3,0,12,0.88);z-index:10;align-items:center;justify-content:center">

@@ -293,7 +293,7 @@ export class Mission {
       const base = 500 * this.level;
       const bonus = this.cleanHands ? 250 : 0;
       if (this.onScore) this.onScore(base + bonus);
-      if (this.onBoom) this.onBoom(t.pos.x, t.pos.y, t.pos.z, 'target');
+      if (this.onBoom) this.onBoom(t.pos.x, t.pos.y, t.pos.z, 'target', this.cleanHands);
       this.hud.say(`TARGET DISABLED · +${base}${bonus ? ' · CLEAN +250' : ''}`, true);
       // Whatever it was carrying is now lying in the road.
       if (this.onDrop) this.onDrop(t.pos.x, t.pos.y, t.pos.z);

@@ -472,7 +472,21 @@ const sunward = net.edges
   .sort((a, b) => a.a.j - b.a.j);
 const startEdge = sunward[0] || net.edges.find(e => e.cls === 'avenue') || net.edges[0];
 const player = new Driver(net, startEdge, 1, 0, Math.min(20, startEdge.len * 0.4));
+// Only the player may cross the centre line to pass: AI keeps its lane.
+player.overtake = true;
 const playerCar = buildCar(new Color3(0.8, 0.83, 0.9), true, new Color3(0.25, 1.3, 1.6));
+// A certain talking Trans Am's scanner, waiting on its codeword.
+const kittBar = (() => {
+  const m = new StandardMaterial('kittm', scene);
+  m.emissiveColor = new Color3(2.2, 0.08, 0.06);
+  m.disableLighting = true;
+  const b = MeshBuilder.CreateBox('p', { width: 0.3, height: 0.08, depth: 0.07 }, scene);
+  b.material = m;
+  b.parent = playerCar.root;
+  b.position.set(0, 0.5, 2.3);
+  b.setEnabled(false);
+  return b;
+})();
 
 // Ambient traffic: the same Driver, piloted by ten lines of AI. This is the
 // exact code path the target car and the police will use.
@@ -608,7 +622,9 @@ const stats = { coupes: 0, vans: 0, cases: 0, tapes: 0, cleanBonuses: 0,
                 resprays: 0, redsRun: 0, rams: 0, pedsHit: 0, shots: 0,
                 distance: 0, topSpeed: 0, maxWanted: 0 };
 // Easter eggs: each fires once a run.
-const egg = { lotus: false, mph88: false, y1986: false };
+const egg = { lotus: false, mph88: false, y1986: false,
+              kitt: false, outrun: false, h55: false };
+let h55T = 0;
 const playerPrev = { e: null, dir: 0, s: 0 };
 let speedTattleT = 0;
 mission.onScore = (n) => { run.score += n; };
@@ -638,13 +654,16 @@ mission.onLevel = (level) => {
   bigWord('LEVEL ' + level, 'THE HUNT GOES ON');
 };
 // Kills explode. A van that silently winks out reads as a bug, not a win.
-mission.onBoom = (x, y, z, kind) => {
+mission.onBoom = (x, y, z, kind, clean) => {
   boom(x, y, z);
   if (kind === 'van') {
     stats.vans += 1;
     bigWord('DROP STOPPED', 'THE COUPE IS ON ITS OWN');
   } else {
-    bigWord('TARGET DOWN', 'GRAB THE BRIEFCASE');
+    // A spotless takedown earns the line every plan-lover knows.
+    bigWord('TARGET DOWN', clean
+      ? 'I LOVE IT WHEN A PLAN COMES TOGETHER'
+      : 'GRAB THE BRIEFCASE');
   }
 };
 
@@ -1203,7 +1222,18 @@ const tick = (dt) => {
       sound.chime();
       hud.say('SCORE 1986 — A FINE YEAR', true);
     }
+    // Hold 55 on the nose for eight seconds and 1984 has a song about it.
+    if (!egg.h55) {
+      const mph = player.speed * 2.237;
+      h55T = (mph > 53 && mph < 57) ? h55T + dt : 0;
+      if (h55T > 8) {
+        egg.h55 = true;
+        bigWord("I CAN'T DRIVE 55", 'AND YET HERE YOU ARE');
+      }
+    }
   }
+  // The scanner sweeps whether you are driving or admiring the menu.
+  if (egg.kitt) kittBar.position.x = Math.sin(clock * 5) * 0.5;
 
   playerCar.root.position.set(player.pos.x, player.pos.y, player.pos.z);
   playerCar.root.rotation.y = player.pos.yaw;
@@ -1526,6 +1556,12 @@ function renderMenu() {
     const d = document.createElement('div');
     d.className = 'mi' + (i === menuSel ? ' sel' : '');
     d.textContent = i === menuSel ? `▸ ${it.label} ◂` : it.label;
+    // Thumbs: a tap selects; a tap on the selected row picks it.
+    d.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (menuSel === i) menuKey('Enter');
+      else { menuSel = i; menuEls.panel.textContent = ''; renderMenu(); }
+    });
     menuEls.menu.appendChild(d);
   });
   menuEls.hint.textContent = items[menuSel].hint || 'W/S CHOOSE · A/D CHANGE · ENTER PICKS · ESC BACK';
@@ -1552,23 +1588,76 @@ function startGame() {
   run.started = true;
   document.getElementById('intro').style.display = 'none';
   document.body.classList.remove('attract');   // the HUD comes back on
+  if (touchDev) document.body.classList.add('touchmode');
   sound.start();
   applyMusicPref();
   mission.announce();
 }
 document.body.classList.add('attract');
+
+// ---- thumbs on glass ----------------------------------------------------
+// A phone has no Enter key. Every touch surface speaks the keyboard's
+// language instead: taps on the menu are selections, the on-screen buttons
+// dispatch the same KeyboardEvents the keys would, so indicators, U-turn
+// holds and the camera cycle all come along for free.
+let touchDev = false;
+try { touchDev = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window; }
+catch (e) { /* no matchMedia, no touch */ }
+if (touchDev) {
+  document.getElementById('prompt').textContent = 'TAP TO START';
+}
+document.getElementById('intro').addEventListener('click', () => {
+  if (!run.started && menuScreen === 'title') menuKey('Enter');
+});
+document.getElementById('over').addEventListener('click', () => {
+  if (run.over) location.reload();
+});
+{
+  const fake = (type, code) =>
+    dispatchEvent(new KeyboardEvent(type, { code }));
+  for (const b of document.querySelectorAll('#touch .tbtn')) {
+    const code = b.dataset.k;
+    const down = (ev) => { ev.preventDefault(); b.classList.add('on'); fake('keydown', code); };
+    const up = (ev) => { ev.preventDefault(); b.classList.remove('on'); fake('keyup', code); };
+    b.addEventListener('pointerdown', (ev) => { b.setPointerCapture(ev.pointerId); down(ev); });
+    b.addEventListener('pointerup', up);
+    b.addEventListener('pointercancel', up);
+  }
+}
+// Music as early as the browser will let it happen: an autoplay attempt on
+// load (some browsers permit it), and a retry on the very first gesture of
+// any kind - key, mouse or touch - which unsticks whatever was held back.
+function tryMusic() {
+  if (!menuPrefs.music) return;
+  if (!sound.started) sound.start();
+  sound.resume();
+}
+tryMusic();
+for (const ev of ['pointerdown', 'touchstart', 'keydown']) {
+  addEventListener(ev, tryMusic, { capture: true });
+}
+
 function menuKey(code) {
-  // The first key on the front door is the gesture the browser needs:
-  // the title theme (track 0) starts here, over the attract shot.
-  if (!sound.started && menuPrefs.music) sound.start();
-  // Typing T-U-R-B-O anywhere on the front door earns the white Lotus.
+  // Codewords typed anywhere on the front door. The decade obliges.
   if (/^Key[A-Z]$/.test(code)) {
-    menuTyped = (menuTyped + code[3]).slice(-5);
-    if (!egg.lotus && menuTyped === 'TURBO') {
+    menuTyped = (menuTyped + code[3]).slice(-6);
+    if (!egg.lotus && menuTyped.endsWith('TURBO')) {
       egg.lotus = true;
       playerCar.paint.albedoColor.set(0.92, 0.92, 0.95);
       playerCar.paint.emissiveColor.set(0.16, 0.16, 0.17);
       bigWord('TURBO', 'THE WHITE LOTUS · QUICKER SPOOL');
+      return;
+    }
+    if (!egg.kitt && menuTyped.endsWith('KITT')) {
+      egg.kitt = true;
+      kittBar.setEnabled(true);
+      bigWord('KITT', 'ONE MAN CAN MAKE A DIFFERENCE');
+      return;
+    }
+    if (!egg.outrun && menuTyped.endsWith('OUTRUN')) {
+      egg.outrun = true;
+      coast2.daylight = true;
+      bigWord('OUTRUN', 'MAGICAL SOUND SHOWER — THE COAST IS IN DAYLIGHT');
       return;
     }
   }

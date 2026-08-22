@@ -62,6 +62,10 @@ the lane centre, quantised lane changes, soft walls) or `mode:'turn'`
 `CORNER_SPEED`). Turns are chosen in advance by indicator. Scenery is
 unhittable; traffic is not. That is the game.
 
+A driver flagged `overtake` (the player only) may push from lane 0 past
+the centre line into the oncoming lane and the magnet tucks it home on
+release — the single-lane pass. AI never crosses.
+
 `update(dt, { throttle, steer, indicate, maxSpeed, stopAt })`,
 `beginUTurn()`, `place()`.
 
@@ -99,8 +103,12 @@ red run pays 100).
 sunward boulevard (`startEdge`) and `updateAttractCam` holds the poster
 shot. Everything the attract car does is gated off the law and the tank
 by `live`. Plus `boom`/`shards` (explosions), `bigWord` (level/kill word
-art), `stats` (the game-over ledger) and `egg` (TURBO typed on the menu,
-88 mph, score 1986).
+art), `stats` (the game-over ledger) and `egg` (TURBO/KITT/OUTRUN typed
+on the front door; 88 mph; eight seconds held at 55 mph; score 1986; a
+clean coupe kill quotes the A-Team). Touch devices get tap-to-navigate
+menus and on-screen buttons (`#touch`) that dispatch real KeyboardEvents,
+shown via `body.touchmode`; music starts as early as autoplay policy
+allows (`tryMusic`, `sound.resume`).
 
 Things that live here and are easy to hunt for:
 - **Districts / streaming** — `TILE`, `tileAt`, `updateDistricts`,

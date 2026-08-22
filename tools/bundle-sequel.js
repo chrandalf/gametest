@@ -39,10 +39,11 @@ let dropped = 0;
 const totalSize = () => engine.length + music.reduce((s, t) => s + t.b64.length + 60, 0);
 while (music.length && totalSize() > MAX_PAGE - 400 * 1024) {
   music.sort((a, b2) => a.b64.length - b2.b64.length);
-  // 0.mp3 is the title theme and always ships; drop the largest of the rest.
+  // 0.mp3 (the title theme) and 1.mp3 are the owner's own tracks and
+  // always ship; drop the largest of the rest.
   let k = music.length - 1;
-  while (k > 0 && music[k].id === 0) k -= 1;
-  if (music[k].id === 0) break;
+  while (k > 0 && music[k].id <= 1) k -= 1;
+  if (music[k].id <= 1) break;
   music.splice(k, 1);
   dropped++;
 }

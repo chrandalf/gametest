@@ -95,20 +95,31 @@ export class Driver {
     const st = input.steer || 0;
     // The lane magnet relaxes while the pilot is genuinely steering, or the
     // spring wins every arm-wrestle and no lane change can ever happen.
-    const spring = 9 * (1 - Math.min(1, Math.abs(st)) * 0.85);
-    this.latV += (st * 12 - this.latV * 4.5 - this.lat * spring) * dt;
+    // Stiffer numbers than the first cut: a tap should read as a decision,
+    // not the opening bid in a negotiation.
+    const spring = 10 * (1 - Math.min(1, Math.abs(st)) * 0.85);
+    this.latV += (st * 16 - this.latV * 5 - this.lat * spring) * dt;
     this.lat += this.latV * dt * Math.min(1, this.speed / 4 + 0.15);
     const half = c.laneW * 0.5;
-    // About half a second of held steer commits the change.
-    if (this.lat > half * 0.62 && st > 0.35 && this.lane < this.lanesPer() - 1) {
+    // A third of a second of held steer commits the change.
+    if (this.lat > half * 0.5 && st > 0.3 && this.lane < this.lanesPer() - 1) {
       this.lane += 1; this.lat -= c.laneW;           // slid left, kerbward
-    } else if (this.lat < -half * 0.62 && st < -0.35 && this.lane > 0) {
+    } else if (this.lat < -half * 0.5 && st < -0.3 && this.lane > 0) {
       this.lane -= 1; this.lat += c.laneW;           // slid right, centreward
     }
     // Soft wall at the lane envelope: the assist never leaves the tarmac.
+    // A pilot flagged `overtake` (the player) may push past the centre
+    // line from lane 0 into the oncoming side - the single-lane pass, done
+    // the way 1986 did it: hold the wheel over, live with what's coming
+    // the other way, and the magnet tucks you home when you let go. The
+    // limit is the oncoming lane's far edge, so the pass uses their
+    // tarmac, never their pavement.
     const lim = half * 1.1;
+    const inLim = this.overtake && this.lane === 0
+      ? -(1.8 + c.laneW * 1.15)
+      : -lim;
     if (this.lat > lim) { this.lat = lim; this.latV = Math.min(this.latV, 0); }
-    if (this.lat < -lim) { this.lat = -lim; this.latV = Math.max(this.latV, 0); }
+    if (this.lat < inLim) { this.lat = inLim; this.latV = Math.max(this.latV, 0); }
 
     // --- advance -------------------------------------------------------
     this.s += this.speed * dt;

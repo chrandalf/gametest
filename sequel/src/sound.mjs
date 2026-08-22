@@ -62,6 +62,16 @@ export class Sound {
     this.audio.play().catch(() => {});
   }
 
+  // start() may have run before the browser would allow audio (an autoplay
+  // attempt on load). Calling this on a real gesture unsticks whatever the
+  // policy held back: the tape deck and the synth context both.
+  resume() {
+    if (!this.started) return;
+    try { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
+    catch (e) { /* nothing to do */ }
+    if (this.audio && this.audio.paused && this.on) this.audio.play().catch(() => {});
+  }
+
   next() {
     if (!this.tracks.length) return;
     this.trackIdx += 1;
