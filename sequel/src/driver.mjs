@@ -78,6 +78,16 @@ export class Driver {
       const need = (this.speed * this.speed - goal * goal) / (2 * BRAKE);
       if (dist - 1.5 < need) accel = Math.min(accel, -BRAKE);
     }
+    // A red light (or any hold point the pilot's world knows about): brake
+    // to the line and wait. Only applies while still short of it, so a car
+    // that entered the box on amber sails on.
+    const hold = input.stopAt;
+    if (hold !== undefined && hold !== null && this.s < hold) {
+      const dist = hold - this.s;
+      const need = (this.speed * this.speed) / (2 * BRAKE);
+      if (dist - 1 < need) accel = Math.min(accel, -BRAKE);
+      if (dist < 1.4 && this.speed < 2.5) { this.speed = 0; accel = Math.min(accel, 0); }
+    }
     this.speed = Math.max(0, this.speed + accel * dt);
     if (input.throttle > 0) this.speed = Math.min(this.speed, maxSpeed);
 

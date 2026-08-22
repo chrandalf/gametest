@@ -32,7 +32,7 @@
 <body>
 <canvas id="c"></canvas>
 <div id="title">NEON CITY
-  <small>a Turbo Esprit tribute · W/S drive · A/D lane · Q/E indicate</small></div>
+  <small>a Turbo Esprit tribute · W/S drive · A/D lane · Q/E indicate · SPACE fire · SHIFT turbo</small></div>
 <div id="msg"></div>
 <div id="tgtbox" style="position:fixed;top:52px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;color:#ff8f8f;font:700 13px monospace;text-shadow:0 0 8px rgba(255,110,110,0.5)">
   <span id="tgt" style="display:inline-block;font-size:20px">&#9650;</span>
@@ -47,11 +47,19 @@
   <div style="color:#7dfcf3;font:700 9px monospace;letter-spacing:2px">TURBO</div>
   <div style="height:6px;background:rgba(125,252,243,0.15);border-radius:3px;margin:2px 0 6px">
     <div id="turbo" style="height:100%;width:100%;background:#7dfcf3;border-radius:3px;box-shadow:0 0 8px rgba(125,252,243,0.7)"></div></div>
+  <div style="color:#ff6a6a;font:700 9px monospace;letter-spacing:2px">HULL</div>
+  <div style="height:6px;background:rgba(255,106,106,0.15);border-radius:3px;margin:2px 0 6px">
+    <div id="health" style="height:100%;width:100%;background:#ff6a6a;border-radius:3px;box-shadow:0 0 8px rgba(255,106,106,0.6)"></div></div>
   <div style="color:#ffd34d;font:700 9px monospace;letter-spacing:2px">FUEL</div>
   <div style="height:6px;background:rgba(255,211,77,0.15);border-radius:3px;margin-top:2px">
     <div id="fuel" style="height:100%;width:100%;background:#ffd34d;border-radius:3px;box-shadow:0 0 8px rgba(255,211,77,0.6)"></div></div>
 </div>
 <canvas id="map" width="200" height="200"></canvas>
+<div id="stars" style="position:fixed;right:22px;top:40px;color:#ffd34d;font:800 18px monospace;text-shadow:0 0 12px rgba(255,180,60,0.7)"></div>
+<div id="score" style="position:fixed;right:22px;top:66px;color:#8dffcf;font:800 16px monospace;text-shadow:0 0 8px rgba(90,255,190,0.5)">000000</div>
+<div id="over" style="display:none;position:fixed;inset:0;background:rgba(3,0,12,0.88);z-index:10;align-items:center;justify-content:center">
+  <pre id="ovtext" style="color:#8dffcf;font:700 16px monospace;text-align:center;text-shadow:0 0 12px rgba(90,255,190,0.5);letter-spacing:1px"></pre>
+</div>
 <div id="fps" style="position:fixed;right:22px;top:18px;color:#7dfcf3;font:700 13px monospace;text-shadow:0 0 8px rgba(125,252,243,0.4)"></div>
 <div id="diag"></div>
 <script src="vendor/engine.js"></script>

@@ -25,6 +25,8 @@ import { buildCity } from './citygen.mjs';
 import { Driver } from './driver.mjs';
 import { Hud } from './hud.mjs';
 import { Mission } from './mission.mjs';
+import { Signals } from './lights.mjs';
+import { Peds } from './peds.mjs';
 
 // The artifact sandbox's permissions policy forbids the Gamepad API, and
 // Chrome makes the mere call throw. Babylon's input system polls it during
@@ -237,23 +239,156 @@ function aiInput(d, dt, t) {
     indicate = r < 0.55 ? 'straight' : r < 0.78 ? 'left' : 'right';
   }
   return { throttle: 1, steer: 0, indicate,
+           stopAt: signals.stopAtFor(d.e, d.dir, t),
            maxSpeed: CLASSES[d.e.cls].limit * a.cruise };
 }
 
 // ---- the hunt: target coupe, police cruiser, mission card --------------
 const hud = new Hud(net, cityBits.stations);
 const mission = new Mission(scene, net, buildCar, hud);
-{
-  // Police lightbar, wired to the mission so it can strobe in pursuit.
+const signals = new Signals(scene, net);
+const peds = new Peds(scene, net, 42);
+
+// Every cruiser gets a lightbar; pursuit strobes them blue/red.
+const beaconMats = [];
+function dressPolice(d) {
   const barMat = new StandardMaterial('bar', scene);
   barMat.emissiveColor = new Color3(1.8, 0.15, 0.15);
   barMat.disableLighting = true;
   const bar = MeshBuilder.CreateBox('p', { width: 1.1, height: 0.16, depth: 0.4 }, scene);
   bar.position.set(0, 1.34, -0.5);
-  bar.parent = mission.policeCar.root;
+  bar.parent = d.car.root;
   bar.material = barMat;
-  mission.beacon = barMat;
+  beaconMats.push(barMat);
 }
+for (const d of mission.police) dressPolice(d);
+mission.onPoliceSpawn = dressPolice;
+
+// The run: score, health, and how it ends.
+const run = { score: 0, health: 100, over: false, reason: '', time: 0 };
+const playerPrev = { e: null, dir: 0, s: 0 };
+let speedTattleT = 0;
+mission.onScore = (n) => { run.score += n; };
+
+// ---- the gun: hitscan forward, tracer pooled ---------------------------
+const tracers = [];
+{
+  const tm = new StandardMaterial('trace', scene);
+  tm.emissiveColor = new Color3(1.6, 1.3, 0.5);
+  tm.disableLighting = true;
+  for (let i = 0; i < 10; i++) {
+    const t = MeshBuilder.CreateBox('tr', { width: 0.06, height: 0.06, depth: 1 }, scene);
+    t.material = tm;
+    t.setEnabled(false);
+    tracers.push({ mesh: t, life: 0 });
+  }
+}
+function showTracer(x0, z0, x1, z1, y) {
+  const t = tracers.find(t => t.life <= 0);
+  if (!t) return;
+  const dx = x1 - x0, dz = z1 - z0;
+  const len = Math.max(1, Math.hypot(dx, dz));
+  t.mesh.setEnabled(true);
+  t.mesh.scaling.z = len;
+  t.mesh.position.set((x0 + x1) / 2, y, (z0 + z1) / 2);
+  t.mesh.rotation.y = Math.atan2(dx, dz);
+  t.life = 0.09;
+}
+let gunT = 0;
+function firePlayerGun(dt) {
+  gunT -= dt;
+  if (gunT > 0) return;
+  gunT = 0.13;
+  const fx = Math.sin(player.pos.yaw), fz = Math.cos(player.pos.yaw);
+  const mx = player.pos.x + fx * 2.4, mz = player.pos.z + fz * 2.4;
+  // Nearest thing inside a tight forward cone, out to 65 m.
+  let best = null, bestD = 65, bestKind = null;
+  const consider = (obj, x, z, kind) => {
+    const dx = x - mx, dz = z - mz;
+    const d = Math.hypot(dx, dz);
+    if (d > bestD || d < 1) return;
+    const ang = Math.abs(wrapA(Math.atan2(dx, dz) - player.pos.yaw));
+    if (ang < 0.09) { best = obj; bestD = d; bestKind = kind; }
+  };
+  consider(mission.target, mission.target.pos.x, mission.target.pos.z, 'target');
+  for (const p of mission.police) consider(p, p.pos.x, p.pos.z, 'police');
+  for (const d of traffic) consider(d, d.pos.x, d.pos.z, 'traffic');
+  for (const p of peds.list) {
+    if (p.state === 'down') continue;
+    const pp = peds.posOf(p);
+    consider(p, pp.x, pp.z, 'ped');
+  }
+  const hx = mx + fx * bestD, hz = mz + fz * bestD;
+  showTracer(mx, mz, hx, hz, 0.8);
+  if (!best) return;
+  if (bestKind === 'target') {
+    mission.damageTarget(0.5, player);
+    run.score += 25;
+  } else if (bestKind === 'police') {
+    mission.bumpWanted(2, 'SHOTS FIRED AT POLICE');
+  } else if (bestKind === 'traffic') {
+    best.gunHp = (best.gunHp ?? 3) - 1;
+    if (best.gunHp <= 0 && !best.shotOut) { best.shotOut = true; best.speed = 0; }
+    mission.witnessed(1, player, true);
+  } else if (bestKind === 'ped') {
+    best.state = 'down'; best.downT = 0;
+    best.root.rotation.x = Math.PI / 2; best.root.position.y = 0.2;
+    run.score = Math.max(0, run.score - 150);
+    mission.onPedHit(player, true);
+  }
+}
+function wrapA(a) {
+  while (a > Math.PI) a -= 2 * Math.PI;
+  while (a < -Math.PI) a += 2 * Math.PI;
+  return a;
+}
+
+// ---- game over + the arcade table --------------------------------------
+function loadScores() {
+  try { return JSON.parse(localStorage.getItem('neoncity_scores') || '[]'); }
+  catch (e) { return []; }
+}
+function saveScores(list) {
+  try { localStorage.setItem('neoncity_scores', JSON.stringify(list)); }
+  catch (e) { /* private window: the table just does not persist */ }
+}
+let initials = '';
+function gameOver(reason) {
+  if (run.over) return;
+  run.over = true;
+  run.reason = reason;
+  initials = '';
+  const overEl = document.getElementById('over');
+  overEl.style.display = 'flex';
+  renderOver();
+}
+function renderOver() {
+  const s = Math.round(run.score);
+  const table = loadScores();
+  const rows = table.map((r, i) =>
+    `${String(i + 1).padStart(2, ' ')}. ${r.n}  ${String(r.s).padStart(6, ' ')}`).join('\n');
+  document.getElementById('ovtext').textContent =
+    `${run.reason}\n\nSCORE ${s} · LEVEL ${mission.level}\n` +
+    `SURVIVED ${Math.round(run.time)}s\n\n` +
+    `TYPE 3 INITIALS THEN ENTER\n> ${initials.padEnd(3, '_')}\n\n${rows}\n\n` +
+    `ENTER SAVES · SPACE RESTARTS`;
+}
+addEventListener('keydown', (e) => {
+  if (!run.over) return;
+  if (/^Key[A-Z]$/.test(e.code) && initials.length < 3) {
+    initials += e.code[3]; renderOver();
+  } else if (e.code === 'Backspace') {
+    initials = initials.slice(0, -1); renderOver();
+  } else if (e.code === 'Enter' && initials.length > 0) {
+    const table = loadScores();
+    table.push({ n: initials.padEnd(3, '_'), s: Math.round(run.score) });
+    table.sort((a, b) => b.s - a.s);
+    saveScores(table.slice(0, 10));
+    renderOver();
+  } else if (e.code === 'Space') {
+    location.reload();
+  }
+});
 
 // ---- collisions: longitudinal, in the grammar's terms ------------------
 // Same-lane car following stops AI overlap; hard contact swaps momentum
@@ -261,7 +396,7 @@ const mission = new Mission(scene, net, buildCar, hud);
 let shake = 0;
 const hitCooldown = new Map();
 function updateCollisions(dt, clock) {
-  const everyone = [player, ...traffic, mission.target, mission.police];
+  const everyone = [player, ...traffic, mission.target, ...mission.police];
   for (let i = 0; i < everyone.length; i++) {
     for (let j = i + 1; j < everyone.length; j++) {
       const a = everyone[i], b = everyone[j];
@@ -277,18 +412,23 @@ function updateCollisions(dt, clock) {
           tail.speed = Math.min(tail.speed, Math.max(0, lead.speed * 0.95));
         }
       }
-      // Hard contact.
-      if (d2 < 3.4 * 3.4) {
+      // Hard contact: separate the bodies, trade the momentum, make it felt.
+      if (d2 < 3.6 * 3.6) {
         const key = i * 100 + j;
         if ((hitCooldown.get(key) || 0) > clock) continue;
-        hitCooldown.set(key, clock + 0.8);
+        hitCooldown.set(key, clock + 0.35);
         const rel = Math.abs(a.speed - b.speed) + 2;
         const [fast, slow] = a.speed >= b.speed ? [a, b] : [b, a];
-        slow.speed = Math.min(slow.speed + rel * 0.55, slow.speed + 14);
-        fast.speed = Math.max(0, fast.speed * 0.55);
-        shake = Math.min(1, rel / 14);
+        // The struck car lurches, the striker loses most of the difference -
+        // nobody phases through anybody.
+        slow.speed = Math.min(slow.speed + rel * 0.6, slow.speed + 16);
+        fast.speed = Math.max(0, slow.speed * 0.4 + fast.speed * 0.25);
+        const overlap = 3.6 - Math.sqrt(d2);
+        if (fast.mode === 'edge') fast.s = Math.max(0, fast.s - overlap);
+        if (slow.mode === 'edge') slow.s = Math.min(slow.e.len, slow.s + overlap * 0.5);
+        shake = Math.min(1, rel / 12);
         if (a === player || b === player) {
-          mission.onPlayerImpact(a === player ? b : a, rel);
+          mission.onPlayerImpact(a === player ? b : a, rel, player, true);
         }
       }
     }
@@ -327,6 +467,7 @@ const holdT = { q: 0, e: 0 };
 
 const tick = (dt) => {
   clock += dt;
+  if (run.over) return;
 
   const throttle = (keys.KeyW || keys.ArrowUp) ? 1 : (keys.KeyS || keys.ArrowDown) ? -1 : 0;
   const steer = ((keys.KeyA || keys.ArrowLeft) ? 1 : 0) + ((keys.KeyD || keys.ArrowRight) ? -1 : 0);
@@ -364,6 +505,7 @@ const tick = (dt) => {
         player.speed < 1.5 && tank.fuel < 99.5) {
       tank.fuel = Math.min(100, tank.fuel + 20 * dt);
       if (Math.floor(clock * 2) % 2 === 0) hud.say('FUELLING…');
+      mission.tryDisguise(player, clock);
     }
   }
 
@@ -383,7 +525,72 @@ const tick = (dt) => {
     d.car.indR.setEnabled(d.indicator === 1 && b2);
   }
 
+  if (run.over) { hud.update(dt, player, [...traffic, ...mission.mapEntries()]); return; }
+  run.time += dt;
+  run.score += dt * 2 * (1 + mission.wanted * 0.5);
+
+  if (keys.Space) firePlayerGun(dt); else gunT = Math.min(gunT, 0.05);
+  for (const t of tracers) {
+    if (t.life > 0) { t.life -= dt; if (t.life <= 0) t.mesh.setEnabled(false); }
+  }
+
+  signals.update(clock);
+  peds.update(dt);
+  if ((Math.floor(clock) % 5) === 0) peds.recycle();
+
+  // Player over a pedestrian at speed: the city notices.
+  if (player.speed > 4) {
+    const victim = peds.hitCheck(player.pos.x, player.pos.z);
+    if (victim) {
+      run.score = Math.max(0, run.score - 150);
+      shake = Math.max(shake, 0.5);
+      mission.onPedHit(player, true);
+    }
+  }
+
+  // Red light running: witnessed if the wrong eyes are close.
+  if (player.mode === 'edge') {
+    if (playerPrev.e === player.e && playerPrev.dir === player.dir &&
+        signals.ranRed(player.e, player.dir, playerPrev.s, player.s, clock)) {
+      run.score += 15;
+      mission.witnessed(1, player, true);
+    }
+    playerPrev.e = player.e; playerPrev.dir = player.dir; playerPrev.s = player.s;
+  }
+  // Speeding right past a cruiser is a star on its own.
+  if (player.speed > CLASSES[player.e.cls].limit * 1.5 &&
+      mission.nearestPoliceDist(player) < 22 && clock > speedTattleT) {
+    speedTattleT = clock + 12;
+    mission.bumpWanted(1, 'CLOCKED SPEEDING');
+  }
+
+  // Roadworks: AI threads round the cones; the player just hits them.
+  for (const rw of cityBits.roadworks) {
+    for (const d of [...traffic, mission.target, ...mission.police]) {
+      if (d.mode === 'edge' && d.e === rw.e && d.dir === rw.dir &&
+          d.lane === rw.lane && d.s > rw.s0 - 30 && d.s < rw.s1 && d.lane > 0) {
+        d.lane -= 1; d.lat += CLASSES[d.e.cls].laneW;
+      }
+    }
+    if (player.mode === 'edge' && player.e === rw.e && player.dir === rw.dir &&
+        player.lane === rw.lane && player.s > rw.s0 && player.s < rw.s1) {
+      player.speed *= Math.max(0, 1 - 2.4 * dt);
+      shake = Math.max(shake, 0.25);
+    }
+  }
+
+  // AI shots land as health damage, dodgeable by speed.
   mission.update(dt, player, clock);
+  for (const sh of mission.shots) {
+    showTracer(sh.from.x, sh.from.z, sh.to.x, sh.to.z, 0.9);
+    const dodge = Math.min(0.75, player.speed / 45);
+    if (Math.random() > dodge) {
+      run.health -= sh.hurt;
+      shake = Math.max(shake, 0.3);
+    }
+  }
+  if (run.health <= 0) gameOver('WRECKED BY GUNFIRE');
+  if (mission.busted) gameOver('BUSTED');
   updateCollisions(dt, clock);
   if (shake > 0.005) shake *= Math.exp(-dt * 5); else shake = 0;
 
@@ -403,6 +610,15 @@ const tick = (dt) => {
     player.pos.x + Math.sin(player.pos.yaw) * 7,
     1.2,
     player.pos.z + Math.cos(player.pos.yaw) * 7));
+
+  const strobing = mission.wanted > 0;
+  for (let bi = 0; bi < beaconMats.length; bi++) {
+    const on = strobing ? Math.sin(clock * 18 + bi * 2) > 0 : Math.sin(clock * 4 + bi) > 0.85;
+    beaconMats[bi].emissiveColor.set(on ? 0.4 : 1.8, on ? 0.6 : 0.15, on ? 2.2 : 0.15);
+  }
+  starsEl.textContent = mission.wanted > 0 ? '★'.repeat(mission.wanted) : '';
+  scoreEl.textContent = String(Math.round(run.score)).padStart(6, '0');
+  healthBar.style.width = Math.max(0, run.health) + '%';
 
   hud.update(dt, player, [...traffic, ...mission.mapEntries()]);
   fuelBar.style.width = tank.fuel.toFixed(0) + '%';
@@ -435,6 +651,9 @@ const turboBar = document.getElementById('turbo');
 const tgtEl = document.getElementById('tgt');
 const tgtdEl = document.getElementById('tgtd');
 const tgtBox = document.getElementById('tgtbox');
+const starsEl = document.getElementById('stars');
+const scoreEl = document.getElementById('score');
+const healthBar = document.getElementById('health');
 setInterval(() => {
   const f = engine.getFps();
   fpsEl.textContent = f.toFixed(0) + ' FPS';

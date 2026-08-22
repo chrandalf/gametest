@@ -7,7 +7,7 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
-import { GRID, CELL, CLASSES, halfWidth } from './network.mjs';
+import { GRID, CELL, CLASSES, halfWidth, lanePos } from './network.mjs';
 
 // Deterministic rand so the city is the same city every visit - you are
 // supposed to LEARN it.
@@ -377,5 +377,37 @@ export function buildCity(scene, net, mirror) {
     stations.push({ x: rx, z: rz });
   }
 
-  return { glow, stations };
+  // ---- roadworks: a coned-off kerb lane on two avenues -----------------
+  // Traffic threads round them; drive through the cones yourself and it is
+  // loud, slow and embarrassing - which is roughly the real experience.
+  const roadworks = [];
+  const coneMat = new StandardMaterial('cone', scene);
+  coneMat.emissiveColor = new Color3(1.5, 0.5, 0.1);
+  coneMat.disableLighting = true;
+  const barrierMat = new StandardMaterial('barr', scene);
+  barrierMat.emissiveColor = new Color3(1.2, 0.9, 0.15);
+  barrierMat.disableLighting = true;
+  const aves = net.edges.filter(e => e.cls === 'avenue' && e.len > 50);
+  for (const frac of [0.3, 0.7]) {
+    const e = aves[(aves.length * frac) | 0];
+    if (!e) continue;
+    const lane = CLASSES.avenue.lanesPer - 1;      // the kerb lane
+    const s0 = e.len * 0.4, s1 = s0 + 16;
+    for (let s = s0; s <= s1; s += 2.2) {
+      const cp = lanePos(e, 1, lane, s);
+      const cone = MeshBuilder.CreateCylinder('cone', { diameterTop: 0.06,
+        diameterBottom: 0.4, height: 0.7, tessellation: 8 }, scene);
+      cone.position.set(cp.x, 0.35, cp.z);
+      cone.material = coneMat;
+    }
+    const bp = lanePos(e, 1, lane, s0 - 1.6);
+    const bar = MeshBuilder.CreateBox('barr', {
+      width: e.axis === 0 ? 0.25 : 2.6, height: 1.0,
+      depth: e.axis === 0 ? 2.6 : 0.25 }, scene);
+    bar.position.set(bp.x, 0.5, bp.z);
+    bar.material = barrierMat;
+    roadworks.push({ e, dir: 1, lane, s0: s0 - 6, s1: s1 + 3 });
+  }
+
+  return { glow, stations, roadworks };
 }
