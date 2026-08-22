@@ -566,6 +566,12 @@ const daySkies = [];
 }
 let vibe = 0;
 let vibeStep = 0;
+// The coast used to turn to daylight when you got on the ring road. It is
+// off by default now because it was suspected of costing frames. Measured
+// here it is worth two to four per cent of a coast frame - which is not
+// much - so B puts it back, and the honest way to settle it is to fly the
+// coast with it on and off and read the counter.
+const coast2 = { daylight: false };
 
 // The run: score, health, and how it ends.
 const run = { score: 0, health: 100, over: false, reason: '', time: 0, started: false, saved: false };
@@ -836,6 +842,37 @@ addEventListener('keyup', (e) => { keys[e.code] = false; });
 
 // -------------------------------------------------------------- the loop ----
 let clock = 0;
+// ---- cameras ------------------------------------------------------------
+// Four ways to watch the same car. Chase is the game's own; close is for
+// threading traffic, bonnet is for the road ahead and nothing else, and
+// far is for looking at the city you are driving through.
+const VIEWS = [
+  { name: 'CHASE',  back: 8.4, rise: 0.16, high: 4.4, lift: 0.05, ahead: 7,  eye: 1.2, lag: 5.5, fov: 0.95 },
+  { name: 'CLOSE',  back: 5.4, rise: 0.08, high: 2.5, lift: 0.02, ahead: 9,  eye: 1.0, lag: 8.5, fov: 1.02 },
+  { name: 'BONNET', back: -1.9, rise: 0,   high: 1.05, lift: 0,   ahead: 24, eye: 1.0, lag: 40,  fov: 1.06 },
+  { name: 'FAR',    back: 15,  rise: 0.3,  high: 9.5, lift: 0.09, ahead: 4,  eye: 1.6, lag: 3.2, fov: 0.86 },
+];
+let view = 0;
+function updateCamera(dt) {
+  const v = VIEWS[view];
+  const fx = Math.sin(player.pos.yaw), fz = Math.cos(player.pos.yaw);
+  const back = v.back + player.speed * v.rise;
+  const cx = player.pos.x - fx * back;
+  const cz = player.pos.z - fz * back;
+  const k = Math.min(1, dt * v.lag);
+  cam.position.x += (cx - cam.position.x) * k;
+  cam.position.z += (cz - cam.position.z) * k;
+  cam.position.y += (player.pos.y + v.high + player.speed * v.lift - cam.position.y) * k;
+  if (shake > 0) {
+    cam.position.x += (Math.random() - 0.5) * shake * 0.7;
+    cam.position.y += (Math.random() - 0.5) * shake * 0.5;
+  }
+  cam.setTarget(new Vector3(
+    player.pos.x + fx * v.ahead,
+    player.pos.y + v.eye,
+    player.pos.z + fz * v.ahead));
+}
+
 // ---- the garage ---------------------------------------------------------
 // Pull onto a service spur and stop, and a man comes out of the hut and
 // works down the list: fills the tank, gives it a coat of paint - which is
@@ -1074,25 +1111,17 @@ const tick = (dt) => {
   updateCollisions(dt, clock);
   if (shake > 0.005) shake *= Math.exp(-dt * 5); else shake = 0;
 
-  // Chase camera: behind and above, leaning with speed, looking through.
-  const back = 8.4 + player.speed * 0.16;
-  const cx = player.pos.x - Math.sin(player.pos.yaw) * back;
-  const cz = player.pos.z - Math.cos(player.pos.yaw) * back;
-  const k = Math.min(1, dt * 5.5);
-  cam.position.x += (cx - cam.position.x) * k;
-  cam.position.z += (cz - cam.position.z) * k;
-  cam.position.y += (player.pos.y + 4.4 + player.speed * 0.05 - cam.position.y) * k;
-  if (shake > 0) {
-    cam.position.x += (Math.random() - 0.5) * shake * 0.7;
-    cam.position.y += (Math.random() - 0.5) * shake * 0.5;
+  updateCamera(dt);
+  // The car paint's planar reflection is worth its cost among neon towers.
+  // Out on the ring it reflects sky and sea, so it can crawl - and that is
+  // true whether or not the coast is in daylight.
+  {
+    const want = (player.e && player.e.cls === 'highway') ? 4 : 2;
+    if (mirror.refreshRate !== want) mirror.refreshRate = want;
   }
-  cam.setTarget(new Vector3(
-    player.pos.x + Math.sin(player.pos.yaw) * 7,
-    player.pos.y + 1.2,
-    player.pos.z + Math.cos(player.pos.yaw) * 7));
 
   // ---- the morph: city night <-> coast daylight ------------------------
-  const wantVibe = (player.e && player.e.cls === 'highway') ? 1
+  const wantVibe = (coast2.daylight && player.e && player.e.cls === 'highway') ? 1
     : (player.mode === 'turn' ? vibe : 0);
   vibe += (wantVibe - vibe) * Math.min(1, dt * 0.55);
   // An exponential fade never arrives, so snap the last hair of it. Without
@@ -1130,14 +1159,13 @@ const tick = (dt) => {
     scene.fogDensity = (0.0017 - v * 0.0006) * fogScale * (safe.reduceFlash ? 1.6 : 1);
     pipe.imageProcessing.exposure = 1.05 + v * 0.22;
     pipe.imageProcessing.contrast = 1.3 - v * 0.12;
-    // The car paint's planar reflection is worth its cost among neon towers.
-    // On the coast it reflects sky, so it can crawl.
-    mirror.refreshRate = v > 0.5 ? 4 : 2;
+
   }
 
   // The surf marches at the sand. Only worth paying for when you can see
   // it, so it stops dead while the city is dark.
-  if (vibe > 0.02) {
+  // The sea still moves at night; it is the light that changes, not the tide.
+  if (vibe > 0.02 || (player.e && player.e.cls === 'highway')) {
     for (const b of cityBits.surf) {
       if (b.alongX) b.tex.vOffset = (b.tex.vOffset + b.speed * dt) % 1;
       else b.tex.uOffset = (b.tex.uOffset + b.speed * dt) % 1;
@@ -1202,7 +1230,7 @@ scene.onBeforeRenderObservable.add(() =>
 // bot needs to play it without reaching into module scope.
 window.game = {
   player, traffic, net, hud, tick, mission, coast, tiles, pickups,
-  run, tank, turbo, garage, peds, signals,
+  run, tank, turbo, garage, peds, signals, coast2,
   stations: cityBits.stations,
   nav: { nodeAhead, headingSlot, turnOptions },
 };
@@ -1219,7 +1247,7 @@ window.game = {
     'W/S DRIVE · A/D LANES · Q/E INDICATE (HOLD FOR U-TURN)\n' +
     'SPACE FIRE · SHIFT TURBO · GREEN SQUARES SELL PETROL\n' +
     'THE RING ROAD IS THE COAST — GO SEE IT\n' +
-    'M MUSIC · X NEXT TRACK · G GRAPHICS · F REDUCED FLASHING\n\n' + rows;
+    'M MUSIC · X TRACK · C CAMERA · B COAST DAYLIGHT · G GRAPHICS · F FLASHING\n\n' + rows;
 }
 addEventListener('keydown', (e) => {
   if (!run.started && e.code === 'Enter') {
@@ -1238,6 +1266,17 @@ addEventListener('keydown', (e) => {
     vibeStep = -1;                       // forces the fog to be re-applied
     applyQuality();
     hud.say(safe.reduceFlash ? 'REDUCED FLASHING — ON' : 'REDUCED FLASHING — OFF');
+  }
+  if (e.code === 'KeyB') {
+    coast2.daylight = !coast2.daylight;
+    hud.say(coast2.daylight ? 'COAST DAYLIGHT — ON' : 'COAST DAYLIGHT — OFF (NEON)');
+  }
+  if (e.code === 'KeyC') {
+    view = (view + 1) % VIEWS.length;
+    cam.fov = VIEWS[view].fov;
+    // From the bonnet you are the car, so the car itself gets out of the way.
+    playerCar.root.setEnabled(VIEWS[view].name !== 'BONNET');
+    hud.say('CAMERA · ' + VIEWS[view].name);
   }
   if (e.code === 'KeyG') {
     quality.manual = true;

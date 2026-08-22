@@ -140,27 +140,44 @@ export function buildCity(scene, net, mirror) {
     slab.material = roadMat;
     mirror.renderList.push(slab);
 
-    // Sidewalk slabs and kerb strips down both sides, full edge length.
+    // Sidewalk slabs and kerb strips down both sides. They stop short of
+    // each junction: run them the full length of the edge and the pavement
+    // of one road marches straight across the carriageway of the other,
+    // which is what you see at every signalled corner.
+    const crossHalf = (n) => {
+      let w = 0;
+      for (const q of n.edges) {
+        if (!q || q.axis === e.axis) continue;
+        w = Math.max(w, halfWidth(q.cls));
+      }
+      return w;
+    };
+    const insetA = crossHalf(e.a) ? crossHalf(e.a) + 0.6 : 0;
+    const insetB = crossHalf(e.b) ? crossHalf(e.b) + 0.6 : 0;
+    const runL = Math.max(2, e.len - insetA - insetB);
+    const runMid = insetA + runL / 2;
+    const wx = e.axis === 0 ? e.a.x + runMid : cx;
+    const wz = e.axis === 0 ? cz : e.a.z + runMid;
     for (const sd of [-1, 1]) {
       const wk = MeshBuilder.CreateBox('wk', {
-        width: e.axis === 0 ? e.len : 3,
+        width: e.axis === 0 ? runL : 3,
         height: 0.16,
-        depth: e.axis === 0 ? 3 : e.len,
+        depth: e.axis === 0 ? 3 : runL,
       }, scene);
       wk.position.set(
-        e.axis === 0 ? cx : cx + sd * (hw + 1.6),
+        e.axis === 0 ? wx : wx + sd * (hw + 1.6),
         0.08,
-        e.axis === 0 ? cz + sd * (hw + 1.6) : cz);
+        e.axis === 0 ? wz + sd * (hw + 1.6) : wz);
       wk.material = walkMat;
       const kb = MeshBuilder.CreateBox('kb', {
-        width: e.axis === 0 ? e.len : 0.22,
+        width: e.axis === 0 ? runL : 0.22,
         height: 0.2,
-        depth: e.axis === 0 ? 0.22 : e.len,
+        depth: e.axis === 0 ? 0.22 : runL,
       }, scene);
       kb.position.set(
-        e.axis === 0 ? cx : cx + sd * (hw + 0.12),
+        e.axis === 0 ? wx : wx + sd * (hw + 0.12),
         0.1,
-        e.axis === 0 ? cz + sd * (hw + 0.12) : cz);
+        e.axis === 0 ? wz + sd * (hw + 0.12) : wz);
       kb.material = kerbMat;
     }
     // Stop lines where the carriageway meets each junction box: one white

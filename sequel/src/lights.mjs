@@ -53,40 +53,51 @@ export class Signals {
       const node = { n, off, heads: [] };
       // One head per approach corner, showing that approach's aspect.
       const hw = halfWidth('avenue');
-      for (const [slot, dx, dz] of [[0, -1, -1], [1, 1, 1], [2, 1, -1], [3, -1, 1]]) {
+      // Corner to stand it on, and the way it has to face: a signal shows
+      // its aspect to ONE approach. Lamps that poke out of the back are why
+      // you could stand at a green and read a red on the same corner.
+      const HEADS = [
+        [0, -1, -1, Math.PI / 2],    // the +x arm: faces traffic coming -x
+        [1, 1, 1, -Math.PI / 2],
+        [2, 1, -1, 0],
+        [3, -1, 1, Math.PI],
+      ];
+      for (const [slot, dx, dz, yaw] of HEADS) {
         if (!n.edges[slot]) continue;
         const px = n.x + dx * (hw + 1.2), pz = n.z + dz * (hw + 1.2);
+        const nx = Math.sin(yaw), nz = Math.cos(yaw);
         const pole = MeshBuilder.CreateBox('sigp', { width: 0.14, height: 4.6, depth: 0.14 }, scene);
         pole.position.set(px, 2.3, pz);
         pole.material = poleMat;
         pole.freezeWorldMatrix();
-        // The housing, and behind it a backboard so the lenses read against
-        // the city rather than against whatever happens to be behind them.
+        // The housing, and a backboard behind it - which is also what stops
+        // the lit lens being visible from anywhere but the approach.
         const box = MeshBuilder.CreateBox('sigh',
           { width: 0.46, height: 1.72, depth: 0.34 }, scene);
         box.position.set(px, 4.85, pz);
+        box.rotation.y = yaw;
         box.material = caseMat;
         box.freezeWorldMatrix();
         const board = MeshBuilder.CreateBox('sigh',
-          { width: 0.66, height: 1.92, depth: 0.08 }, scene);
-        board.position.set(px, 4.85, pz);
+          { width: 0.74, height: 2.0, depth: 0.08 }, scene);
+        board.position.set(px - nx * 0.13, 4.85, pz - nz * 0.13);
+        board.rotation.y = yaw;
         board.material = caseMat;
         board.freezeWorldMatrix();
-        // Three lenses, dark, and three bright ones sitting a hair proud of
-        // them that switch on and off. Only the lit ones ever draw.
-        // One box per lens, deep enough to poke out of both faces of the
-        // housing, so the same lamp serves both approaches on this axis
-        // without costing a second mesh.
+        // Three lenses on the front face only, dark, with a bright one a
+        // couple of centimetres proud that switches on and off.
         const lamps = {};
         for (const [name, dy] of LENSES) {
           const dark = MeshBuilder.CreateBox('sigd',
-            { width: 0.26, height: 0.26, depth: 0.42 }, scene);
-          dark.position.set(px, 4.85 + dy, pz);
+            { width: 0.26, height: 0.26, depth: 0.06 }, scene);
+          dark.position.set(px + nx * 0.18, 4.85 + dy, pz + nz * 0.18);
+          dark.rotation.y = yaw;
           dark.material = darkLens;
           dark.freezeWorldMatrix();
           const lit = MeshBuilder.CreateBox('sigl',
-            { width: 0.3, height: 0.3, depth: 0.46 }, scene);
-          lit.position.set(px, 4.85 + dy, pz);
+            { width: 0.3, height: 0.3, depth: 0.06 }, scene);
+          lit.position.set(px + nx * 0.22, 4.85 + dy, pz + nz * 0.22);
+          lit.rotation.y = yaw;
           lit.material = this.mats[name];
           lit.freezeWorldMatrix();
           lit.setEnabled(false);
