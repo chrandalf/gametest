@@ -31,7 +31,7 @@ export class Driver {
     this.intent = 'straight';     // what the pilot indicated
     this.indicator = 0;           // -1 left, 1 right, 0 off (lights + HUD)
     this.turn = null;
-    this.pos = { x: 0, z: 0, yaw: 0 };
+    this.pos = { x: 0, y: 0, z: 0, yaw: 0 };
     this.blocked = false;
     this.place();
   }
@@ -164,6 +164,7 @@ export class Driver {
       x1: to.x, z1: to.z,
       cx: this.pos.x + fx * 6.5 + rx * 3.2,
       cz: this.pos.z + fz * 6.5 + rz * 3.2,
+      y0: this.pos.y, y1: to.y,
       dyaw: Math.PI,
       t: 0,
       len: 19,
@@ -195,6 +196,7 @@ export class Driver {
     this.turn = {
       x0: from.x, z0: from.z, yaw0: fromYaw,
       x1: to.x, z1: to.z, cx, cz,
+      y0: this.pos.y, y1: to.y,
       dyaw: wrapAngle(to.yaw - fromYaw),
       t: 0,
       len: Math.hypot(to.x - from.x, to.z - from.z) * 1.22,
@@ -226,6 +228,7 @@ export class Driver {
     const u = 1 - T.t, t = T.t;
     this.pos.x = u * u * T.x0 + 2 * u * t * T.cx + t * t * T.x1;
     this.pos.z = u * u * T.z0 + 2 * u * t * T.cz + t * t * T.z1;
+    this.pos.y = T.y0 + (T.y1 - T.y0) * smooth01(T.t);
     this.pos.yaw = T.yaw0 + T.dyaw * smooth01(T.t);
   }
 
@@ -234,6 +237,7 @@ export class Driver {
     const p = lanePos(this.e, this.dir, this.lane, this.s);
     const lx = -Math.cos(p.yaw), lz = Math.sin(p.yaw);   // left of travel
     this.pos.x = p.x + lx * this.lat;
+    this.pos.y = p.y;
     this.pos.z = p.z + lz * this.lat;
     // Steering left noses the car left: yaw decreases toward -x at yaw 0.
     this.pos.yaw = p.yaw - Math.max(-0.3, Math.min(0.3, this.latV * 0.06));

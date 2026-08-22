@@ -127,6 +127,7 @@ export function buildCity(scene, net, mirror) {
   stopMat.disableLighting = true;
 
   for (const e of net.edges) {
+    if (e.cls === 'express' || e.cls === 'ramp') continue;   // built up top
     const hw = halfWidth(e.cls);
     const c = CLASSES[e.cls];
     const cx = (e.a.x + e.b.x) / 2, cz = (e.a.z + e.b.z) / 2;
@@ -238,6 +239,7 @@ export function buildCity(scene, net, mirror) {
   headProto.setEnabled(false);
   for (const e of net.edges) {
     if (e.cls === 'highway') continue;               // ring road glows on its own
+    if (e.cls === 'express' || e.cls === 'ramp') continue;
     const hw = halfWidth(e.cls);
     for (let s = e.len * 0.24; s < e.len * 0.9; s += Math.max(26, e.len * 0.4)) {
       for (const sd of [-1, 1]) {
@@ -247,6 +249,104 @@ export function buildCity(scene, net, mirror) {
         p.position.set(px, 3.75, pz);
         const h = headProto.createInstance('hi');
         h.position.set(px - (e.axis === 0 ? 0 : sd * 0.8), 7.4, pz - (e.axis === 0 ? sd * 0.8 : 0));
+      }
+    }
+  }
+
+  // ---- the expressway: decks, slip roads, piers ------------------------
+  // Everything up here is the same edge data as the streets, only with ends
+  // at different heights. A flat deck is a box; a slip road is the same box
+  // tilted by its own grade. Portal frames straddle the street below rather
+  // than standing in it.
+  {
+    const deckMat = new PBRMaterial('deck', scene);
+    deckMat.albedoColor = new Color3(0.030, 0.030, 0.044);
+    deckMat.metallic = 0.45; deckMat.roughness = 0.5;
+    const concrete = new PBRMaterial('conc', scene);
+    concrete.albedoColor = new Color3(0.055, 0.055, 0.072);
+    concrete.metallic = 0.1; concrete.roughness = 0.85;
+    concrete.emissiveColor = new Color3(0.022, 0.024, 0.034);
+
+    // A box laid along an edge, tilted to match its grade. `alongLen` runs
+    // with the road, `acrossLen` spans it; which of those is width and
+    // which is depth depends on the edge's axis.
+    const onDeck = (e, name, alongLen, h, acrossLen, offAcross, offUp, offAlong, mat) => {
+      const grade = Math.atan2(e.b.y - e.a.y, e.len);
+      const cx = (e.a.x + e.b.x) / 2, cz = (e.a.z + e.b.z) / 2;
+      const cy = (e.a.y + e.b.y) / 2;
+      const along0 = e.axis === 0 ? alongLen : acrossLen;
+      const across0 = e.axis === 0 ? acrossLen : alongLen;
+      const box = MeshBuilder.CreateBox(name,
+        { width: along0, height: h, depth: across0 }, scene);
+      const t = offAlong || 0;
+      if (e.axis === 0) {
+        box.position.set(cx + t, cy + offUp + t * Math.tan(grade), cz + offAcross);
+        box.rotation.z = grade;
+      } else {
+        box.position.set(cx + offAcross, cy + offUp + t * Math.tan(grade), cz + t);
+        box.rotation.x = -grade;
+      }
+      box.material = mat;
+      return box;
+    };
+
+    for (const e of net.edges) {
+      if (e.cls !== 'express' && e.cls !== 'ramp') continue;
+      const hw = halfWidth(e.cls);
+      const c = CLASSES[e.cls];
+      const grade = Math.atan2(e.b.y - e.a.y, e.len);
+      const run = e.len / Math.cos(grade);
+
+      // Deck: thick enough to read as a structure from underneath.
+      onDeck(e, 'dk', run, 0.95, hw * 2, 0, -0.42, 0, deckMat);
+
+      // Parapets, with a neon strip along the top of each.
+      for (const sd of [-1, 1]) {
+        onDeck(e, 'prp', run, 1.05, 0.55, sd * (hw + 0.25), 0.5, 0, concrete);
+        onDeck(e, 'el', run, 0.16, 0.22, sd * (hw + 0.25), 1.05, 0,
+               e.cls === 'ramp' ? glow.amber : glow.blue);
+        // And one at deck level, so the carriageway edge glows too.
+        onDeck(e, 'el', run - 1, 0.06, 0.18, sd * (hw - 0.35), 0.07, 0,
+               e.cls === 'ramp' ? glow.amber : glow.cyan);
+      }
+      // Centre line.
+      onDeck(e, 'ml', run - 2, 0.055, 0.14, 0, 0.07, 0, glow.white);
+      // Lane dividers.
+      for (let k = 1; k < c.lanesPer; k++) {
+        for (const sd of [-1, 1]) {
+          const off = (0.9 + k * c.laneW) * sd;
+          for (let t = -run / 2 + 3; t < run / 2 - 3; t += 8) {
+            onDeck(e, 'dd', 2.6, 0.05, 0.2, off, 0.07, t, glow.amber);
+          }
+        }
+      }
+
+      // Portal frames: two legs either side of whatever is underneath, a
+      // beam across, every forty metres or so.
+      const legOut = hw - 3.5;
+      const step = Math.max(26, e.len / Math.round(e.len / 38));
+      for (let t = -e.len / 2 + step * 0.5; t < e.len / 2 - 2; t += step) {
+        const fx = e.axis === 0 ? (e.a.x + e.b.x) / 2 + t : (e.a.x + e.b.x) / 2;
+        const fz = e.axis === 0 ? (e.a.z + e.b.z) / 2 : (e.a.z + e.b.z) / 2 + t;
+        const deckY = e.a.y + (e.b.y - e.a.y) * (t / e.len + 0.5);
+        if (deckY < 3) continue;                    // too low to need a leg
+        for (const sd of [-1, 1]) {
+          const leg = MeshBuilder.CreateBox('pier', {
+            width: 1.5, height: deckY - 0.9, depth: 1.5,
+          }, scene);
+          leg.position.set(
+            e.axis === 0 ? fx : fx + sd * legOut,
+            (deckY - 0.9) / 2,
+            e.axis === 0 ? fz + sd * legOut : fz);
+          leg.material = concrete;
+        }
+        const beam = MeshBuilder.CreateBox('pier', {
+          width: e.axis === 0 ? 1.5 : legOut * 2 + 1.5,
+          height: 1.0,
+          depth: e.axis === 0 ? legOut * 2 + 1.5 : 1.5,
+        }, scene);
+        beam.position.set(fx, deckY - 1.35, fz);
+        beam.material = concrete;
       }
     }
   }
@@ -355,6 +455,9 @@ export function buildCity(scene, net, mirror) {
     }
   }
 
+  // Scrolling foam bands, handed back so the tick can animate them.
+  const surf = [];
+
   // ---- the coast: sand and sea wrap the whole ring ---------------------
   // The city was on the coast all along; you only notice from the highway.
   {
@@ -398,6 +501,139 @@ export function buildCity(scene, net, mirror) {
       const s = MeshBuilder.CreateBox('sea', { width: w, height: 0.06, depth: d }, scene);
       s.position.set(cx, -0.02, cz);
       s.material = seaMat;
+    }
+
+    // ---- surf: two bands of foam marching at the sand -----------------
+    // The waves are a scroll, not a simulation. Bands of foam painted on a
+    // texture and slid shoreward read as breaking surf from a car doing a
+    // hundred, and they cost one uniform a frame instead of a mesh rebuild.
+    const foamTex = (seed, count, thick, vertical) => {
+      const dt = new DynamicTexture('foam' + seed, { width: 256, height: 256 }, scene, true);
+      const x = dt.getContext();
+      x.clearRect(0, 0, 256, 256);
+      x.lineCap = 'round';
+      for (let k = 0; k < count; k++) {
+        const p0 = (k + 0.5) / count * 256;
+        const a = 0.55 + ((k * 37 + seed * 13) % 10) / 10 * 0.45;
+        x.strokeStyle = 'rgba(255, 255, 255, ' + a.toFixed(2) + ')';
+        x.lineWidth = thick * (0.6 + ((k * 17 + seed) % 7) / 7);
+        x.beginPath();
+        for (let q = 0; q <= 256; q += 8) {
+          const t = q / 256 * Math.PI * 2;
+          const off = Math.sin(t * 3 + k * 1.7 + seed) * 7 + Math.sin(t * 7.3 + k * 0.9) * 3.5;
+          const px = vertical ? p0 + off : q;
+          const py = vertical ? q : p0 + off;
+          if (q === 0) x.moveTo(px, py); else x.lineTo(px, py);
+        }
+        x.stroke();
+      }
+      dt.update();
+      dt.hasAlpha = true;
+      return dt;
+    };
+    // A ground plane, not a box: its UVs are defined - u along x, v along z -
+    // so the foam lines can be made to run along the shore rather than
+    // across it, whichever way this stretch of coast happens to face.
+    const surfBand = (cx, cz, w, d, alongX, seed, count, thick, speed, tint) => {
+      const tex = foamTex(seed, count, thick, !alongX);
+      tex.uScale = alongX ? Math.max(2, Math.round(w / 110)) : 1;
+      tex.vScale = alongX ? 1 : Math.max(2, Math.round(d / 110));
+      const m = new StandardMaterial('surf' + seed, scene);
+      m.emissiveTexture = tex;
+      m.opacityTexture = tex;
+      m.diffuseColor = new Color3(0, 0, 0);
+      m.specularColor = new Color3(0, 0, 0);
+      m.emissiveColor = tint;
+      m.disableLighting = true;
+      const q = MeshBuilder.CreateGround('surf', { width: w, height: d }, scene);
+      q.position.set(cx, 0.07, cz);
+      q.material = m;
+      // Bands march shorewards: across the strip, which is v for a shore
+      // running along x and u for one running along z.
+      surf.push({ tex, alongX, speed });
+      return q;
+    };
+    // The waterline is where the sand ends. Foam breaks right on it; the
+    // swell rolls in from twenty-odd metres further out.
+    const shore = rim + sandW;
+    for (const [side, sz] of [[-1, -shore], [1, ext.z + shore]]) {
+      const w = ext.x + shore * 2 + 40;
+      surfBand(ext.x / 2, sz + side * 5, w, 22, true, 1 + side, 4, 13, 0.06,
+               new Color3(2.0, 2.1, 2.15));
+      surfBand(ext.x / 2, sz + side * 38, w, 46, true, 3 + side, 3, 7, 0.024,
+               new Color3(0.7, 1.05, 1.2));
+    }
+    for (const [side, sx] of [[-1, -shore], [1, ext.x + shore]]) {
+      const d = ext.z + shore * 2 + 40;
+      surfBand(sx + side * 5, ext.z / 2, 22, d, false, 5 + side, 4, 13, 0.06,
+               new Color3(2.0, 2.1, 2.15));
+      surfBand(sx + side * 38, ext.z / 2, 46, d, false, 7 + side, 3, 7, 0.024,
+               new Color3(0.7, 1.05, 1.2));
+    }
+
+    // ---- the people who came for the beach, not the chase -------------
+    const towelCols = [[1.5, 0.35, 0.45], [0.35, 1.2, 1.5], [1.5, 1.2, 0.3],
+                       [1.3, 0.5, 1.4], [0.4, 1.4, 0.7]];
+    const towelMats = towelCols.map(([r, g, b], k) => {
+      const m = new StandardMaterial('towel' + k, scene);
+      m.emissiveColor = new Color3(r * 0.4, g * 0.4, b * 0.4);
+      m.diffuseColor = new Color3(r * 0.3, g * 0.3, b * 0.3);
+      return m;
+    });
+    const skinMat = new StandardMaterial('skin', scene);
+    skinMat.diffuseColor = new Color3(0.75, 0.58, 0.42);
+    skinMat.emissiveColor = new Color3(0.26, 0.19, 0.13);
+    const poleM = new StandardMaterial('parapole', scene);
+    poleM.diffuseColor = new Color3(0.5, 0.5, 0.52);
+    poleM.emissiveColor = new Color3(0.12, 0.12, 0.14);
+    // Sun loungers, towels and parasols, scattered down the whole shore.
+    const sunbather = (px, pz, alongX, k) => {
+      const towel = MeshBuilder.CreateBox('twl', {
+        width: alongX ? 2.1 : 1.0, height: 0.06, depth: alongX ? 1.0 : 2.1,
+      }, scene);
+      towel.position.set(px, 0.14, pz);
+      towel.material = towelMats[k % towelMats.length];
+      const body = MeshBuilder.CreateBox('bod', {
+        width: alongX ? 1.55 : 0.42, height: 0.26, depth: alongX ? 0.42 : 1.55,
+      }, scene);
+      body.position.set(px, 0.3, pz);
+      body.material = skinMat;
+      const head = MeshBuilder.CreateBox('bod', { width: 0.26, height: 0.24, depth: 0.26 }, scene);
+      head.position.set(px + (alongX ? 0.95 : 0), 0.3, pz + (alongX ? 0 : 0.95));
+      head.material = skinMat;
+      if (k % 2 === 0) {
+        const pole = MeshBuilder.CreateBox('parapole', {
+          width: 0.09, height: 2.2, depth: 0.09,
+        }, scene);
+        pole.position.set(px - (alongX ? 1.5 : 0), 1.1, pz - (alongX ? 0 : 1.5));
+        pole.material = poleM;
+        const shade = MeshBuilder.CreateCylinder('shade', {
+          diameterTop: 0.12, diameterBottom: 3.6, height: 0.75, tessellation: 8,
+        }, scene);
+        shade.position.set(px - (alongX ? 1.5 : 0), 2.3, pz - (alongX ? 0 : 1.5));
+        shade.material = towelMats[(k + 2) % towelMats.length];
+      }
+    };
+    // People come to a beach in twos and threes, not evenly spaced, so the
+    // shore gets clusters with quiet stretches between them.
+    let bather = 0;
+    const sandMid = rim + sandW * 0.5;
+    const cluster = (cx, cz, alongX) => {
+      const n = 2 + (rand() * 3 | 0);
+      for (let k = 0; k < n; k++) {
+        const a = (rand() - 0.5) * 13, b = (rand() - 0.5) * 11;
+        sunbather(cx + (alongX ? a : b), cz + (alongX ? b : a), alongX, bather++);
+      }
+    };
+    for (const cz0 of [-sandMid, ext.z + sandMid]) {
+      for (let x = 24; x < ext.x - 24; x += 34 + rand() * 40) {
+        cluster(x, cz0 + (rand() - 0.5) * sandW * 0.3, true);
+      }
+    }
+    for (const cx0 of [-sandMid, ext.x + sandMid]) {
+      for (let z = 24; z < ext.z - 24; z += 34 + rand() * 40) {
+        cluster(cx0 + (rand() - 0.5) * sandW * 0.3, z, false);
+      }
     }
   }
 
@@ -524,5 +760,5 @@ export function buildCity(scene, net, mirror) {
     roadworks.push({ e, dir: 1, lane, s0: s0 - 6, s1: s1 + 3 });
   }
 
-  return { glow, stations, roadworks };
+  return { glow, stations, roadworks, surf };
 }

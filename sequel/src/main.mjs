@@ -26,7 +26,7 @@ import { GRID, CELL, buildNetwork, CLASSES } from './network.mjs';
 import { buildCity } from './citygen.mjs';
 import { Driver } from './driver.mjs';
 import { Hud } from './hud.mjs';
-import { Mission } from './mission.mjs';
+import { Mission, OFFENCES } from './mission.mjs';
 import { Signals } from './lights.mjs';
 import { Peds } from './peds.mjs';
 import { Coast } from './outrun.mjs';
@@ -193,7 +193,8 @@ function tileAt(x, z) {
 {
   const MERGE = new Set(['rd', 'wk', 'kb', 'sl', 'el', 'ml', 'b', 'sg',
                          'pad', 'pump', 'sand', 'sea', 'gp', 'gpan',
-                         'cone', 'barr', 'pole']);
+                         'cone', 'barr', 'pole', 'dk', 'prp', 'dd', 'pier',
+                         'twl', 'bod', 'parapole', 'shade']);
   // Where each merged mesh sits has to be worked out from the meshes going
   // into it. A merged mesh's world bounding box is not computed until it is
   // first rendered, so reading it here hands back zeroes and files half the
@@ -229,6 +230,10 @@ function tileAt(x, z) {
                            'dsky', 'sun', 'g', 'static', 'car']);
   for (const msh of scene.meshes) {
     if (DYNAMIC.has(msh.name) || !msh.material || !msh.isEnabled(false)) continue;
+    // Same rule as the merged geometry: anything longer than a couple of
+    // districts (the surf, for one) belongs to none of them.
+    const ext = msh.getBoundingInfo().boundingBox.extendSize;
+    if (Math.max(ext.x, ext.z) * 2 > TILE * 2.5) { globalStatics.push(msh); continue; }
     tileAt(msh.position.x, msh.position.z).meshes.push(msh);
   }
   // Rebuild the mirror list: merged statics, live car parts, the sun.
@@ -532,12 +537,17 @@ function coastSkyTexture() {
   dt.update();
   return dt;
 }
+// One cylinder, not four walls: a box of sky planes has four corners, and
+// out on the open coast where nothing occludes the horizon you can see
+// every one of them as a hard vertical seam. A cylinder has none, is one
+// mesh instead of four, and takes the same gradient.
 const daySkies = [];
-for (const [rx, rz, ry] of [[mid, mid + 1240, 0], [mid, mid - 1240, Math.PI],
-                            [mid + 1240, mid, -Math.PI / 2], [mid - 1240, mid, Math.PI / 2]]) {
-  const p = MeshBuilder.CreatePlane('dsky', { width: 3400, height: 800 }, scene);
-  p.position.set(rx, 260, rz);
-  p.rotation.y = ry;
+{
+  const p = MeshBuilder.CreateCylinder('dsky', {
+    diameter: 2560, height: 820, tessellation: 40,
+    cap: Mesh.NO_CAP, sideOrientation: Mesh.BACKSIDE,
+  }, scene);
+  p.position.set(mid, 270, mid);
   const dm = new StandardMaterial('dskym', scene);
   dm.emissiveTexture = coastSkyTexture();
   dm.disableLighting = true;
@@ -591,33 +601,36 @@ function firePlayerGun(dt) {
   const mx = player.pos.x + fx * 2.4, mz = player.pos.z + fz * 2.4;
   // Nearest thing inside a tight forward cone, out to 65 m.
   let best = null, bestD = 65, bestKind = null;
-  const consider = (obj, x, z, kind) => {
+  const consider = (obj, x, z, kind, y) => {
+    if (Math.abs((y || 0) - player.pos.y) > 3) return;   // not on your level
     const dx = x - mx, dz = z - mz;
     const d = Math.hypot(dx, dz);
     if (d > bestD || d < 1) return;
     const ang = Math.abs(wrapA(Math.atan2(dx, dz) - player.pos.yaw));
     if (ang < 0.09) { best = obj; bestD = d; bestKind = kind; }
   };
-  consider(mission.target, mission.target.pos.x, mission.target.pos.z, 'target');
-  for (const p of mission.police) consider(p, p.pos.x, p.pos.z, 'police');
-  for (const d of traffic) consider(d, d.pos.x, d.pos.z, 'traffic');
+  const T = mission.target;
+  consider(T, T.pos.x, T.pos.z, 'target', T.pos.y);
+  for (const p of mission.police) consider(p, p.pos.x, p.pos.z, 'police', p.pos.y);
+  for (const d of traffic) consider(d, d.pos.x, d.pos.z, 'traffic', d.pos.y);
   for (const p of peds.list) {
     if (p.state === 'down') continue;
     const pp = peds.posOf(p);
-    consider(p, pp.x, pp.z, 'ped');
+    consider(p, pp.x, pp.z, 'ped', 0);
   }
   const hx = mx + fx * bestD, hz = mz + fz * bestD;
-  showTracer(mx, mz, hx, hz, 0.8);
+  showTracer(mx, mz, hx, hz, player.pos.y + 0.8);
   if (!best) return;
   if (bestKind === 'target') {
     mission.damageTarget(0.5, player);
     run.score += 25;
   } else if (bestKind === 'police') {
-    mission.bumpWanted(2, 'SHOTS FIRED AT POLICE');
+    const o = OFFENCES.shooting;
+    mission.bumpWanted(o.stars, o.why, o.cap);
   } else if (bestKind === 'traffic') {
     best.gunHp = (best.gunHp ?? 3) - 1;
     if (best.gunHp <= 0 && !best.shotOut) { best.shotOut = true; best.speed = 0; }
-    mission.witnessed(1, player, true);
+    mission.witnessed('gunfire', player, true);
   } else if (bestKind === 'ped') {
     best.state = 'down'; best.downT = 0;
     best.root.rotation.x = Math.PI / 2; best.root.position.y = 0.2;
@@ -691,6 +704,9 @@ function updateCollisions(dt, clock) {
     for (let j = i + 1; j < everyone.length; j++) {
       const a = everyone[i], b = everyone[j];
       const dx = a.pos.x - b.pos.x, dz = a.pos.z - b.pos.z;
+      // Nine metres of fresh air is not a collision: the deck and the street
+      // below it share every x and z in the city.
+      if (Math.abs(a.pos.y - b.pos.y) > 3) continue;
       const d2 = dx * dx + dz * dz;
       if (d2 > 14 * 14) continue;
       // Car-following: an AI close behind in the same lane slows to match.
@@ -830,7 +846,7 @@ const tick = (dt) => {
     }
   }
 
-  playerCar.root.position.set(player.pos.x, 0, player.pos.z);
+  playerCar.root.position.set(player.pos.x, player.pos.y, player.pos.z);
   playerCar.root.rotation.y = player.pos.yaw;
   const blink = safe.reduceFlash || Math.sin(clock * 9) > 0;
   playerCar.indL.setEnabled(player.indicator === -1 && blink);
@@ -839,7 +855,7 @@ const tick = (dt) => {
   for (const d of traffic) {
     d.update(dt, aiInput(d, dt, clock));
     if (d.blocked) d.beginUTurn();
-    d.car.root.position.set(d.pos.x, 0, d.pos.z);
+    d.car.root.position.set(d.pos.x, d.pos.y, d.pos.z);
     d.car.root.rotation.y = d.pos.yaw;
     const b2 = safe.reduceFlash || Math.sin(clock * 9 + d.ai.cruise * 20) > 0;
     d.car.indL.setEnabled(d.indicator === -1 && b2);
@@ -863,7 +879,7 @@ const tick = (dt) => {
 
   // Player over a pedestrian at speed: the city notices.
   if (player.speed > 4) {
-    const victim = peds.hitCheck(player.pos.x, player.pos.z);
+    const victim = player.pos.y < 2 ? peds.hitCheck(player.pos.x, player.pos.z) : null;
     if (victim) {
       run.score = Math.max(0, run.score - 150);
       shake = Math.max(shake, 0.5);
@@ -876,7 +892,7 @@ const tick = (dt) => {
     if (playerPrev.e === player.e && playerPrev.dir === player.dir &&
         signals.ranRed(player.e, player.dir, playerPrev.s, player.s, clock)) {
       run.score += 15;
-      mission.witnessed(1, player, true);
+      mission.witnessed('redLight', player, true);
     }
     playerPrev.e = player.e; playerPrev.dir = player.dir; playerPrev.s = player.s;
   }
@@ -884,7 +900,8 @@ const tick = (dt) => {
   if (player.speed > CLASSES[player.e.cls].limit * 1.5 &&
       mission.nearestPoliceDist(player) < 22 && clock > speedTattleT) {
     speedTattleT = clock + 12;
-    mission.bumpWanted(1, 'CLOCKED SPEEDING');
+    const o = OFFENCES.speeding;
+    mission.bumpWanted(o.stars, o.why, o.cap);
   }
 
   // Roadworks: AI threads round the cones; the player just hits them.
@@ -905,7 +922,7 @@ const tick = (dt) => {
   // AI shots land as health damage, dodgeable by speed.
   mission.update(dt, player, clock);
   for (const sh of mission.shots) {
-    showTracer(sh.from.x, sh.from.z, sh.to.x, sh.to.z, 0.9);
+    showTracer(sh.from.x, sh.from.z, sh.to.x, sh.to.z, player.pos.y + 0.9);
     const dodge = Math.min(0.75, player.speed / 45);
     if (Math.random() > dodge) {
       run.health -= sh.hurt;
@@ -924,14 +941,14 @@ const tick = (dt) => {
   const k = Math.min(1, dt * 5.5);
   cam.position.x += (cx - cam.position.x) * k;
   cam.position.z += (cz - cam.position.z) * k;
-  cam.position.y += (4.4 + player.speed * 0.05 - cam.position.y) * k;
+  cam.position.y += (player.pos.y + 4.4 + player.speed * 0.05 - cam.position.y) * k;
   if (shake > 0) {
     cam.position.x += (Math.random() - 0.5) * shake * 0.7;
     cam.position.y += (Math.random() - 0.5) * shake * 0.5;
   }
   cam.setTarget(new Vector3(
     player.pos.x + Math.sin(player.pos.yaw) * 7,
-    1.2,
+    player.pos.y + 1.2,
     player.pos.z + Math.cos(player.pos.yaw) * 7));
 
   // ---- the morph: city night <-> coast daylight ------------------------
@@ -978,6 +995,14 @@ const tick = (dt) => {
     mirror.refreshRate = v > 0.5 ? 4 : 2;
   }
 
+  // The surf marches at the sand. Only worth paying for when you can see
+  // it, so it stops dead while the city is dark.
+  if (vibe > 0.02) {
+    for (const b of cityBits.surf) {
+      if (b.alongX) b.tex.vOffset = (b.tex.vOffset + b.speed * dt) % 1;
+      else b.tex.uOffset = (b.tex.uOffset + b.speed * dt) % 1;
+    }
+  }
   updateDistricts(player.pos.x, player.pos.z);
   coast.update(dt, player, clock, mission.wanted);
   sound.update(dt, Math.min(1, player.speed / 55), turbo.active, mission.wanted > 0);
@@ -995,6 +1020,8 @@ const tick = (dt) => {
     beaconMats[bi].emissiveColor.set(on ? 0.4 : 1.8, on ? 0.6 : 0.15, on ? 2.2 : 0.15);
   }
   starsEl.textContent = mission.wanted > 0 ? '★'.repeat(mission.wanted) : '';
+  // Say what the stars are FOR, for as long as you have them.
+  whyEl.textContent = mission.wanted > 0 ? (mission.lastReason || '') : '';
   scoreEl.textContent = String(Math.round(run.score)).padStart(6, '0');
   healthBar.style.width = Math.max(0, run.health) + '%';
 
@@ -1126,6 +1153,7 @@ const tgtEl = document.getElementById('tgt');
 const tgtdEl = document.getElementById('tgtd');
 const tgtBox = document.getElementById('tgtbox');
 const starsEl = document.getElementById('stars');
+const whyEl = document.getElementById('whywanted');
 const scoreEl = document.getElementById('score');
 const healthBar = document.getElementById('health');
 // The counter says what KIND of slow it is, not just that it is slow: draw

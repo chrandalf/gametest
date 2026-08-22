@@ -39,9 +39,12 @@ export class Hud {
       const [ax, ay] = this.worldToMap(e.a.x, e.a.z);
       const [bx, by] = this.worldToMap(e.b.x, e.b.z);
       c.strokeStyle = e.cls === 'highway' ? 'rgba(255, 80, 200, 0.9)'
+                    : e.cls === 'express' ? 'rgba(120, 200, 255, 0.95)'
+                    : e.cls === 'ramp' ? 'rgba(255, 200, 90, 0.9)'
                     : e.cls === 'avenue' ? 'rgba(90, 255, 210, 0.85)'
                     : 'rgba(60, 190, 140, 0.55)';
-      c.lineWidth = e.cls === 'highway' ? 3 : e.cls === 'avenue' ? 2 : 1;
+      c.lineWidth = e.cls === 'highway' || e.cls === 'express' ? 3
+                  : e.cls === 'avenue' || e.cls === 'ramp' ? 2 : 1;
       c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
     }
     // Petrol stations: green squares, always on.

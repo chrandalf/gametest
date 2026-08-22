@@ -10,7 +10,10 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { CLASSES, nodeAhead, headingSlot, turnOptions } from './network.mjs';
 import { Driver } from './driver.mjs';
 
-const dist = (a, b) => Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z);
+// Distance that knows about the deck: a cruiser on the expressway is not
+// nine metres from a car on the street below it, it is out of reach.
+const dist = (a, b) => Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z) +
+                       Math.abs((a.pos.y || 0) - (b.pos.y || 0)) * 6;
 
 function chooseTurn(d, tx, tz, flee) {
   const node = nodeAhead(d.e, d.dir);
@@ -29,6 +32,17 @@ function quadrantName(x, z, ext) {
   return `${z > ext.z / 2 ? 'NORTH' : 'SOUTH'}-${x > ext.x / 2 ? 'EAST' : 'WEST'}`;
 }
 
+// Every way to earn a star, what it is called, and how far it can take you.
+export const OFFENCES = {
+  speeding: { stars: 1, cap: 2, why: 'SPEEDING PAST A PATROL' },
+  redLight: { stars: 1, cap: 2, why: 'RAN A RED LIGHT' },
+  ramming:  { stars: 1, cap: 4, why: 'RAMMING CARS OFF THE ROAD' },
+  assault:  { stars: 1, cap: 4, why: 'RAMMED A PATROL CAR' },
+  shooting: { stars: 2, cap: 4, why: 'SHOOTING IN THE STREET' },
+  gunfire:  { stars: 1, cap: 4, why: 'SHOOTING AT TRAFFIC' },
+  killing:  { stars: 3, cap: 5, why: 'KILLED A PEDESTRIAN' },
+};
+
 export class Mission {
   constructor(scene, net, buildCar, hud) {
     this.scene = scene;
@@ -40,6 +54,7 @@ export class Mission {
     this.doneT = 0;
     this.cleanHands = true;
     this.wanted = 0;
+    this.lastReason = '';
     this.witness = 0;                // civilian heat: boils over into a star
     this.witnessT = 0;
     this.unseenT = 0;
@@ -109,23 +124,41 @@ export class Mission {
     return d;
   }
 
-  bumpWanted(n, reason) {
+  // What you did, how far it can take you, and what the HUD calls it.
+  // Traffic offences are traffic offences: they will never make you a
+  // five-star problem. Violence will, but only killing goes all the way.
+  bumpWanted(n, reason, cap) {
     const before = this.wanted;
-    this.wanted = Math.max(0, Math.min(5, this.wanted + n));
+    let next = this.wanted + n;
+    if (n > 0 && cap !== undefined) next = Math.min(next, Math.max(this.wanted, cap));
+    this.wanted = Math.max(0, Math.min(5, next));
     if (this.wanted !== before) {
       this.ensurePolice();
-      if (n > 0) this.hud.say(`${reason} · WANTED ${'★'.repeat(this.wanted)}`);
+      if (n > 0) {
+        this.lastReason = reason;
+        const atCap = cap !== undefined && this.wanted >= cap;
+        this.hud.say(`${reason} · WANTED ${'★'.repeat(this.wanted)}` +
+                     (atCap ? ` · ${cap}★ IS THE MOST THIS EARNS` : ''));
+      }
       this.unseenT = 0;
+    } else if (n > 0 && cap !== undefined && this.wanted >= cap) {
+      // Say why nothing happened, so the ceiling is legible rather than a
+      // bug the player has to guess at.
+      this.hud.say(`${reason} · NO EXTRA HEAT — THAT TOPS OUT AT ${cap}★`);
     }
   }
 
-  // Something naughty happened. Police eyes act now; civilians phone it in.
-  witnessed(severity, player, pedsNear) {
+  // Something naughty happened. Police eyes act now; civilians phone it in,
+  // which is slower and never quite as damning.
+  witnessed(kind, player, pedsNear) {
+    const o = OFFENCES[kind];
     if (this.nearestPoliceDist(player) < 55) {
-      this.bumpWanted(severity, severity >= 3 ? 'THEY SAW THAT' : 'POLICE SAW YOU');
+      this.bumpWanted(o.stars, `POLICE SAW IT · ${o.why}`, o.cap);
       this.cleanHands = false;
     } else if (pedsNear) {
-      this.witness += severity;
+      this.witness += o.stars;
+      this.witnessCap = Math.max(this.witnessCap || 0, o.cap);
+      this.witnessWhy = o.why;
       if (this.witnessT <= 0) this.witnessT = 12;
     }
   }
@@ -135,21 +168,25 @@ export class Mission {
     if (other === this.target && this.state !== 'done') {
       if (speed > 6) this.damageTarget(1, player);
     } else if (this.police.includes(other)) {
-      this.bumpWanted(1, 'ASSAULT ON AN OFFICER');
+      const o = OFFENCES.assault;
+      this.bumpWanted(o.stars, o.why, o.cap);
       this.cleanHands = false;
     } else if (speed > 8) {
-      this.witnessed(1, player, pedsNear);
+      this.witnessed('ramming', player, pedsNear);
     }
   }
 
   onPedHit(player, byPlayer) {
     if (!byPlayer) return;
-    // Running someone over in front of the law is a three-star crime.
+    // The only thing in the city that can make you a five-star problem.
+    const o = OFFENCES.killing;
     if (this.nearestPoliceDist(player) < 55) {
-      this.bumpWanted(3, 'HIT AND RUN, WITNESSED');
+      this.bumpWanted(o.stars, o.why, o.cap);
       this.cleanHands = false;
     } else {
       this.witness += 2;
+      this.witnessCap = Math.max(this.witnessCap || 0, o.cap);
+      this.witnessWhy = o.why;
       if (this.witnessT <= 0) this.witnessT = 10;
     }
   }
@@ -193,8 +230,11 @@ export class Mission {
     if (this.witnessT > 0) {
       this.witnessT -= dt;
       if (this.witnessT <= 0 && this.witness > 0) {
-        this.bumpWanted(Math.min(2, Math.ceil(this.witness / 3)), 'SOMEONE CALLED IT IN');
+        this.bumpWanted(Math.min(2, Math.ceil(this.witness / 3)),
+                        `A WITNESS CALLED IT IN · ${this.witnessWhy || 'SOMETHING YOU DID'}`,
+                        this.witnessCap);
         this.witness = 0;
+        this.witnessCap = 0;
       }
     }
     // Lying low: a long minute out of police sight sheds a star.
@@ -295,7 +335,7 @@ export class Mission {
         p.bustT += dt;
         if (p.bustT > 2.5) this.busted = true;
       } else p.bustT = 0;
-      p.car.root.position.set(p.pos.x, 0, p.pos.z);
+      p.car.root.position.set(p.pos.x, p.pos.y, p.pos.z);
       p.car.root.rotation.y = p.pos.yaw;
     }
 
@@ -310,7 +350,7 @@ export class Mission {
         this.announce();
       }
     }
-    this.targetCar.root.position.set(t.pos.x, 0, t.pos.z);
+    this.targetCar.root.position.set(t.pos.x, t.pos.y, t.pos.z);
     this.targetCar.root.rotation.y = t.pos.yaw;
   }
 

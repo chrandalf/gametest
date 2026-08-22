@@ -20,7 +20,9 @@ export class Peds {
       m.disableLighting = true;
       return m;
     });
-    const edges = net.edges.filter(e => e.cls !== 'highway');
+    // No pavements on the ring road, and none in the sky.
+    const edges = net.edges.filter(e =>
+      e.cls === 'street' || e.cls === 'avenue');
     for (let k = 0; k < count; k++) {
       const e = edges[(k * 41) % edges.length];
       const root = MeshBuilder.CreateBox('ped', { width: 0.5, height: 1.1, depth: 0.34 }, scene);

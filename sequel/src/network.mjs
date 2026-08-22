@@ -25,11 +25,18 @@ function mulberry(seed) {
 //   street:  1 lane each way   - the small roads
 //   avenue:  2 lanes each way  - the through routes
 //   highway: 3 lanes each way  - the ring road, no lights, high speed
+//   express: 3 lanes each way, up on the deck - the elevated expressway
+//   ramp:    1 lane each way, the slip road that climbs to it
 export const CLASSES = {
   street:  { lanesPer: 1, laneW: 3.4, limit: 14, colour: [0.30, 0.95, 1.40] },
   avenue:  { lanesPer: 2, laneW: 3.4, limit: 19, colour: [0.30, 0.95, 1.40] },
   highway: { lanesPer: 3, laneW: 3.7, limit: 30, colour: [1.45, 0.30, 0.95] },
+  express: { lanesPer: 3, laneW: 3.5, limit: 34, colour: [0.35, 0.80, 1.70] },
+  ramp:    { lanesPer: 1, laneW: 3.8, limit: 16, colour: [1.60, 0.85, 0.20] },
 };
+
+// How high the deck flies.
+export const DECK_Y = 9.5;
 
 export function halfWidth(cls) {
   const c = CLASSES[cls];
@@ -49,7 +56,7 @@ export function buildNetwork() {
   const nodes = [];
   for (let j = 0; j < GRID; j++) {
     for (let i = 0; i < GRID; i++) {
-      nodes.push({ i, j, x: xs[i], z: zs[j], edges: [null, null, null, null] });
+      nodes.push({ i, j, x: xs[i], z: zs[j], y: 0, edges: [null, null, null, null] });
     }
   }
   const at = (i, j) => (i < 0 || j < 0 || i >= GRID || j >= GRID) ? null : nodes[j * GRID + i];
@@ -85,10 +92,119 @@ export function buildNetwork() {
     }
   }
 
+  // ---- the expressway: two elevated decks crossing above the city -----
+  // A second layer of nodes, directly above the middle row and the middle
+  // column, sharing one junction in the centre. It is the same grammar the
+  // whole game runs on - indicate, commit, arc - only nine metres up, so
+  // traffic, the police and the map all understand it for free.
+  //
+  // Slip roads are the interesting part. A node carries one edge per
+  // compass direction, so a ramp cannot simply be bolted onto a junction
+  // that is already a crossroads; instead each ramp TAKES OVER the street
+  // corridor it climbs, replacing that street. Nothing ever has to cross
+  // anything else at the same height, and the deck stays the only thing
+  // bridging over the city.
+  const degree = (n) => n.edges.filter(Boolean).length;
+  const DI = Math.floor(GRID / 2), DJ = Math.floor(GRID / 2);
+  const DECK_FROM = 2, DECK_TO = GRID - 3;
+  const deck = new Map();
+  const upperOf = (i, j) => {
+    const k = i + ':' + j;
+    let n = deck.get(k);
+    if (!n) {
+      const g = at(i, j);
+      n = { i, j, x: g.x, z: g.z, y: DECK_Y, up: true, ground: g,
+            edges: [null, null, null, null] };
+      deck.set(k, n);
+      nodes.push(n);
+    }
+    return n;
+  };
+  const link = (a, b, axis, cls) => {
+    const e = { id: edges.length, a, b, axis, cls,
+                len: axis === 0 ? b.x - a.x : b.z - a.z };
+    edges.push(e);
+    a.edges[axis === 0 ? 0 : 2] = e;
+    b.edges[axis === 0 ? 1 : 3] = e;
+    return e;
+  };
+  for (let i = DECK_FROM; i < DECK_TO; i++) {
+    link(upperOf(i, DJ), upperOf(i + 1, DJ), 0, 'express');
+  }
+  for (let j = DECK_FROM; j < DECK_TO; j++) {
+    link(upperOf(DI, j), upperOf(DI, j + 1), 1, 'express');
+  }
+
+  // A slip road climbs two blocks, which is a grade you can drive rather
+  // than a wall, and it TAKES OVER that street corridor entirely - the
+  // streets underneath it are removed, so nothing is ever buried under a
+  // ramp and the deck stays the only thing bridging over the city.
+  const killEdge = (e) => {
+    e.dead = true;
+    e.a.edges[e.axis === 0 ? 0 : 2] = null;
+    e.b.edges[e.axis === 0 ? 1 : 3] = null;
+  };
+  const reviveEdge = (e) => {
+    e.dead = false;
+    e.a.edges[e.axis === 0 ? 0 : 2] = e;
+    e.b.edges[e.axis === 0 ? 1 : 3] = e;
+  };
+  const allConnected = () => {
+    const seen = new Set([nodes[0]]);
+    const q = [nodes[0]];
+    while (q.length) {
+      const n = q.pop();
+      for (const e of n.edges) {
+        if (!e || e.dead) continue;
+        const m = e.a === n ? e.b : e.a;
+        if (!seen.has(m)) { seen.add(m); q.push(m); }
+      }
+    }
+    return seen.size === nodes.length;
+  };
+  const slipRoad = (axis, fixed, kGround, kDeck) => {
+    const lo = Math.min(kGround, kDeck), hi = Math.max(kGround, kDeck);
+    const corridor = [];
+    for (let k = lo; k < hi; k++) {
+      const n = axis === 0 ? at(k, fixed) : at(fixed, k);
+      const e = n.edges[axis === 0 ? 0 : 2];
+      if (!e || e.dead) continue;
+      if (e.cls !== 'street' && e.cls !== 'avenue') return null;   // never the ring
+      corridor.push(e);
+    }
+    const g = axis === 0 ? at(kGround, fixed) : at(fixed, kGround);
+    const u = axis === 0 ? upperOf(kDeck, fixed) : upperOf(fixed, kDeck);
+    const a = kGround < kDeck ? g : u, b = kGround < kDeck ? u : g;
+    const sa = axis === 0 ? 0 : 2, sb = axis === 0 ? 1 : 3;
+    corridor.forEach(killEdge);
+    if (a.edges[sa] || b.edges[sb]) { corridor.forEach(reviveEdge); return null; }
+    const e = link(a, b, axis, 'ramp');
+    if (!allConnected()) {
+      edges.pop();
+      a.edges[sa] = null; b.edges[sb] = null;
+      corridor.forEach(reviveEdge);
+      return null;
+    }
+    return e;
+  };
+  const ramps = [];
+  // Both ends of both decks come down to the ring, so the expressway is
+  // always enterable and never a dead end in the sky.
+  ramps.push(slipRoad(0, DJ, 0, DECK_FROM));
+  ramps.push(slipRoad(0, DJ, GRID - 1, DECK_TO));
+  ramps.push(slipRoad(1, DI, 0, DECK_FROM));
+  ramps.push(slipRoad(1, DI, GRID - 1, DECK_TO));
+  // Mid-city slips: off the side of each deck, two blocks down to a street.
+  for (const i of [DI - 2, DI + 2]) {
+    if (i >= DECK_FROM && i <= DECK_TO) ramps.push(slipRoad(1, i, DJ + 2, DJ));
+  }
+  for (const j of [DJ - 2, DJ + 2]) {
+    if (j >= DECK_FROM && j <= DECK_TO) ramps.push(slipRoad(0, j, DI + 2, DI));
+  }
+
   // Now make it a CITY, not graph paper: delete a share of the streets,
   // creating T-junctions, long blocks and genuine dead ends - but never
   // disconnect the map, and never touch the ring or the avenues.
-  const degree = (n) => n.edges.filter(Boolean).length;
   const connectedWithout = (dead) => {
     const seen = new Set([nodes[0]]);
     const q = [nodes[0]];
@@ -102,7 +218,7 @@ export function buildNetwork() {
     }
     return seen.size === nodes.length;
   };
-  const streets = edges.filter(e => e.cls === 'street');
+  const streets = edges.filter(e => e.cls === 'street' && !e.dead);
   // Shuffle, then try to kill ~a quarter of them.
   for (let k = streets.length - 1; k > 0; k--) {
     const r = (rand() * (k + 1)) | 0;
@@ -123,7 +239,8 @@ export function buildNetwork() {
   }
   const live = edges.filter(e => !e.dead);
   live.forEach((e, i) => { e.id = i; });
-  return { nodes, edges: live, at, xs, zs,
+  return { nodes, edges: live, at, xs, zs, deckY: DECK_Y,
+           ramps: ramps.filter(Boolean),
            extent: { x: xs[GRID - 1], z: zs[GRID - 1] } };
 }
 
@@ -135,12 +252,22 @@ export function lanePos(e, dir, lane, s) {
   const c = CLASSES[e.cls];
   // Offset from centreline toward this direction's side (left-hand traffic).
   const off = (0.9 + (lane + 0.5) * c.laneW) * dir;
+  // Height ramps linearly from end to end, so a slip road is just an edge
+  // whose ends are at different heights.
+  const t = e.len > 0 ? (dir > 0 ? s / e.len : 1 - s / e.len) : 0;
+  const y = e.a.y + (e.b.y - e.a.y) * Math.max(0, Math.min(1, t));
   if (e.axis === 0) {
     const x = dir > 0 ? e.a.x + s : e.b.x - s;
-    return { x, z: e.a.z + off, yaw: dir > 0 ? Math.PI / 2 : -Math.PI / 2 };
+    return { x, y, z: e.a.z + off, yaw: dir > 0 ? Math.PI / 2 : -Math.PI / 2 };
   }
   const z = dir > 0 ? e.a.z + s : e.b.z - s;
-  return { x: e.a.x - off, z, yaw: dir > 0 ? 0 : Math.PI };
+  return { x: e.a.x - off, y, z, yaw: dir > 0 ? 0 : Math.PI };
+}
+
+// Height of an edge's deck at a point along it, ignoring direction.
+export function edgeY(e, sFromA) {
+  const t = e.len > 0 ? Math.max(0, Math.min(1, sFromA / e.len)) : 0;
+  return e.a.y + (e.b.y - e.a.y) * t;
 }
 
 // The node a traveller on (e, dir) is heading toward / came from.
