@@ -143,6 +143,8 @@ for (const [seed, dz, y, col] of [[1.7, 1180, 70, '#241040'], [4.2, 1120, 50, '#
 const mirror = new MirrorTexture('mir', 512, scene, true);
 mirror.mirrorPlane = new Plane(0, -1, 0, 0);
 mirror.level = 0.8;
+// Every other frame is plenty for a reflection that lives in car paint.
+mirror.refreshRate = 2;
 mirror.renderList.push(sun);
 
 const cityBits = buildCity(scene, net, mirror);
@@ -325,9 +327,11 @@ for (const [rx, rz, ry] of [[mid, mid + 1240, 0], [mid, mid - 1240, Math.PI],
   dm.disableLighting = true;
   p.material = dm;
   p.visibility = 0;
+  p.setEnabled(false);
   daySkies.push(p);
 }
 let vibe = 0;
+let vibeStep = 0;
 
 // The run: score, health, and how it ends.
 const run = { score: 0, health: 100, over: false, reason: '', time: 0, started: false, saved: false };
@@ -517,9 +521,24 @@ function updateCollisions(dt, clock) {
 }
 
 // ---------------------------------------------------------------- post ----
-new GlowLayer('glow', scene, { intensity: 0.55 });
+// Measured on the coast, the glow layer was a third of the whole frame: it
+// was rendering every emissive surface at half screen and blurring it twice
+// with a 32-tap kernel. Glow is a blurry effect by definition, so a smaller
+// buffer and a shorter kernel cost a third as much and look the same.
+const glowLayer = new GlowLayer('glow', scene,
+  { intensity: 0.55, mainTextureRatio: 0.3, blurKernelSize: 24 });
+// The glow layer redraws every emissive surface into a blur target. The neon
+// wants that; the sky walls, the ridges and the beach do not - they are the
+// four biggest surfaces in the game and they were being drawn a second time,
+// full screen, every frame. Their emissive is flat lift, not neon.
+for (const p of [...nightSkies, ...daySkies]) glowLayer.addExcludedMesh(p);
+for (const msh of scene.meshes) {
+  const mn = msh.material && msh.material.name;
+  if (mn === 'sand' || mn === 'sea') glowLayer.addExcludedMesh(msh);
+}
 const pipe = new DefaultRenderingPipeline('pp', true, scene, [cam]);
 pipe.bloomEnabled = true; pipe.bloomThreshold = 0.8; pipe.bloomWeight = 0.4;
+pipe.bloomScale = 0.4;
 pipe.chromaticAberrationEnabled = true; pipe.chromaticAberration.aberrationAmount = 14;
 pipe.grainEnabled = true; pipe.grain.intensity = 8; pipe.grain.animated = true;
 pipe.imageProcessing.vignetteEnabled = true;
@@ -701,23 +720,43 @@ const tick = (dt) => {
   const wantVibe = (player.e && player.e.cls === 'highway') ? 1
     : (player.mode === 'turn' ? vibe : 0);
   vibe += (wantVibe - vibe) * Math.min(1, dt * 0.55);
+  // An exponential fade never arrives, so snap the last hair of it. Without
+  // this the coast sits at vibe 0.999... forever and everything below keeps
+  // being treated as a change.
+  if (Math.abs(wantVibe - vibe) < 0.005) vibe = wantVibe;
+  // Free per frame: these are plain uniforms, nothing downstream rebuilds.
   hemi.intensity = 0.22 + vibe * 0.5;
   hemi.diffuse.set(0.45 + vibe * 0.3, 0.35 + vibe * 0.37, 0.75 + vibe * 0.1);
   hemi.groundColor.set(0.05 + vibe * 0.3, 0.02 + vibe * 0.26, 0.1 + vibe * 0.1);
   scene.clearColor.set(0.012 + vibe * 0.09, 0.006 + vibe * 0.31,
                        0.035 + vibe * 0.52, 1);
-  // Only pay for the sky you can actually see: outside the short morph,
-  // one full set of sky walls is switched off entirely.
-  const dayOn = vibe > 0.02, nightOn = vibe < 0.98;
-  for (const p of daySkies) {
-    p.setEnabled(dayOn);
-    p.visibility = vibe >= 0.98 ? 1 : vibe;
-  }
-  for (const p of nightSkies) p.setEnabled(nightOn);
   sunM.emissiveColor.set(1 + vibe * 0.25, 1 + vibe * 0.05, 1 - vibe * 0.25);
   sun.scaling.setAll(1 + vibe * 0.4);
-  pipe.imageProcessing.exposure = 1.05 + vibe * 0.22;
-  pipe.imageProcessing.contrast = 1.3 - vibe * 0.12;
+
+  // Expensive per frame: touching the image processing configuration flags
+  // EVERY submesh in the scene as image-processing-dirty, so the next frame
+  // re-prepares ~850 define sets before it can draw. Mesh enable and
+  // visibility flags cost a state pass of their own. Those only move on a
+  // sixteenth of the fade, which is invisible over a three second morph and
+  // stops dead the moment the fade lands on 0 or 1.
+  const step = Math.round(vibe * 16);
+  if (step !== vibeStep) {
+    vibeStep = step;
+    const v = step / 16;
+    // Only pay for the sky you can actually see: outside the short morph,
+    // one full set of sky walls is switched off entirely.
+    const dayOn = v > 0.02, nightOn = v < 0.98;
+    for (const p of daySkies) {
+      p.setEnabled(dayOn);
+      p.visibility = v >= 0.98 ? 1 : v;
+    }
+    for (const p of nightSkies) p.setEnabled(nightOn);
+    pipe.imageProcessing.exposure = 1.05 + v * 0.22;
+    pipe.imageProcessing.contrast = 1.3 - v * 0.12;
+    // The car paint's planar reflection is worth its cost among neon towers.
+    // On the coast it reflects sky, so it can crawl.
+    mirror.refreshRate = v > 0.5 ? 4 : 2;
+  }
 
   coast.update(dt, player, clock, mission.wanted);
   sound.update(dt, Math.min(1, player.speed / 55), turbo.active, mission.wanted > 0);
@@ -767,7 +806,8 @@ window.game = { player, traffic, net, hud, tick, mission, coast };
     'FIND THE BLACK COUPE · RAM OR SHOOT IT · DODGE THE LAW\n' +
     'W/S DRIVE · A/D LANES · Q/E INDICATE (HOLD FOR U-TURN)\n' +
     'SPACE FIRE · SHIFT TURBO · GREEN SQUARES SELL PETROL\n' +
-    'THE RING ROAD IS THE COAST — GO SEE IT\n\n' + rows;
+    'THE RING ROAD IS THE COAST — GO SEE IT\n' +
+    'M MUSIC · X NEXT TRACK · G GRAPHICS QUALITY\n\n' + rows;
 }
 addEventListener('keydown', (e) => {
   if (!run.started && e.code === 'Enter') {
@@ -780,25 +820,48 @@ addEventListener('keydown', (e) => {
     hud.say(sound.toggle() ? 'SOUND ON' : 'SOUND OFF');
   }
   if (e.code === 'KeyX' && sound.started) sound.next();
+  if (e.code === 'KeyG') {
+    quality.manual = true;
+    scaleStep = (scaleStep + 1) % 4;
+    applyQuality();
+    hud.say('GRAPHICS · ' + QNAME[scaleStep]);
+  }
 });
 
 // Auto quality: when the frame rate sags, render smaller and stretch -
 // the neon look survives a soft frame far better than a 9 fps one.
+// Three rungs, because a fill-bound frame is not only about resolution: the
+// grain and the chromatic aberration are two more full-screen passes, and
+// on a struggling machine they cost more than they are worth.
 let scaleStep = 0, scaleGoodT = 0, scaleBadT = 0;
+// G pins a rung by hand. Once you have pinned one the ladder stops moving,
+// so what you chose is what you get.
+const quality = { manual: false };
+const applyQuality = () => {
+  engine.setHardwareScalingLevel(1 + scaleStep * 0.4);
+  pipe.grainEnabled = scaleStep < 2;
+  pipe.chromaticAberrationEnabled = scaleStep < 2;
+  // The two most expensive things in the frame, shed last: at the bottom
+  // rung the bloom carries the neon on its own.
+  glowLayer.intensity = scaleStep >= 2 ? 0.35 : 0.55;
+  glowLayer.isEnabled = scaleStep < 3;
+  pipe.bloomWeight = scaleStep >= 3 ? 0.55 : 0.4;
+};
 setInterval(() => {
+  if (quality.manual) return;
   const f = engine.getFps();
-  if (f < 26 && scaleStep < 2) {
+  if (f < 26 && scaleStep < 3) {
     scaleBadT += 0.5;
     if (scaleBadT > 1.5) {
       scaleStep++; scaleBadT = 0; scaleGoodT = 0;
-      engine.setHardwareScalingLevel(1 + scaleStep * 0.45);
+      applyQuality();
       hud.say('PERFORMANCE MODE — RESOLUTION EASED');
     }
   } else if (f > 52 && scaleStep > 0) {
     scaleGoodT += 0.5;
     if (scaleGoodT > 6) {
       scaleStep--; scaleGoodT = 0;
-      engine.setHardwareScalingLevel(1 + scaleStep * 0.45);
+      applyQuality();
       if (scaleStep === 0) hud.say('FULL RESOLUTION RESTORED');
     }
   } else { scaleBadT = 0; }
@@ -813,9 +876,19 @@ const tgtBox = document.getElementById('tgtbox');
 const starsEl = document.getElementById('stars');
 const scoreEl = document.getElementById('score');
 const healthBar = document.getElementById('health');
+// The counter says what KIND of slow it is, not just that it is slow: draw
+// calls and active meshes point at the CPU, the render scale at the pixels.
+const QNAME = ['HIGH', 'HIGH−', 'MED', 'LOW'];
+let lastDraws = 0, prevDrawCount = 0;
+scene.onAfterRenderObservable.add(() => {
+  const c = engine._drawCalls ? engine._drawCalls.current : 0;
+  lastDraws = c - prevDrawCount; prevDrawCount = c;
+});
 setInterval(() => {
   const f = engine.getFps();
-  fpsEl.textContent = f.toFixed(0) + ' FPS';
+  fpsEl.textContent = f.toFixed(0) + ' FPS  ' + lastDraws + ' DRAW  ' +
+    scene.getActiveMeshes().length + ' MESH  ' + QNAME[scaleStep] +
+    (quality.manual ? ' (G)' : '');
   fpsEl.style.color = f > 50 ? '#7dfcf3' : f > 30 ? '#ffd34d' : '#ff5a4d';
 }, 400);
 

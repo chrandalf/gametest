@@ -340,16 +340,20 @@ export function buildCity(scene, net, mirror) {
   // ---- the coast: sand and sea wrap the whole ring ---------------------
   // The city was on the coast all along; you only notice from the highway.
   {
-    const sandMat = new PBRMaterial('sand', scene);
-    sandMat.albedoColor = new Color3(0.45, 0.36, 0.22);
-    sandMat.metallic = 0.05; sandMat.roughness = 0.9;
-    sandMat.emissiveColor = new Color3(0.10, 0.08, 0.045);
-    // No mirror on the sea: a second half-screen of planar reflection was
-    // most of the beach frame budget. A gradient sheen fakes it fine.
-    const seaMat = new PBRMaterial('sea', scene);
-    seaMat.albedoColor = new Color3(0.02, 0.10, 0.22);
-    seaMat.metallic = 0.55; seaMat.roughness = 0.32;
-    seaMat.emissiveColor = new Color3(0.03, 0.10, 0.19);
+    // Sand and sea between them cover most of the screen out here, and a
+    // full PBR shade on every one of those pixels is what the beach could
+    // not afford. Flat lit surfaces at this distance look the same and cost
+    // a fraction. No mirror on the sea either - a second half-screen of
+    // planar reflection was most of the old frame budget.
+    const sandMat = new StandardMaterial('sand', scene);
+    sandMat.diffuseColor = new Color3(0.55, 0.44, 0.27);
+    sandMat.specularColor = new Color3(0.05, 0.05, 0.05);
+    sandMat.emissiveColor = new Color3(0.14, 0.11, 0.06);
+    const seaMat = new StandardMaterial('sea', scene);
+    seaMat.diffuseColor = new Color3(0.03, 0.14, 0.30);
+    seaMat.specularColor = new Color3(0.18, 0.26, 0.34);
+    seaMat.specularPower = 48;
+    seaMat.emissiveColor = new Color3(0.04, 0.13, 0.24);
     const hwHalf = halfWidth('highway');
     const sandW = 34, seaW = 380;
     const rim = hwHalf + 2.2;
