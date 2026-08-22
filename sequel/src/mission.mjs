@@ -101,7 +101,7 @@ export class Mission {
     this.target = d;
     this.lastSeen = null;
     this.searchPoint = null;
-    this.sightingT = 8;              // the radio's first report comes early
+    this.sightingT = 6;              // the radio's first report comes early
     this.spawnVan();
   }
 
@@ -330,13 +330,13 @@ export class Mission {
     // the bot proved it by never finding the target in two whole runs.
     // Turbo Esprit did it with police radio reports; so does this.
     if (this.state === 'locate') {
-      this.sightingT = (this.sightingT ?? 8) - dt;
+      this.sightingT = (this.sightingT ?? 6) - dt;
       if (this.sightingT <= 0) {
-        this.sightingT = 20;
+        this.sightingT = 14;
         // A neighbourhood, not a grid reference: the jitter keeps the last
         // fifty metres a hunt.
-        this.lastSeen = { x: t.pos.x + (Math.random() - 0.5) * 120,
-                          z: t.pos.z + (Math.random() - 0.5) * 120 };
+        this.lastSeen = { x: t.pos.x + (Math.random() - 0.5) * 90,
+                          z: t.pos.z + (Math.random() - 0.5) * 90 };
         const q = this.districtAt ? this.districtAt(t.pos.x, t.pos.z) : '';
         if (q && q !== this.calledQ) {
           this.calledQ = q;
@@ -346,7 +346,7 @@ export class Mission {
     } else this.calledQ = null;
     if (this.state !== 'done') {
       const dp = dist(t, player);
-      if (this.state === 'locate' && dp < 45) {
+      if (this.state === 'locate' && dp < 55) {
         this.state = 'intercept';
         this.hud.say('TARGET LOCATED — INTERCEPT', true);
       }
@@ -497,13 +497,15 @@ export class Mission {
     this.targetCar.root.rotation.y = t.pos.yaw;
   }
 
+  // The marks that matter carry `big`: the van, the coupe and the last
+  // sighting must read at a glance, not hide among the traffic dots.
   mapEntries() {
     const out = this.police.map(p => ({ pos: p.pos, mapColour: 'rgba(90, 160, 255, 0.95)' }));
-    if (this.van) out.push({ pos: this.van.pos, mapColour: 'rgba(255, 190, 60, 0.95)' });
+    if (this.van) out.push({ pos: this.van.pos, mapColour: 'rgba(255, 190, 60, 0.98)', big: true });
     if (this.state !== 'locate') {
-      out.push({ pos: this.target.pos, mapColour: 'rgba(255, 70, 70, 0.95)' });
+      out.push({ pos: this.target.pos, mapColour: 'rgba(255, 70, 70, 0.95)', big: true });
     } else if (this.lastSeen) {
-      out.push({ pos: this.lastSeen, mapColour: 'rgba(255, 130, 130, 0.45)' });
+      out.push({ pos: this.lastSeen, mapColour: 'rgba(255, 130, 130, 0.6)', big: true });
     }
     return out;
   }

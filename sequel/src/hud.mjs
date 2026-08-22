@@ -70,12 +70,22 @@ export class Hud {
     c.clearRect(0, 0, this.map.width, this.map.height);
     c.drawImage(this.base, 0, 0);
 
-    // Other vehicles: dim cyan dots (police/target get their own colours later).
+    // Other vehicles: dim cyan dots. Entries flagged `big` - the armoured
+    // van, the coupe, the last radio sighting - are drawn twice the size
+    // with a dark surround, so they read against the road lines instead of
+    // passing for one more car.
     if (others) {
       for (const o of others) {
         const [x, y] = this.worldToMap(o.pos.x, o.pos.z);
-        c.fillStyle = o.mapColour || 'rgba(120, 220, 255, 0.7)';
-        c.fillRect(x - 1.5, y - 1.5, 3, 3);
+        if (o.big) {
+          c.fillStyle = 'rgba(0, 0, 0, 0.85)';
+          c.fillRect(x - 4, y - 4, 8, 8);
+          c.fillStyle = o.mapColour || 'rgba(120, 220, 255, 0.7)';
+          c.fillRect(x - 3, y - 3, 6, 6);
+        } else {
+          c.fillStyle = o.mapColour || 'rgba(120, 220, 255, 0.7)';
+          c.fillRect(x - 1.5, y - 1.5, 3, 3);
+        }
       }
     }
 

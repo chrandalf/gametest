@@ -832,10 +832,12 @@ function updateCollisions(dt, clock) {
 const glowLayer = new GlowLayer('glow', scene,
   { intensity: 0.55, mainTextureRatio: 0.3, blurKernelSize: 24 });
 // The glow layer redraws every emissive surface into a blur target. The neon
-// wants that; the sky walls, the ridges and the beach do not - they are the
-// four biggest surfaces in the game and they were being drawn a second time,
-// full screen, every frame. Their emissive is flat lift, not neon.
-for (const p of [...nightSkies, ...daySkies]) glowLayer.addExcludedMesh(p);
+// wants that; the sky walls, the ridges, the beach AND THE SUN do not - they
+// are the biggest surfaces in the game and they were being drawn a second
+// time, full screen, every frame. The sun was the one left behind: a 420 m
+// emissive quad re-rendered into the blur target whenever you faced the
+// sunset, for a halo the bloom pass already provides.
+for (const p of [...nightSkies, ...daySkies, sun]) glowLayer.addExcludedMesh(p);
 for (const msh of scene.meshes) {
   const mn = msh.material && msh.material.name;
   if (mn === 'sand' || mn === 'sea') glowLayer.addExcludedMesh(msh);
