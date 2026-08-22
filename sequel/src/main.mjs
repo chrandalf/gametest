@@ -1442,7 +1442,7 @@ scene.onBeforeRenderObservable.add(() =>
 // bot needs to play it without reaching into module scope.
 window.game = {
   player, traffic, net, hud, tick, mission, coast, tiles, pickups,
-  run, tank, turbo, garage, peds, signals, coast2, city: CITY, clean, stats,
+  run, tank, turbo, garage, peds, signals, coast2, city: CITY, clean, stats, sound,
   zones: cityBits.zones, districtAt: cityBits.districtAt,
   stations: cityBits.stations,
   nav: { nodeAhead, headingSlot, turnOptions },
@@ -1462,19 +1462,28 @@ const menuPrefs = { music: true };
 let menuScreen = 'title';
 let menuSel = 0;
 let menuTyped = '';
+// The handler's briefing: delivered the way a certain agency delivers
+// them - measured, unhurried, and quietly certain you will manage.
 const RULES_TEXT =
-  'YOU ARE A COURIER HUNTER. THE JOB, IN ORDER:\n\n' +
-  '1  THE RADIO CALLS WHERE THE BLACK COUPE WAS SEEN — GO THERE\n' +
-  '2  FIND IT, THEN RAM OR SHOOT IT UNTIL IT STOPS\n' +
-  '3  FROM LEVEL 2 AN ARMOURED VAN BRINGS IT A DROP — STOP THE VAN\n' +
-  '   FIRST, OR THE MEETING LEAVES THE COUPE ARMOURED\n' +
-  '4  A STOPPED COUPE DROPS A BRIEFCASE — TAKE IT BEFORE THE LAW DOES\n' +
-  '5  STARS ARE FOR WHAT GETS SEEN · TRAFFIC OFFENCES TOP OUT AT 2★\n' +
-  '   VIOLENCE GOES FURTHER · ONLY KILLING REACHES 5★\n' +
-  '6  AT 3★ THEY RAM AND CAN BUST YOU · AT 4★ THEY SHOOT\n' +
-  '7  LIE LOW, OR BUY A RESPRAY AT A GARAGE, TO SHED THE HEAT\n' +
-  '8  GREEN SQUARES ARE GARAGES: PETROL, PAINT AND PANEL WORK\n' +
-  '9  CLEAN DRIVING PAYS · SIX CASSETTES ARE HIDDEN IN EVERY TOWN';
+  'GOOD EVENING, DRIVER.\n\n' +
+  'YOUR TARGET IS A BLACK COUPE, RUNNING COURIER WORK SOMEWHERE\n' +
+  'IN THIS TOWN. THE RADIO WILL TELL YOU WHERE IT WAS LAST SEEN.\n' +
+  'GO THERE. FIND IT. RAM IT OR SHOOT IT UNTIL IT STOPS MOVING.\n\n' +
+  'BE ADVISED: FROM YOUR SECOND CONTRACT, AN ARMOURED VAN BRINGS\n' +
+  'THE TARGET ITS DROP. TAKE THE VAN BEFORE THE MEETING — LET\n' +
+  'THEM MEET, AND YOU WILL BE CHASING ARMOUR PLATE.\n\n' +
+  'A STOPPED COUPE GIVES UP ITS BRIEFCASE. RETRIEVE IT BEFORE\n' +
+  'THE POLICE DO.\n\n' +
+  'ON THE AUTHORITIES: THEY ACT ONLY ON WHAT THEY SEE. TRAFFIC\n' +
+  'OFFENCES WILL COST YOU TWO STARS AT MOST. VIOLENCE COSTS MORE,\n' +
+  'AND ONLY A KILLING BUYS ALL FIVE. AT THREE STARS THEY RAM, AND\n' +
+  'WILL TAKE YOU WHERE YOU STAND. AT FOUR, THEY SHOOT.\n\n' +
+  'SHOULD YOU ATTRACT ATTENTION, DISAPPEAR. LIE LOW — OR HAVE THE\n' +
+  'CAR RESPRAYED WHERE NOBODY IN BLUE IS WATCHING. THE GREEN\n' +
+  'SQUARES ARE GARAGES: PETROL, PAINT, PANEL WORK.\n\n' +
+  'DRIVE CLEANLY AND YOU WILL BE PAID FOR IT. AND SHOULD YOU COME\n' +
+  'ACROSS THE SIX CASSETTES — CONSIDER THEM A PERK OF THE TRADE.\n\n' +
+  'I WILL BE IN TOUCH. GOOD HUNTING.';
 const CONTROLS_TEXT =
   'W/S DRIVE · A/D CHANGE LANE · Q/E INDICATE (HOLD FOR U-TURN)\n' +
   'SPACE FIRE · SHIFT TURBO · SLOW INTO A GARAGE SPUR TO BE SERVED\n' +
@@ -1490,7 +1499,7 @@ function fameText() {
 function menuItems() {
   return [
     { id: 'drive', label: 'DRIVE', hint: 'find the black coupe · dodge the law' },
-    { id: 'rules', label: 'THE RULES', hint: 'what a courier hunter actually does' },
+    { id: 'rules', label: 'THE BRIEFING', hint: 'your handler explains the job' },
     { id: 'town', label: `TOWN  <  ${CITY.name}  >`,
       hint: 'four towns, four maps — switching rebuilds the city' },
     { id: 'camera', label: `CAMERA  <  ${VIEWS[view].name}  >`,
@@ -1531,21 +1540,27 @@ function menuAdjust(id, dir) {
   }
   if (id === 'camera') cycleView(dir);
   else if (id === 'graphics') { quality.manual = true; scaleStep = (scaleStep + dir + 4) % 4; applyQuality(); }
-  else if (id === 'music') menuPrefs.music = !menuPrefs.music;
+  else if (id === 'music') { menuPrefs.music = !menuPrefs.music; applyMusicPref(); }
   else if (id === 'flash') toggleFlash();
   menuEls.panel.textContent = '';
   renderMenu();
+}
+function applyMusicPref() {
+  if (sound.started && sound.on !== menuPrefs.music) sound.toggle();
 }
 function startGame() {
   run.started = true;
   document.getElementById('intro').style.display = 'none';
   document.body.classList.remove('attract');   // the HUD comes back on
   sound.start();
-  if (!menuPrefs.music) sound.toggle();
+  applyMusicPref();
   mission.announce();
 }
 document.body.classList.add('attract');
 function menuKey(code) {
+  // The first key on the front door is the gesture the browser needs:
+  // the title theme (track 0) starts here, over the attract shot.
+  if (!sound.started && menuPrefs.music) sound.start();
   // Typing T-U-R-B-O anywhere on the front door earns the white Lotus.
   if (/^Key[A-Z]$/.test(code)) {
     menuTyped = (menuTyped + code[3]).slice(-5);

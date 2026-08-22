@@ -52,9 +52,13 @@ node tools/bundle.js            # writes dist/nightfall-city.html (~105 KB)
 
 ## Music
 
-The soundtrack is five tracks from [Epidemic Sound](https://www.epidemicsound.com),
-used under the repository owner's Epidemic Sound licence and re-encoded to
-96 kbps for the single-file build:
+The title theme, `assets/music/0.mp3` (*Neon Highway 2*), is the repository
+owner's own track; it opens the rotation and plays over the menu.
+
+The rest of the soundtrack is five tracks from
+[Epidemic Sound](https://www.epidemicsound.com), used under the repository
+owner's Epidemic Sound licence and re-encoded for the single-file build
+(`1.mp3`–`5.mp3`):
 
 - *RISE* — Ballpoint
 - *Neon City Funk* — Paper Twins
