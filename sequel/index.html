@@ -98,7 +98,53 @@
   /* The HUD moves out from under the thumbs. */
   body.touchmode #map { right: 12px; bottom: 180px; width: 132px; height: 132px; }
   body.touchmode #speedbox { left: 20px; bottom: 164px; }
-  body.touchmode #gauges { left: 20px; bottom: 208px; }
+  /* !important: the gauges div positions itself inline. */
+  body.touchmode #gauges { left: 20px !important; bottom: 214px !important; }
+  /* ---- the turn cue: which ways peel off at the junction ahead ---- */
+  #turncue { position: fixed; bottom: 118px; left: 50%;
+    transform: translateX(-50%); display: flex; gap: 18px; z-index: 7;
+    pointer-events: none; }
+  .cuechip { opacity: 0; color: #ffd34d; font: 800 16px monospace;
+    letter-spacing: 0.1em; padding: 4px 10px; border-radius: 6px;
+    border: 1px solid rgba(255, 211, 77, 0); transition: opacity 0.15s;
+    text-shadow: 0 0 10px rgba(255, 211, 77, 0.6); }
+  .cuechip.avail { opacity: 0.55; border-color: rgba(255, 211, 77, 0.35); }
+  .cuechip.on { opacity: 1; background: rgba(255, 176, 56, 0.18);
+    border-color: rgba(255, 211, 77, 0.9); color: #fff; }
+  body.attract #turncue { display: none; }
+  body.touchmode #turncue .k { display: none; }
+  body.touchmode #turncue { bottom: 172px; }
+  .tbtn.cuehint { border-color: rgba(255, 211, 77, 0.9); color: #ffd34d;
+    box-shadow: 0 0 16px rgba(255, 211, 77, 0.45); }
+  .tbtn.cueon { background: rgba(255, 176, 56, 0.5); color: #fff;
+    border-color: #ffd34d; }
+  /* ---- small screens: everything gets room to breathe ---- */
+  @media (max-width: 700px), (max-height: 540px) {
+    #wordmark { margin-top: 3vh; font-size: clamp(30px, 11vw, 54px); }
+    #strap { font-size: 9px; letter-spacing: 0.35em; margin-top: 6px; }
+    #townline { font-size: 10px; margin-top: 8px; }
+    #prompt { margin-top: 5vh; font-size: 16px; }
+    #menu { margin-top: 3vh; gap: 1px; }
+    .mi { font-size: 13px; padding: 4px 14px; letter-spacing: 0.1em; }
+    #hint { font-size: 10px; min-height: 14px; margin-top: 4px; }
+    #panel { font-size: 9px; line-height: 1.55; margin-top: 1.5vh; }
+    #introfoot { font-size: 8px; bottom: 10px; }
+    /* The wordmark already did the branding; in play the corner title is
+       three collisions waiting to happen on a phone. */
+    #title { display: none; }
+    #msg { font-size: 11px; top: 10px; left: 12px; transform: none;
+      text-align: left; max-width: 62vw; }
+    #tgtbox { font-size: 10px !important; top: 32px !important; }
+    #tgtbox #tgt { font-size: 14px !important; }
+    #fps { font-size: 9px !important; top: 10px !important; right: 12px !important; }
+    #stars { font-size: 14px !important; top: 26px !important; }
+    #whywanted { font-size: 8px !important; top: 42px !important; }
+    #score { font-size: 12px !important; top: 54px !important; }
+    #speed { font-size: 20px; }
+    #ovtext { font-size: 9px !important; letter-spacing: 0 !important; }
+    #bwsub { font-size: 11px; letter-spacing: 0.3em; }
+    .cuechip { font-size: 13px; }
+  }
   /* ---- the big word: level-ups and kills, announced properly ---- */
   #bigword { position: fixed; inset: 0; display: none; z-index: 9;
     flex-direction: column; align-items: center; justify-content: center;
@@ -148,7 +194,11 @@
 <canvas id="map" width="200" height="200"></canvas>
 <div id="stars" style="position:fixed;right:22px;top:40px;color:#ffd34d;font:800 18px monospace;text-shadow:0 0 12px rgba(255,180,60,0.7)"></div>
 <div id="whywanted" style="position:fixed;right:22px;top:62px;color:#ffb36b;font:700 10px monospace;letter-spacing:0.06em;text-shadow:0 0 8px rgba(255,150,60,0.6)"></div>
-<div id="score" style="position:fixed;right:22px;top:66px;color:#8dffcf;font:800 16px monospace;text-shadow:0 0 8px rgba(90,255,190,0.5)">000000</div>
+<div id="score" style="position:fixed;right:22px;top:84px;color:#8dffcf;font:800 16px monospace;text-shadow:0 0 8px rgba(90,255,190,0.5)">000000</div>
+<div id="turncue">
+  <span class="cuechip" id="cueL">&#9664; <span class="k">Q</span></span>
+  <span class="cuechip" id="cueR"><span class="k">E</span> &#9654;</span>
+</div>
 <div id="intro">
   <div id="wordmark">NEON CITY</div>
   <div id="strap">A TURBO ESPRIT TRIBUTE</div>

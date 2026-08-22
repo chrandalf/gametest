@@ -1430,6 +1430,25 @@ const tick = (dt) => {
     const on = strobing ? Math.sin(clock * 12 + bi * 2) > 0 : Math.sin(clock * 4 + bi) > 0.85;
     beaconMats[bi].emissiveColor.set(on ? 0.4 : 1.8, on ? 0.6 : 0.15, on ? 2.2 : 0.15);
   }
+  // The turn cue: as the junction closes in, show which ways peel off and
+  // which button asks for them; the indicated side lights up. On touch the
+  // key letters vanish and the real Q/E buttons take the highlight.
+  {
+    const inLane = player.mode === 'edge';
+    const togo = inLane ? player.e.len - player.s : 1e9;
+    const opts = inLane && togo < 75
+      ? turnOptions(nodeAhead(player.e, player.dir), headingSlot(player.e, player.dir))
+      : null;
+    const setCue = (chip, btn, avail, on) => {
+      chip.className = 'cuechip' + (avail ? ' avail' : '') + (on ? ' on' : '');
+      btn.classList.toggle('cuehint', avail && !on);
+      btn.classList.toggle('cueon', on);
+    };
+    setCue(cueLEl, touchQ, !!(opts && opts.left),
+           !!(opts && opts.left) && player.intent === 'left');
+    setCue(cueREl, touchE, !!(opts && opts.right),
+           !!(opts && opts.right) && player.intent === 'right');
+  }
   starsEl.textContent = mission.wanted > 0 ? '★'.repeat(mission.wanted) : '';
   // Say what the stars are FOR, for as long as you have them.
   whyEl.textContent = mission.wanted > 0 ? (mission.lastReason || '') : '';
@@ -1779,6 +1798,10 @@ hud.reduceFlash = safe.reduceFlash;
 applyQuality();
 
 const fpsEl = document.getElementById('fps');
+const cueLEl = document.getElementById('cueL');
+const cueREl = document.getElementById('cueR');
+const touchQ = document.getElementById('tQ');
+const touchE = document.getElementById('tE');
 const fuelBar = document.getElementById('fuel');
 const turboBar = document.getElementById('turbo');
 const tgtEl = document.getElementById('tgt');
