@@ -83,3 +83,27 @@ fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, bundle);
 console.log(`${path.relative(root, out)}  ${(bundle.length / 1024 / 1024).toFixed(2)} MB  ` +
   `(${music.length} tracks inlined${dropped ? `, ${dropped} dropped for size` : ''})`);
+
+// A second output for ordinary static hosts (Cloudflare Pages, Netlify,
+// any web server): the same content in a full document of its own, since
+// there is no artifact host there to provide the skeleton.
+const standalone = path.join(path.dirname(out), 'neon-city-standalone.html');
+fs.writeFileSync(standalone, `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>${title}</title>
+<style>
+${style.trim()}
+</style>
+</head>
+<body>
+${body.trim()}
+${musicBlob}<script>
+${engine.replace(/<\/script>/gi, '<\\/script>')}
+</script>
+</body>
+</html>
+`);
+console.log(`${path.relative(root, standalone)}  standalone for static hosting`);
