@@ -325,6 +325,37 @@ export function buildCity(scene, net, mirror) {
       return m;
     };
 
+    // Elevated junctions: a square of deck, and a wall across every side
+    // that no road leaves by. Two decks crossing at a right angle used to
+    // run their parapets through each other's carriageway; now each stops
+    // at this square and the square closes the corner.
+    const boxSlab = (name, mat, cx, cy, cz, w, h, d) => {
+      const b = MeshBuilder.CreateBox(name, { width: w, height: h, depth: d }, scene);
+      b.position.set(cx, cy, cz);
+      b.material = mat;
+      return b;
+    };
+    for (const n of net.nodes) {
+      const box = n.bridgeBox;
+      if (!box) continue;
+      const { hX, hZ } = box;
+      boxSlab('dk', deckMat, n.x, n.y - 0.58, n.z, hZ * 2, 1.0, hX * 2);
+      const T = 0.55;
+      // Slots are +x, -x, +z, -z; a wall spans the full box so the walls
+      // meet each other at the corners without a seam.
+      const walls = [
+        [0, hZ + T / 2, 0, T, hX * 2 + T],
+        [1, -hZ - T / 2, 0, T, hX * 2 + T],
+        [2, 0, hX + T / 2, hZ * 2 + T, T],
+        [3, 0, -hX - T / 2, hZ * 2 + T, T],
+      ];
+      for (const [slot, ox, oz, w, d] of walls) {
+        if (!box.open[slot]) continue;
+        boxSlab('prp', concrete, n.x + ox, n.y + 0.86, n.z + oz, w, 1.05, d);
+        boxSlab('el', glow.blue, n.x + ox, n.y + 1.45, n.z + oz, w * 0.99, 0.16, d * 0.99);
+      }
+    }
+
     for (const e of net.edges) {
       if (e.cls !== 'express' && e.cls !== 'ramp') continue;
       const c = CLASSES[e.cls];
@@ -332,14 +363,15 @@ export function buildCity(scene, net, mirror) {
       const wA = e.hwA || own, wB = e.hwB || own;
       const lane = Math.min(wA, wB);          // the carriageway itself
 
-      // Where this deck meets an ordinary road, everything that stands up
-      // off it stops short of the junction box.
-      const iA = e.joinA ? e.joinA + 3 : 0.5;
-      const iB = e.joinB ? e.joinB + 3 : 0.5;
-      // The deck stops short of a junction box too: inside one, the road
-      // slab is the surface, and a rising deck under it is just a lip to
-      // catch a wheel on.
-      slab(e, 'dk', deckMat, wA, -wA, wB, -wB, -0.08, 1.0, iA * 0.5, iB * 0.5);
+      // Everything that stands up off a deck stops at the edge of whatever
+      // junction box is at each end - a street junction below, or the
+      // square of deck an elevated junction owns.
+      const iA = e.padA, iB = e.padB;
+      // The deck itself only stops short at a STREET junction, where the
+      // road slab is the surface and a rising deck under it is just a lip
+      // to catch a wheel on. In the air it runs right into the box.
+      slab(e, 'dk', deckMat, wA, -wA, wB, -wB, -0.08, 1.0,
+           e.joinA ? iA * 0.5 : 0, e.joinB ? iB * 0.5 : 0);
       for (const sd of [1, -1]) {
         // Parapet and its neon, both following the flare.
         slab(e, 'prp', concrete, sd * (wA + 0.55), sd * wA,

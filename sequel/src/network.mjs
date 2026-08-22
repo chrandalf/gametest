@@ -208,6 +208,37 @@ export function buildNetwork() {
     e.hwB = widest(e.b);
   }
 
+  // Junctions in the air need a box round them. Two decks meeting at a
+  // right angle each ran their parapets all the way to the node, straight
+  // across the other one's carriageway - a wall through the corner you had
+  // to drive through to get round. Each such node now owns a square of
+  // deck, and a wall across every side no road leaves by; every edge's own
+  // parapets stop at that square's edge and meet it cleanly.
+  const deckHalf = (e, n) => (n === e.a ? e.hwA : e.hwB);
+  for (const n of nodes) {
+    const inc = n.edges.filter(Boolean);
+    if (!inc.length) continue;
+    if (!inc.every(q => q.cls === 'ramp' || q.cls === 'express')) continue;
+    const widestHere = Math.max(...inc.map(q => deckHalf(q, n)));
+    const ax0 = inc.find(q => q.axis === 0), ax1 = inc.find(q => q.axis === 1);
+    n.bridgeBox = {
+      hX: ax0 ? deckHalf(ax0, n) : widestHere,   // half-extent across x-road
+      hZ: ax1 ? deckHalf(ax1, n) : widestHere,   // half-extent across z-road
+      open: [0, 1, 2, 3].map((k) => !n.edges[k]),
+    };
+  }
+  // How far each parapet stops short of each of its nodes.
+  for (const e of edges) {
+    if (e.cls !== 'ramp' && e.cls !== 'express') continue;
+    const pad = (n, join) => {
+      if (join) return join + 3;                  // clear of a street junction
+      if (n.bridgeBox) return e.axis === 0 ? n.bridgeBox.hZ : n.bridgeBox.hX;
+      return 0.5;
+    };
+    e.padA = pad(e.a, e.joinA);
+    e.padB = pad(e.b, e.joinB);
+  }
+
   // Now make it a CITY, not graph paper: delete a share of the streets,
   // creating T-junctions, long blocks and genuine dead ends - but never
   // disconnect the map, and never touch the ring or the avenues.
