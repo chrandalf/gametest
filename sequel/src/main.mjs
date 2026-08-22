@@ -27,6 +27,7 @@ import { Hud } from './hud.mjs';
 import { Mission } from './mission.mjs';
 import { Signals } from './lights.mjs';
 import { Peds } from './peds.mjs';
+import { Coast } from './outrun.mjs';
 
 // The artifact sandbox's permissions policy forbids the Gamepad API, and
 // Chrome makes the mere call throw. Babylon's input system polls it during
@@ -147,7 +148,7 @@ report('city built — starting traffic…');
 // ground and the near-coplanar road slabs into itself for nothing.
 const CAR_PARTS = new Set(['p', 'w']);
 for (const msh of scene.meshes) {
-  if (CAR_PARTS.has(msh.name) || msh.name === 'pal') continue;
+  if (CAR_PARTS.has(msh.name) || msh.name === 'pal' || msh.name === 'sun') continue;
   msh.freezeWorldMatrix();
   msh.doNotSyncBoundingInfo = true;
 }
@@ -264,11 +265,43 @@ function dressPolice(d) {
 for (const d of mission.police) dressPolice(d);
 mission.onPoliceSpawn = dressPolice;
 
+// ---- the coast layer: OutRun lives on the ring road --------------------
+const coast = new Coast(net, buildCar, hud);
+coast.announceBack = () => mission.announce();
+
+// Day skies for the morph: a blue coastal gradient on planes a step in
+// front of the night walls, faded in by the vibe.
+function coastSkyTexture() {
+  const dt = new DynamicTexture('csky', { width: 64, height: 512 }, scene, true);
+  const x = dt.getContext();
+  const g = x.createLinearGradient(0, 0, 0, 512);
+  g.addColorStop(0, '#123b8c'); g.addColorStop(0.5, '#1e7fc4');
+  g.addColorStop(0.82, '#4ecbe0'); g.addColorStop(1, '#ffd9a0');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 512);
+  dt.update();
+  return dt;
+}
+const daySkies = [];
+for (const [rx, rz, ry] of [[mid, mid + 1240, 0], [mid, mid - 1240, Math.PI],
+                            [mid + 1240, mid, -Math.PI / 2], [mid - 1240, mid, Math.PI / 2]]) {
+  const p = MeshBuilder.CreatePlane('dsky', { width: 3400, height: 800 }, scene);
+  p.position.set(rx, 260, rz);
+  p.rotation.y = ry;
+  const dm = new StandardMaterial('dskym', scene);
+  dm.emissiveTexture = coastSkyTexture();
+  dm.disableLighting = true;
+  p.material = dm;
+  p.visibility = 0;
+  daySkies.push(p);
+}
+let vibe = 0;
+
 // The run: score, health, and how it ends.
 const run = { score: 0, health: 100, over: false, reason: '', time: 0 };
 const playerPrev = { e: null, dir: 0, s: 0 };
 let speedTattleT = 0;
 mission.onScore = (n) => { run.score += n; };
+coast.onScore = (n) => { run.score += n; };
 
 // ---- the gun: hitscan forward, tracer pooled ---------------------------
 const tracers = [];
@@ -611,6 +644,23 @@ const tick = (dt) => {
     1.2,
     player.pos.z + Math.cos(player.pos.yaw) * 7));
 
+  // ---- the morph: city night <-> coast daylight ------------------------
+  const wantVibe = (player.e && player.e.cls === 'highway') ? 1
+    : (player.mode === 'turn' ? vibe : 0);
+  vibe += (wantVibe - vibe) * Math.min(1, dt * 0.55);
+  hemi.intensity = 0.22 + vibe * 0.5;
+  hemi.diffuse.set(0.45 + vibe * 0.3, 0.35 + vibe * 0.37, 0.75 + vibe * 0.1);
+  hemi.groundColor.set(0.05 + vibe * 0.3, 0.02 + vibe * 0.26, 0.1 + vibe * 0.1);
+  scene.clearColor.set(0.012 + vibe * 0.09, 0.006 + vibe * 0.31,
+                       0.035 + vibe * 0.52, 1);
+  for (const p of daySkies) p.visibility = vibe;
+  sunM.emissiveColor.set(1 + vibe * 0.25, 1 + vibe * 0.05, 1 - vibe * 0.25);
+  sun.scaling.setAll(1 + vibe * 0.4);
+  pipe.imageProcessing.exposure = 1.05 + vibe * 0.22;
+  pipe.imageProcessing.contrast = 1.3 - vibe * 0.12;
+
+  coast.update(dt, player, clock, mission.wanted);
+
   const strobing = mission.wanted > 0;
   for (let bi = 0; bi < beaconMats.length; bi++) {
     const on = strobing ? Math.sin(clock * 18 + bi * 2) > 0 : Math.sin(clock * 4 + bi) > 0.85;
@@ -620,7 +670,7 @@ const tick = (dt) => {
   scoreEl.textContent = String(Math.round(run.score)).padStart(6, '0');
   healthBar.style.width = Math.max(0, run.health) + '%';
 
-  hud.update(dt, player, [...traffic, ...mission.mapEntries()]);
+  hud.update(dt, player, [...traffic, ...mission.mapEntries(), ...coast.mapEntries()]);
   fuelBar.style.width = tank.fuel.toFixed(0) + '%';
   fuelBar.style.background = tank.fuel < 25 ? '#ff5a4d' : '#ffd34d';
   turboBar.style.width = (turbo.charge * 100).toFixed(0) + '%';
@@ -643,7 +693,7 @@ scene.onBeforeRenderObservable.add(() =>
   tick(Math.min(0.05, engine.getDeltaTime() / 1000)));
 
 // Handles for tests and the console.
-window.game = { player, traffic, net, hud, tick, mission };
+window.game = { player, traffic, net, hud, tick, mission, coast };
 
 const fpsEl = document.getElementById('fps');
 const fuelBar = document.getElementById('fuel');

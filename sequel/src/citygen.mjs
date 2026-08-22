@@ -63,6 +63,7 @@ export function buildCity(scene, net, mirror) {
   const rand = mulberry(19860508);          // Turbo Esprit's release spring
   const glow = {
     cyan: neonMat(scene, 0.15, 1.05, 1.5, 'cyan'),
+    blue: neonMat(scene, 0.25, 0.75, 2.1, 'blue'),
     pink: neonMat(scene, 1.5, 0.2, 0.95, 'pink'),
     amber: neonMat(scene, 1.5, 0.75, 0.1, 'amber'),
     lampHead: neonMat(scene, 1.3, 1.1, 0.75, 'lamp'),
@@ -173,7 +174,7 @@ export function buildCity(scene, net, mirror) {
           e.axis === 0 ? cx : cx + sd * hw,
           0.1,
           e.axis === 0 ? cz + sd * hw : cz);
-        line.material = e.cls === 'highway' ? glow.pink : glow.cyan;
+        line.material = e.cls === 'highway' ? glow.blue : glow.cyan;
         mirror.renderList.push(line);
       }
       // Centre line: pink on streets/avenues, continuous.
@@ -330,6 +331,95 @@ export function buildCity(scene, net, mirror) {
         e.axis === 0 ? e.a.z + sd * (hw + 4) : e.a.z + s);
       pl.billboardMode = 2;                    // BILLBOARDMODE_Y
       pl.material = palmMat;
+    }
+  }
+
+  // ---- the coast: sand and sea wrap the whole ring ---------------------
+  // The city was on the coast all along; you only notice from the highway.
+  {
+    const sandMat = new PBRMaterial('sand', scene);
+    sandMat.albedoColor = new Color3(0.45, 0.36, 0.22);
+    sandMat.metallic = 0.05; sandMat.roughness = 0.9;
+    sandMat.emissiveColor = new Color3(0.10, 0.08, 0.045);
+    const seaMat = new PBRMaterial('sea', scene);
+    seaMat.albedoColor = new Color3(0.02, 0.10, 0.22);
+    seaMat.metallic = 0.9; seaMat.roughness = 0.16;
+    seaMat.reflectionTexture = mirror;
+    seaMat.emissiveColor = new Color3(0.015, 0.05, 0.1);
+    const hwHalf = halfWidth('highway');
+    const sandW = 34, seaW = 380;
+    const rim = hwHalf + 2.2;
+    const strips = [
+      // [cx, cz, w, d] sand then sea on each of the four sides
+      [ext.x / 2, -rim - sandW / 2, ext.x + (rim + sandW) * 2, sandW],
+      [ext.x / 2, ext.z + rim + sandW / 2, ext.x + (rim + sandW) * 2, sandW],
+      [-rim - sandW / 2, ext.z / 2, sandW, ext.z],
+      [ext.x + rim + sandW / 2, ext.z / 2, sandW, ext.z],
+    ];
+    for (const [cx, cz, w, d] of strips) {
+      const s = MeshBuilder.CreateBox('sand', { width: w, height: 0.12, depth: d }, scene);
+      s.position.set(cx, 0.05, cz);
+      s.material = sandMat;
+    }
+    const seaRim = rim + sandW;
+    const seas = [
+      [ext.x / 2, -seaRim - seaW / 2, ext.x + (seaRim + seaW) * 2, seaW],
+      [ext.x / 2, ext.z + seaRim + seaW / 2, ext.x + (seaRim + seaW) * 2, seaW],
+      [-seaRim - seaW / 2, ext.z / 2, seaW, ext.z + seaRim * 2],
+      [ext.x + seaRim + seaW / 2, ext.z / 2, seaW, ext.z + seaRim * 2],
+    ];
+    for (const [cx, cz, w, d] of seas) {
+      const s = MeshBuilder.CreateBox('sea', { width: w, height: 0.06, depth: d }, scene);
+      s.position.set(cx, -0.02, cz);
+      s.material = seaMat;
+    }
+  }
+
+  // ---- gantry signs pointing at the coast highway ----------------------
+  {
+    const signTex = (() => {
+      const dt = new DynamicTexture('hwsg', { width: 512, height: 128 }, scene, true);
+      const x = dt.getContext();
+      x.fillStyle = '#0a2a8a'; x.fillRect(0, 0, 512, 128);
+      x.strokeStyle = '#e8f2ff'; x.lineWidth = 5; x.strokeRect(6, 6, 500, 116);
+      x.fillStyle = '#e8f2ff';
+      x.font = '800 56px system-ui, sans-serif';
+      x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillText('COAST HWY \u2192', 256, 64);
+      dt.update();
+      return dt;
+    })();
+    const gantryMat = new StandardMaterial('gant', scene);
+    gantryMat.emissiveTexture = signTex;
+    gantryMat.disableLighting = true;
+    gantryMat.backFaceCulling = false;
+    const postMat = new StandardMaterial('gpost', scene);
+    postMat.emissiveColor = new Color3(0.12, 0.13, 0.18);
+    postMat.disableLighting = true;
+    for (const e of net.edges) {
+      if (e.cls !== 'avenue') continue;
+      // An avenue edge touching the ring: sign it, near the ring end.
+      const aRing = e.a.i === 0 || e.a.j === 0 || e.a.i === GRID - 1 || e.a.j === GRID - 1;
+      const bRing = e.b.i === 0 || e.b.j === 0 || e.b.i === GRID - 1 || e.b.j === GRID - 1;
+      if (!aRing && !bRing) continue;
+      const towardB = bRing;
+      const s = towardB ? e.len * 0.72 : e.len * 0.28;
+      const gx = e.axis === 0 ? e.a.x + s : e.a.x;
+      const gz = e.axis === 0 ? e.a.z : e.a.z + s;
+      const hw = halfWidth('avenue');
+      for (const sd of [-1, 1]) {
+        const post = MeshBuilder.CreateBox('gp', { width: 0.3, height: 6.4, depth: 0.3 }, scene);
+        post.position.set(
+          e.axis === 0 ? gx : gx + sd * (hw + 0.8), 3.2,
+          e.axis === 0 ? gz + sd * (hw + 0.8) : gz);
+        post.material = postMat;
+      }
+      const panel = MeshBuilder.CreatePlane('gpan', { width: 11, height: 2.6 }, scene);
+      panel.position.set(gx, 6.2, gz);
+      panel.rotation.y = e.axis === 0
+        ? (towardB ? -Math.PI / 2 : Math.PI / 2)
+        : (towardB ? Math.PI : 0);
+      panel.material = gantryMat;
     }
   }
 
