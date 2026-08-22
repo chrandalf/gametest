@@ -5,8 +5,9 @@
 // Reads only the network object handed in; no grid assumptions.
 
 export class Hud {
-  constructor(net) {
+  constructor(net, stations) {
     this.net = net;
+    this.stations = stations || [];
     this.map = document.getElementById('map');
     this.mctx = this.map.getContext('2d');
     this.speedEl = document.getElementById('speed');
@@ -42,6 +43,12 @@ export class Hud {
                     : 'rgba(60, 190, 140, 0.55)';
       c.lineWidth = e.cls === 'highway' ? 3 : e.cls === 'avenue' ? 2 : 1;
       c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
+    }
+    // Petrol stations: green squares, always on.
+    for (const st of this.stations) {
+      const [x, y] = this.worldToMap(st.x, st.z);
+      c.fillStyle = 'rgba(90, 255, 140, 0.95)';
+      c.fillRect(x - 2.5, y - 2.5, 5, 5);
     }
     c.strokeStyle = 'rgba(90, 255, 210, 0.5)';
     c.lineWidth = 1;

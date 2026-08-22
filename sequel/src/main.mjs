@@ -136,7 +136,7 @@ mirror.mirrorPlane = new Plane(0, -1, 0, 0);
 mirror.level = 0.8;
 mirror.renderList.push(sun);
 
-buildCity(scene, net, mirror);
+const cityBits = buildCity(scene, net, mirror);
 report('city built — starting traffic…');
 
 // ---- performance pass -------------------------------------------------
@@ -153,7 +153,7 @@ const FLAT = new Set(['g', 'rd', 'wk', 'kb', 'sl']);
 mirror.renderList = mirror.renderList.filter(msh => !FLAT.has(msh.name));
 
 // ------------------------------------------------------------- vehicles ----
-function buildCar(paintCol, taillit) {
+function buildCar(paintCol, taillit, trimCol) {
   const root = new TransformNode('car', scene);
   const paint = new PBRMaterial('paint', scene);
   paint.albedoColor = paintCol;
@@ -182,6 +182,15 @@ function buildCar(paintCol, taillit) {
   part(1.72, 0.24, 0.1, 0, 0.72, -2.24, lit);       // tail bar
   part(0.5, 0.1, 0.06, -0.6, 0.55, 3.38, head);     // headlights
   part(0.5, 0.1, 0.06, 0.6, 0.55, 3.38, head);
+  // Neon beltline trim: the silhouette, drawn in light. This is what makes
+  // a car readable against the dark instead of a shadow with headlights.
+  const trim = new StandardMaterial('trim', scene);
+  trim.emissiveColor = trimCol || new Color3(0.55, 0.55, 0.65);
+  trim.disableLighting = true;
+  part(0.05, 0.05, 4.3, -0.96, 0.86, 0, trim);
+  part(0.05, 0.05, 4.3, 0.96, 0.86, 0, trim);
+  part(1.9, 0.05, 0.05, 0, 0.86, 2.2, trim);
+  part(1.86, 0.05, 0.05, 0, 0.9, -2.2, trim);
   const ind = new StandardMaterial('ind', scene);
   ind.emissiveColor = new Color3(1.5, 0.75, 0.1);
   ind.disableLighting = true;
@@ -200,14 +209,14 @@ function buildCar(paintCol, taillit) {
 // The player, starting mid-city on an avenue, pointed somewhere useful.
 const startEdge = net.edges.find(e => e.cls === 'avenue') || net.edges[0];
 const player = new Driver(net, startEdge, 1, 0, startEdge.len * 0.4);
-const playerCar = buildCar(new Color3(0.55, 0.02, 0.03), true);
+const playerCar = buildCar(new Color3(0.8, 0.83, 0.9), true, new Color3(0.25, 1.3, 1.6));
 
 // Ambient traffic: the same Driver, piloted by ten lines of AI. This is the
 // exact code path the target car and the police will use.
 const TRAFFIC_COLOURS = [
-  new Color3(0.08, 0.15, 0.5), new Color3(0.4, 0.35, 0.05),
-  new Color3(0.3, 0.05, 0.35), new Color3(0.06, 0.3, 0.25),
-  new Color3(0.35, 0.35, 0.38), new Color3(0.45, 0.12, 0.05),
+  new Color3(0.15, 0.3, 0.85), new Color3(0.75, 0.62, 0.1),
+  new Color3(0.6, 0.12, 0.65), new Color3(0.1, 0.6, 0.5),
+  new Color3(0.65, 0.66, 0.7), new Color3(0.8, 0.25, 0.1),
 ];
 const traffic = [];
 for (let k = 0; k < 14; k++) {
@@ -215,7 +224,7 @@ for (let k = 0; k < 14; k++) {
   const lane = k % CLASSES[e.cls].lanesPer;
   const d = new Driver(net, e, k % 2 ? 1 : -1, lane, (k * 19) % Math.max(24, e.len - 12));
   d.ai = { nextThink: 2 + k, cruise: 0.5 + (k % 5) * 0.09 };
-  d.car = buildCar(TRAFFIC_COLOURS[k % TRAFFIC_COLOURS.length], true);
+  d.car = buildCar(TRAFFIC_COLOURS[k % TRAFFIC_COLOURS.length], true, new Color3(0.4, 0.4, 0.5));
   traffic.push(d);
 }
 
@@ -232,7 +241,7 @@ function aiInput(d, dt, t) {
 }
 
 // ---- the hunt: target coupe, police cruiser, mission card --------------
-const hud = new Hud(net);
+const hud = new Hud(net, cityBits.stations);
 const mission = new Mission(scene, net, buildCar, hud);
 {
   // Police lightbar, wired to the mission so it can strobe in pursuit.
@@ -303,20 +312,60 @@ addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
   // Indicators: Q left, E right, pressing the same side again cancels.
-  if (e.code === 'KeyQ') player.intent = player.intent === 'left' ? 'straight' : 'left';
-  if (e.code === 'KeyE') player.intent = player.intent === 'right' ? 'straight' : 'right';
+  if (e.code === 'KeyQ' && !e.repeat) { player.intent = player.intent === 'left' ? 'straight' : 'left'; holdT.q = clock; }
+  if (e.code === 'KeyE' && !e.repeat) { player.intent = player.intent === 'right' ? 'straight' : 'right'; holdT.e = clock; }
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 
 // -------------------------------------------------------------- the loop ----
 let clock = 0;
+// The tank and the turbo: Turbo Esprit's two pressures. Fuel burns with
+// distance and speed; the turbo drains fast, recharges slow, and shoves.
+const tank = { fuel: 100, low: false };
+const turbo = { charge: 1, active: false };
+const holdT = { q: 0, e: 0 };
 
 const tick = (dt) => {
   clock += dt;
 
   const throttle = (keys.KeyW || keys.ArrowUp) ? 1 : (keys.KeyS || keys.ArrowDown) ? -1 : 0;
   const steer = ((keys.KeyA || keys.ArrowLeft) ? 1 : 0) + ((keys.KeyD || keys.ArrowRight) ? -1 : 0);
-  player.update(dt, { throttle, steer, maxSpeed: CLASSES[player.e.cls].limit * 2.2 });
+
+  // Hold an indicator ~2 s to swing a full U-turn.
+  if (keys.KeyQ && holdT.q !== Infinity && clock - holdT.q > 1.9 && player.mode === 'edge') {
+    player.beginUTurn(); holdT.q = Infinity;
+  }
+  if (!keys.KeyQ) holdT.q = 0;
+  if (keys.KeyE && holdT.e !== Infinity && clock - holdT.e > 1.9 && player.mode === 'edge') {
+    player.beginUTurn(); holdT.e = Infinity;
+  }
+  if (!keys.KeyE) holdT.e = 0;
+
+  // Turbo: Shift shoves while the gauge lasts.
+  turbo.active = (keys.ShiftLeft || keys.ShiftRight) && throttle > 0 &&
+                 turbo.charge > 0.03 && tank.fuel > 0;
+  turbo.charge = Math.max(0, Math.min(1,
+    turbo.charge + (turbo.active ? -0.28 : 0.07) * dt));
+  if (turbo.active && player.mode === 'edge') player.speed += 16 * dt;
+
+  // Fuel: burns with speed, faster on turbo; empty means a crawl.
+  tank.fuel = Math.max(0, tank.fuel -
+    (0.06 + player.speed * 0.014 + (turbo.active ? 0.5 : 0)) * dt);
+  if (tank.fuel < 25 && !tank.low) { tank.low = true;
+    hud.say('FUEL LOW — GREEN SQUARES SELL PETROL'); }
+  if (tank.fuel > 40) tank.low = false;
+  let cap = CLASSES[player.e.cls].limit * (turbo.active ? 3.2 : 2.2);
+  if (tank.fuel <= 0) cap = 5;
+  player.update(dt, { throttle, steer, maxSpeed: cap });
+
+  // Refuelling: stopped beside a pump.
+  for (const st of cityBits.stations) {
+    if (Math.hypot(player.pos.x - st.x, player.pos.z - st.z) < 8 &&
+        player.speed < 1.5 && tank.fuel < 99.5) {
+      tank.fuel = Math.min(100, tank.fuel + 20 * dt);
+      if (Math.floor(clock * 2) % 2 === 0) hud.say('FUELLING…');
+    }
+  }
 
   playerCar.root.position.set(player.pos.x, 0, player.pos.z);
   playerCar.root.rotation.y = player.pos.yaw;
@@ -326,7 +375,7 @@ const tick = (dt) => {
 
   for (const d of traffic) {
     d.update(dt, aiInput(d, dt, clock));
-    if (d.blocked) d.uTurn();
+    if (d.blocked) d.beginUTurn();
     d.car.root.position.set(d.pos.x, 0, d.pos.z);
     d.car.root.rotation.y = d.pos.yaw;
     const b2 = Math.sin(clock * 9 + d.ai.cruise * 20) > 0;
@@ -356,6 +405,23 @@ const tick = (dt) => {
     player.pos.z + Math.cos(player.pos.yaw) * 7));
 
   hud.update(dt, player, [...traffic, ...mission.mapEntries()]);
+  fuelBar.style.width = tank.fuel.toFixed(0) + '%';
+  fuelBar.style.background = tank.fuel < 25 ? '#ff5a4d' : '#ffd34d';
+  turboBar.style.width = (turbo.charge * 100).toFixed(0) + '%';
+  const bp = mission.bearingPoint();
+  if (bp) {
+    const ang = Math.atan2(bp.x - player.pos.x, bp.z - player.pos.z) - player.pos.yaw;
+    tgtEl.style.transform = 'rotate(' + ang.toFixed(2) + 'rad)';
+    const dTgt = Math.hypot(bp.x - player.pos.x, bp.z - player.pos.z);
+    tgtdEl.textContent = (mission.state === 'locate' ? 'LAST SEEN ' : '') +
+      Math.round(dTgt) + 'm';
+    tgtBox.style.opacity = mission.state === 'done' ? 0 : 1;
+    tgtBox.style.color = mission.state === 'locate' ? '#ff9a8a' : '#ff5a4d';
+  } else {
+    tgtBox.style.opacity = 0.35;
+    tgtEl.style.transform = 'none';
+    tgtdEl.textContent = 'NO FIX — SEARCH THE DISTRICT';
+  }
 };
 scene.onBeforeRenderObservable.add(() =>
   tick(Math.min(0.05, engine.getDeltaTime() / 1000)));
@@ -364,6 +430,11 @@ scene.onBeforeRenderObservable.add(() =>
 window.game = { player, traffic, net, hud, tick, mission };
 
 const fpsEl = document.getElementById('fps');
+const fuelBar = document.getElementById('fuel');
+const turboBar = document.getElementById('turbo');
+const tgtEl = document.getElementById('tgt');
+const tgtdEl = document.getElementById('tgtd');
+const tgtBox = document.getElementById('tgtbox');
 setInterval(() => {
   const f = engine.getFps();
   fpsEl.textContent = f.toFixed(0) + ' FPS';

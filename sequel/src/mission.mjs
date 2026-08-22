@@ -55,7 +55,7 @@ export class Mission {
     d.health = 3;
     d.stateName = 'cruise';
     d.thinkT = 0;
-    if (!this.targetCar) this.targetCar = this.buildCar(new Color3(0.015, 0.015, 0.02), true);
+    if (!this.targetCar) this.targetCar = this.buildCar(new Color3(0.015, 0.015, 0.02), true, new Color3(0.75, 0.06, 0.05));
     this.target = d;
   }
 
@@ -67,7 +67,7 @@ export class Mission {
     d.thinkT = 0;
     d.pursuit = 0;                   // 0 calm, 1 chasing
     d.evadeT = 0;
-    this.policeCar = this.buildCar(new Color3(0.82, 0.85, 0.92), true);
+    this.policeCar = this.buildCar(new Color3(0.82, 0.85, 0.92), true, new Color3(0.25, 0.55, 2.0));
     this.police = d;
   }
 
@@ -128,6 +128,8 @@ export class Mission {
         this.hud.say('TARGET LOST — RELOCATE', true);
       }
     }
+    if (this.state !== 'locate') this.lastSeen = { x: t.pos.x, z: t.pos.z };
+
     const fleeing = t.stateName === 'fleeing' && this.state !== 'done';
     t.thinkT -= dt;
     let tInd;
@@ -143,7 +145,7 @@ export class Mission {
       : CLASSES[t.e.cls].limit * 0.85;
     t.update(dt, { throttle: this.state === 'done' ? -1 : 1, steer: 0,
                    indicate: tInd, maxSpeed: tCap });
-    if (t.blocked) t.uTurn();
+    if (t.blocked) t.beginUTurn();
 
     // ---------------- police brain ------------------------------------
     p.thinkT -= dt;
@@ -164,7 +166,7 @@ export class Mission {
     const pCap = p.pursuit > 0 ? CLASSES[p.e.cls].limit * 1.6
                                : CLASSES[p.e.cls].limit * 0.9;
     p.update(dt, { throttle: 1, steer: 0, indicate: pInd, maxSpeed: pCap });
-    if (p.blocked) p.uTurn();
+    if (p.blocked) p.beginUTurn();
 
     // Busted check: pinned close and slow while pursued.
     if (p.pursuit > 0 && dPolice < 7 && player.speed < 3) {
@@ -205,7 +207,16 @@ export class Mission {
     const out = [{ pos: this.police.pos, mapColour: 'rgba(90, 160, 255, 0.95)' }];
     if (this.state !== 'locate') {
       out.push({ pos: this.target.pos, mapColour: 'rgba(255, 70, 70, 0.95)' });
+    } else if (this.lastSeen) {
+      // The ghost: where it was when you last had eyes on it.
+      out.push({ pos: this.lastSeen, mapColour: 'rgba(255, 130, 130, 0.45)' });
     }
     return out;
+  }
+
+  // Where the HUD arrow should point: live fix when located, else the ghost.
+  bearingPoint() {
+    if (this.state !== 'locate') return this.target.pos;
+    return this.lastSeen || null;
   }
 }

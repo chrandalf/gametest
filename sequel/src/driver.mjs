@@ -138,6 +138,36 @@ export class Driver {
     this.blocked = false;
   }
 
+  // The smooth version: swing through 180° on the same bezier rails as a
+  // junction turn, crossing the oncoming side, and come back the other way.
+  // Right-hand swing, as a left-hand-traffic U-turn should be.
+  beginUTurn() {
+    if (this.mode !== 'edge') return false;
+    const e = this.e;
+    const backS = Math.min(Math.max(e.len - this.s, 5), e.len - 5);
+    const to = lanePos(e, -this.dir, 0, backS);
+    const fyaw = lanePos(e, this.dir, this.lane, this.s).yaw;
+    const fx = Math.sin(fyaw), fz = Math.cos(fyaw);
+    const rx = Math.cos(fyaw), rz = -Math.sin(fyaw);   // right of travel
+    this.turn = {
+      x0: this.pos.x, z0: this.pos.z, yaw0: fyaw,
+      x1: to.x, z1: to.z,
+      cx: this.pos.x + fx * 6.5 + rx * 3.2,
+      cz: this.pos.z + fz * 6.5 + rz * 3.2,
+      dyaw: Math.PI,
+      t: 0,
+      len: 19,
+      next: { e, dir: -this.dir }, targetLane: 0, entryS: backS,
+      dirn: 1,
+    };
+    this.mode = 'turn';
+    this.lat = 0; this.latV = 0;
+    this.speed = Math.max(Math.min(this.speed, 7), 3.5);
+    this.intent = 'straight';
+    this.blocked = false;
+    return true;
+  }
+
   // How far before the node centre the arc begins: at the crossing road's
   // kerb line, plus a little.
   turnStartDist(next) { return halfWidth(next.e.cls) + 2; }

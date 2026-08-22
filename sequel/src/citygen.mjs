@@ -333,5 +333,49 @@ export function buildCity(scene, net, mirror) {
     }
   }
 
-  return { glow };
+  // ---- petrol stations: three, spread out, with lit forecourts ---------
+  // Fuel is a clock, and these are where you wind it. Green on the map.
+  const stations = [];
+  const streets = net.edges.filter(e => e.cls === 'street' && e.len > 46);
+  const gasSign = new StandardMaterial('gas', scene);
+  gasSign.emissiveTexture = signTexture(scene, 'GAS', '#4dff88');
+  gasSign.opacityTexture = gasSign.emissiveTexture;
+  gasSign.disableLighting = true; gasSign.backFaceCulling = false;
+  const padMat = new StandardMaterial('pad', scene);
+  padMat.emissiveColor = new Color3(0.10, 0.55, 0.30);
+  padMat.disableLighting = true;
+  const pumpMat = new PBRMaterial('pump', scene);
+  pumpMat.albedoColor = new Color3(0.05, 0.3, 0.15);
+  pumpMat.metallic = 0.3; pumpMat.roughness = 0.5;
+  pumpMat.emissiveColor = new Color3(0.05, 0.4, 0.18);
+  for (const frac of [0.18, 0.52, 0.86]) {
+    const e = streets[(streets.length * frac) | 0];
+    const hw = halfWidth(e.cls);
+    const sMid = e.len / 2;
+    const sd = 1;
+    const px = e.axis === 0 ? e.a.x + sMid : e.a.x + sd * (hw + 6.5);
+    const pz = e.axis === 0 ? e.a.z + sd * (hw + 6.5) : e.a.z + sMid;
+    // Forecourt pad, glowing faintly green, flush with the sidewalk.
+    const pad = MeshBuilder.CreateBox('pad', {
+      width: e.axis === 0 ? 13 : 9, height: 0.14, depth: e.axis === 0 ? 9 : 13,
+    }, scene);
+    pad.position.set(px, 0.07, pz);
+    pad.material = padMat;
+    // Pumps and the sign.
+    for (const o of [-2.6, 2.6]) {
+      const pump = MeshBuilder.CreateBox('pump', { width: 0.7, height: 1.3, depth: 0.5 }, scene);
+      pump.position.set(e.axis === 0 ? px + o : px, 0.65, e.axis === 0 ? pz : pz + o);
+      pump.material = pumpMat;
+    }
+    const sg = MeshBuilder.CreatePlane('gassg', { width: 8, height: 2 }, scene);
+    sg.position.set(px, 6.4, pz);
+    sg.billboardMode = 2;
+    sg.material = gasSign;
+    // The refuel spot is kerbside on the carriageway, beside the pad.
+    const rx = e.axis === 0 ? px : e.a.x + sd * (hw - 1.8);
+    const rz = e.axis === 0 ? e.a.z + sd * (hw - 1.8) : pz;
+    stations.push({ x: rx, z: rz });
+  }
+
+  return { glow, stations };
 }

@@ -34,10 +34,22 @@
 <div id="title">NEON CITY
   <small>a Turbo Esprit tribute · W/S drive · A/D lane · Q/E indicate</small></div>
 <div id="msg"></div>
+<div id="tgtbox" style="position:fixed;top:52px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;color:#ff8f8f;font:700 13px monospace;text-shadow:0 0 8px rgba(255,110,110,0.5)">
+  <span id="tgt" style="display:inline-block;font-size:20px">&#9650;</span>
+  <span id="tgtd"></span>
+</div>
 <div id="speedbox">
   <span id="indL">&#9664;</span>
   <span id="speed">0 MPH</span>
   <span id="indR">&#9654;</span>
+</div>
+<div style="position:fixed;left:26px;bottom:64px;width:170px">
+  <div style="color:#7dfcf3;font:700 9px monospace;letter-spacing:2px">TURBO</div>
+  <div style="height:6px;background:rgba(125,252,243,0.15);border-radius:3px;margin:2px 0 6px">
+    <div id="turbo" style="height:100%;width:100%;background:#7dfcf3;border-radius:3px;box-shadow:0 0 8px rgba(125,252,243,0.7)"></div></div>
+  <div style="color:#ffd34d;font:700 9px monospace;letter-spacing:2px">FUEL</div>
+  <div style="height:6px;background:rgba(255,211,77,0.15);border-radius:3px;margin-top:2px">
+    <div id="fuel" style="height:100%;width:100%;background:#ffd34d;border-radius:3px;box-shadow:0 0 8px rgba(255,211,77,0.6)"></div></div>
 </div>
 <canvas id="map" width="200" height="200"></canvas>
 <div id="fps" style="position:fixed;right:22px;top:18px;color:#7dfcf3;font:700 13px monospace;text-shadow:0 0 8px rgba(125,252,243,0.4)"></div>
