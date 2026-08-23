@@ -630,13 +630,17 @@ function sunsetSkyTexture() {
 }
 // What the coast morph fades toward, per mode: additive targets over the
 // night values already in the code below.
+// No exposure/contrast terms here any more: touching the image processing
+// configuration marks every submesh image-processing-dirty and the next
+// render re-prepares ~850 define sets - a stutter train on every fade.
+// The brightness the exposure used to add is folded into the lights.
 const MOODS = {
-  day:    { hemi: 0.5,  dif: [0.30, 0.37, 0.10], gnd: [0.30, 0.26, 0.10],
+  day:    { hemi: 0.62, dif: [0.36, 0.44, 0.13], gnd: [0.36, 0.31, 0.12],
             clear: [0.09, 0.31, 0.52], fog: [0.36, 0.47, 0.52],
-            expo: 0.22, con: 0.12, sunT: [0.25, 0.05, -0.25] },
-  sunset: { hemi: 0.34, dif: [0.45, 0.18, -0.05], gnd: [0.40, 0.15, 0.02],
+            sunT: [0.25, 0.05, -0.25] },
+  sunset: { hemi: 0.42, dif: [0.52, 0.21, -0.05], gnd: [0.46, 0.18, 0.03],
             clear: [0.28, 0.07, 0.20], fog: [0.42, 0.16, 0.22],
-            expo: 0.15, con: 0.06, sunT: [0.35, -0.15, -0.5] },
+            sunT: [0.35, -0.15, -0.5] },
 };
 // One cylinder, not four walls: a box of sky planes has four corners, and
 // out on the open coast where nothing occludes the horizon you can see
@@ -714,7 +718,7 @@ function setCoastSky() {
   }
 }
 let vibe = 0;
-let vibeStep = 0;
+const skyState = { day: false, night: true };
 // The coast morph: off by default (it was once suspected of costing
 // frames; measured at two to four per cent of a coast frame). B cycles
 // NEON NIGHT -> DAYLIGHT -> SUNSET; the OUTRUN codeword goes straight to
@@ -1703,31 +1707,28 @@ const tick = (dt) => {
   sunM.emissiveColor.set(1 + vibe * mood.sunT[0], 1 + vibe * mood.sunT[1],
                          1 + vibe * mood.sunT[2]);
   sun.scaling.setAll(1 + vibe * 0.4);
+  scene.fogColor.set(0.05 + vibe * mood.fog[0], 0.03 + vibe * mood.fog[1],
+                     0.11 + vibe * mood.fog[2]);
+  scene.fogDensity = (0.0017 - vibe * 0.0006) * fogScale * (safe.reduceFlash ? 1.6 : 1);
+  for (const p of daySkies) p.visibility = vibe >= 0.98 ? 1 : vibe;
 
-  // Expensive per frame: touching the image processing configuration flags
-  // EVERY submesh in the scene as image-processing-dirty, so the next frame
-  // re-prepares ~850 define sets before it can draw. Mesh enable and
-  // visibility flags cost a state pass of their own. Those only move on a
-  // sixteenth of the fade, which is invisible over a three second morph and
-  // stops dead the moment the fade lands on 0 or 1.
-  const step = Math.round(vibe * 16);
-  if (step !== vibeStep) {
-    vibeStep = step;
-    const v = step / 16;
-    // Only pay for the sky you can actually see: outside the short morph,
-    // one full set of sky walls is switched off entirely.
-    const dayOn = v > 0.02, nightOn = v < 0.98;
-    for (const p of daySkies) {
-      p.setEnabled(dayOn);
-      p.visibility = v >= 0.98 ? 1 : v;
-    }
+  // The only non-uniform work in the whole morph: which set of sky walls
+  // exists. Flipped exactly twice per fade, never per step - everything
+  // else above is plain uniforms that no material rebuilds for. The image
+  // processing configuration is not touched here at all any more: writing
+  // its exposure or contrast marks every submesh image-processing-dirty
+  // and the next render re-prepares ~850 define sets - that was the
+  // stutter train around the beach.
+  // The night walls drop out at 90% day rather than 98: behind a nearly
+  // opaque day cylinder they are pure overdraw a weak GPU still pays for.
+  const dayOn = vibe > 0.02, nightOn = vibe < 0.9;
+  if (dayOn !== skyState.day) {
+    skyState.day = dayOn;
+    for (const p of daySkies) p.setEnabled(dayOn);
+  }
+  if (nightOn !== skyState.night) {
+    skyState.night = nightOn;
     for (const p of nightSkies) p.setEnabled(nightOn);
-    scene.fogColor.set(0.05 + v * mood.fog[0], 0.03 + v * mood.fog[1],
-                       0.11 + v * mood.fog[2]);
-    scene.fogDensity = (0.0017 - v * 0.0006) * fogScale * (safe.reduceFlash ? 1.6 : 1);
-    pipe.imageProcessing.exposure = 1.05 + v * mood.expo;
-    pipe.imageProcessing.contrast = 1.3 - v * mood.con;
-
   }
 
   // The surf marches at the sand. Only worth paying for when you can see
@@ -1875,6 +1876,7 @@ window.game = {
   zones: cityBits.zones, districtAt: cityBits.districtAt,
   stations: cityBits.stations,
   nav: { nodeAhead, headingSlot, turnOptions },
+  scene, engine,
 };
 
 // ---- the front door -----------------------------------------------------
@@ -2146,7 +2148,6 @@ function menuKey(code) {
       egg.outrun = true;
       coast2.mode = 'sunset';
       setCoastSky();
-      vibeStep = -1;
       bigWord('OUTRUN', 'MAGICAL SOUND SHOWER — SUNSET ON THE COAST');
       return;
     }
@@ -2227,7 +2228,6 @@ function cycleView(dir) {
 function toggleFlash() {
   safe.reduceFlash = !safe.reduceFlash;
   hud.reduceFlash = safe.reduceFlash;
-  vibeStep = -1;                       // forces the fog to be re-applied
   applyQuality();
   if (run.started) hud.say(safe.reduceFlash ? 'REDUCED FLASHING — ON' : 'REDUCED FLASHING — OFF');
 }
@@ -2243,7 +2243,6 @@ addEventListener('keydown', (e) => {
     coast2.mode = coast2.mode === 'off' ? 'day'
       : coast2.mode === 'day' ? 'sunset' : 'off';
     setCoastSky();
-    vibeStep = -1;                     // re-applies fog/exposure at once
     hud.say('COAST — ' + (coast2.mode === 'off' ? 'NEON NIGHT'
       : coast2.mode === 'day' ? 'DAYLIGHT' : 'SUNSET'));
   }
@@ -2282,7 +2281,6 @@ const applyQuality = () => {
   // Pull the haze in with the draw range so the edge of the world stays
   // hidden rather than becoming a line of towers popping in.
   fogScale = 820 / drawRange;
-  vibeStep = -1;
   // FXAA stays on when reduced flashing is asked for: smoothing sub-pixel
   // edges is exactly what stops thin bright lines strobing.
   pipe.fxaaEnabled = safe.reduceFlash || scaleStep < 3;

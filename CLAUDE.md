@@ -144,7 +144,11 @@ Things that live here and are easy to hunt for:
   it globally and frustum culling has nothing left to reject.
 - **Quality ladder** — `VIEWS`, `applyQuality`, `scaleStep`, `AUTO_BEST`
   (defaults to MEDIUM). Keys: `C` camera, `G` quality, `F` reduced
-  flashing, `B` coast mood (`coast2.mode`: off/day/sunset via `MOODS`),
+  flashing, `B` coast mood (`coast2.mode`: off/day/sunset via `MOODS`).
+  The vibe morph is uniform-only — it must never touch
+  `pipe.imageProcessing` (each write re-prepares every submesh's defines:
+  a stutter train), and sky `setEnabled` flips only on threshold
+  crossings (`skyState`).
   `M`/`X` music. Petrol at garages costs score, priced up by wanted
   stars.
 - **Cameras** — `VIEWS`, `updateCamera`.
