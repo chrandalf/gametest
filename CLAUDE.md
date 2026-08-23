@@ -120,7 +120,9 @@ Things that live here and are easy to hunt for:
   it globally and frustum culling has nothing left to reject.
 - **Quality ladder** — `VIEWS`, `applyQuality`, `scaleStep`, `AUTO_BEST`
   (defaults to MEDIUM). Keys: `C` camera, `G` quality, `F` reduced
-  flashing, `B` coast daylight, `M`/`X` music.
+  flashing, `B` coast mood (`coast2.mode`: off/day/sunset via `MOODS`),
+  `M`/`X` music. Petrol at garages costs score, priced up by wanted
+  stars.
 - **Cameras** — `VIEWS`, `updateCamera`.
 - **The garage** — `SERVICE`, `updateGarage`, `signpostGarage`.
 - **`window.game`** — the debug/test surface: `player, traffic, net, hud,
@@ -130,7 +132,7 @@ Things that live here and are easy to hunt for:
 ### The rest
 | file | owns |
 |---|---|
-| `mission.mjs` | The director: target coupe, the armoured van and the exchange (the van drives to a picked `meet`; its crew escalates by level — ≤2 settled, 3–4 runner, 5+ hunter that U-turns onto you and rams via `onVanRam`), police fleet, the wanted ladder (`OFFENCES` — each has a cap; only killing reaches 5; 1–2★ the police tail, 3★ they ram and can bust, 4★ they shoot), lie-low, respray, levels. Dead coupes burn off after 2.5 s (`targetGone`) and leave the collision world |
+| `mission.mjs` | The director: target coupe, the armoured van and the exchange (the van drives to a picked `meet`; its crew escalates by level — ≤2 settled, 3–4 runner, 5+ hunter that U-turns onto you and rams via `onVanRam`), `runners` (level 4+: extra couriers for the meet; delivered = coupe armour, stopped = +150), the `rival` (level 3+: a white competing hunter that races you to the mark — its kill pays you nothing; +200 bounty), police fleet, the wanted ladder (`OFFENCES` — each has a cap; only killing reaches 5; 1–2★ the police tail, 3★ they ram and can bust, 4★ they shoot), lie-low, respray, levels. Dead coupes burn off after 2.5 s (`targetGone`) and leave the collision world |
 | `lights.mjs` | Traffic signals. Three real lenses per head, `green → amber → red → red+amber → green`. Each head faces one approach |
 | `peds.mjs` | Pedestrians: walk, cross, get hit |
 | `pickups.mjs` | Six cassettes and the briefcase the coupe drops |

@@ -71,6 +71,9 @@ export class Mission {
     this.busted = false;
     this.shots = [];                 // AI shots for main to render/apply
     this.police = [];
+    this.runners = [];               // extra couriers for the meet (level 4+)
+    this.deliveries = 0;
+    this.rival = null;               // the competing hunter (level 3+)
     // The exchange: from level two the coupe is not merely running, it is
     // going somewhere. An armoured van is bringing the drop, and if the two
     // of them meet the coupe leaves the meeting stronger than it arrived.
@@ -120,13 +123,36 @@ export class Mission {
     this.lastSeen = null;
     this.searchPoint = null;
     this.sightingT = 6;              // the radio's first report comes early
+    // The rival: from level three another hunter is working your mark,
+    // and the agency pays nothing for a coupe somebody else stopped.
+    if (this.level >= 3) {
+      const aves = net.edges.filter(q => q.cls === 'avenue');
+      const re = this.farEdge(aves, 0.83 + this.level * 0.11);
+      const rv = new Driver(net, re, 1, 0, re.len * 0.5);
+      rv.thinkT = 0; rv.fireT = 0; rv.health = 5;
+      if (!this.rivalCar) {
+        this.rivalCar = this.buildCar(new Color3(0.85, 0.86, 0.88), true,
+                                      new Color3(1.6, 0.15, 0.1));
+      }
+      this.rivalCar.root.setEnabled(true);
+      this.rival = rv;
+    } else {
+      this.rival = null;
+      if (this.rivalCar) this.rivalCar.root.setEnabled(false);
+    }
     this.spawnVan();
   }
 
   spawnVan() {
     this.exchangeT = 0;
     this.dropDone = false;
-    if (this.level < 2) { this.van = null; if (this.vanCar) this.vanCar.root.setEnabled(false); return; }
+    if (this.level < 2) {
+      this.van = null;
+      if (this.vanCar) this.vanCar.root.setEnabled(false);
+      this.runners = [];
+      for (const c of this.runnerCars || []) c.root.setEnabled(false);
+      return;
+    }
     const net = this.net;
     const roads = net.edges.filter(e => e.cls === 'avenue' || e.cls === 'highway');
     const e = this.farEdge(roads, 0.61 + this.level * 0.13);
@@ -159,6 +185,29 @@ export class Mission {
     }
     this.vanCar.root.setEnabled(true);
     this.van = d;
+    // The runners: Turbo Esprit's real structure. From level four, extra
+    // couriers converge on the same meet. Each delivery that goes through
+    // hardens the coupe's eventual armour; each runner stopped is paid.
+    this.deliveries = 0;
+    const wantRunners = this.level >= 6 ? 2 : this.level >= 4 ? 1 : 0;
+    if (!this.runnerCars) this.runnerCars = [];
+    while (this.runnerCars.length < wantRunners) {
+      this.runnerCars.push(this.buildCar(new Color3(0.10, 0.09, 0.05), true,
+                                         new Color3(1.3, 0.75, 0.1)));
+    }
+    this.runners = [];
+    const streets2 = net.edges.filter(q => q.cls === 'street');
+    for (let k = 0; k < wantRunners; k++) {
+      const re = this.farEdge(streets2, 0.23 + k * 0.31 + this.level * 0.07);
+      const r = new Driver(net, re, 1, 0, re.len * 0.4);
+      r.thinkT = 0; r.health = 2; r.live = true;
+      r.car = this.runnerCars[k];
+      r.car.root.setEnabled(true);
+      this.runners.push(r);
+    }
+    for (let k = wantRunners; k < this.runnerCars.length; k++) {
+      this.runnerCars[k].root.setEnabled(false);
+    }
   }
 
   damageVan(n, player) {
@@ -183,6 +232,29 @@ export class Mission {
     this.target.stateName = 'fleeing';
     this.target.suspicion = 9;
     if (this.state === 'locate') this.state = 'intercept';
+  }
+
+  damageRunner(r, n) {
+    if (!r.live) return;
+    r.health -= n;
+    if (r.health > 0) { this.hud.say('RUNNER HIT'); return; }
+    r.live = false;
+    r.car.root.setEnabled(false);
+    if (this.onScore) this.onScore(150);
+    this.hud.say('RUNNER DOWN · +150 — THE DROP THINS');
+    if (this.onBoom) this.onBoom(r.pos.x, r.pos.y, r.pos.z, 'runner');
+  }
+
+  damageRival(n) {
+    const rv = this.rival;
+    if (!rv) return;
+    rv.health -= n;
+    if (rv.health > 0) { this.hud.say(`RIVAL HIT · ${rv.health} MORE`); return; }
+    if (this.onScore) this.onScore(200);
+    this.hud.say('RIVAL DOWN · +200 — THE MARK IS YOURS ALONE', true);
+    if (this.onBoom) this.onBoom(rv.pos.x, rv.pos.y, rv.pos.z, 'rival');
+    this.rival = null;
+    this.rivalCar.root.setEnabled(false);
   }
 
   policeWanted() { return Math.min(1 + this.wanted, 5); }
@@ -285,6 +357,11 @@ export class Mission {
       if (this.level >= 5 && speed > 8 && this.onVanRam) {
         this.onVanRam(Math.min(16, speed * 1.1));
       }
+    } else if (other === this.rival) {
+      // The rival is fair game and nobody's witness.
+      if (speed > 6) this.damageRival(1);
+    } else if (this.runners.includes(other)) {
+      if (speed > 6) this.damageRunner(other, 1);
     } else if (this.police.includes(other)) {
       // Same bar as ramming a civilian: it has to be a hit, not a nudge.
       // Cruisers on surveillance crowd you on purpose, and brushing one at
@@ -313,23 +390,39 @@ export class Mission {
     }
   }
 
-  damageTarget(n, player) {
+  // `by` is who did the damage: the player unless told otherwise. A mark
+  // the rival stops is a level with no payday and no briefcase - the
+  // competition took both.
+  damageTarget(n, player, by) {
     const t = this.target;
     t.health -= n;
     if (t.health > 0) {
-      this.hud.say(`TARGET HIT · ${t.health} MORE`);
+      if (by === 'rival') {
+        this.rivalSayT = (this.rivalSayT || 0) - n;
+        if (this.rivalSayT <= 0) {
+          this.rivalSayT = 3;
+          this.hud.say('THE RIVAL IS WORKING YOUR MARK — GET THERE');
+        }
+      } else {
+        this.hud.say(`TARGET HIT · ${t.health} MORE`);
+      }
       if (t.stateName !== 'fleeing') { t.stateName = 'fleeing'; t.suspicion = 9; }
       if (this.state === 'locate') { this.state = 'intercept'; }
     } else if (this.state !== 'done') {
       this.state = 'done';
       this.doneT = 0;
-      const base = 500 * this.level;
-      const bonus = this.cleanHands ? 250 : 0;
-      if (this.onScore) this.onScore(base + bonus);
-      if (this.onBoom) this.onBoom(t.pos.x, t.pos.y, t.pos.z, 'target', this.cleanHands);
-      this.hud.say(`TARGET DISABLED · +${base}${bonus ? ' · CLEAN +250' : ''}`, true);
-      // Whatever it was carrying is now lying in the road.
-      if (this.onDrop) this.onDrop(t.pos.x, t.pos.y, t.pos.z);
+      if (by === 'rival') {
+        this.hud.say('YOUR MARK WENT DOWN TO THE RIVAL — NOTHING PAID', true);
+        if (this.onBoom) this.onBoom(t.pos.x, t.pos.y, t.pos.z, 'rivalkill', false);
+      } else {
+        const base = 500 * this.level;
+        const bonus = this.cleanHands ? 250 : 0;
+        if (this.onScore) this.onScore(base + bonus);
+        if (this.onBoom) this.onBoom(t.pos.x, t.pos.y, t.pos.z, 'target', this.cleanHands);
+        this.hud.say(`TARGET DISABLED · +${base}${bonus ? ' · CLEAN +250' : ''}`, true);
+        // Whatever it was carrying is now lying in the road.
+        if (this.onDrop) this.onDrop(t.pos.x, t.pos.y, t.pos.z);
+      }
     }
   }
 
@@ -515,10 +608,12 @@ export class Mission {
           this.dropDone = true;
           this.cleanHands = false;
           t.armoured = true;
-          t.health = t.maxHealth = t.health + 3 + this.level;
+          // Every runner delivery that went through is plate on the coupe.
+          t.health = t.maxHealth = t.health + 3 + this.level + this.deliveries * 2;
           t.stateName = 'fleeing';
           t.suspicion = 9;
-          this.hud.say('THE DROP WENT THROUGH — THE COUPE IS ARMOURED NOW', true);
+          this.hud.say('THE DROP WENT THROUGH — THE COUPE IS ARMOURED NOW' +
+            (this.deliveries ? ` · ${this.deliveries} EXTRA DELIVER${this.deliveries > 1 ? 'IES' : 'Y'} HARDENED IT` : ''), true);
           this.van = null;
           this.vanCar.root.setEnabled(false);
         }
@@ -527,6 +622,65 @@ export class Mission {
       }
     }
 
+    // ---------------- the runners ---------------------------------------
+    // Extra couriers converging on the same meet. Skittish: the player
+    // closing in sends them wide; a spell parked beside the van and the
+    // delivery goes through, which the coupe will thank them for later.
+    for (const r of this.runners) {
+      if (!r.live) continue;
+      r.thinkT -= dt;
+      const dpr = dist(r, player);
+      const scared = dpr < 30;
+      if (r.thinkT <= 0) {
+        r.thinkT = scared ? 0.6 : 1.8;
+        r.rInd = (scared || !this.van)
+          ? chooseTurn(r, player.pos.x, player.pos.z, true)
+          : chooseTurn(r, this.meet.x, this.meet.z, false);
+      }
+      r.update(dt, { throttle: 1, steer: 0, indicate: r.rInd,
+                     maxSpeed: CLASSES[r.e.cls].limit * (scared ? 1.3 : 0.9) });
+      if (r.blocked) r.beginUTurn();
+      r.car.root.position.set(r.pos.x, r.pos.y, r.pos.z);
+      r.car.root.rotation.y = r.pos.yaw;
+      if (this.van && dist(r, this.van) < 24) {
+        r.deliverT = (r.deliverT || 0) + dt;
+        if (r.deliverT > 2.5) {
+          r.live = false;
+          r.car.root.setEnabled(false);
+          this.deliveries += 1;
+          this.hud.say('A RUNNER MADE ITS DELIVERY — THE DROP GROWS');
+        }
+      } else r.deliverT = 0;
+    }
+
+    // ---------------- the rival -----------------------------------------
+    // The competing hunter drives straight at your mark - it always knows
+    // where the coupe is; that is what being the competition means - and
+    // works it over at range. Its fire also flushes the coupe into the
+    // open, which cuts both ways.
+    if (this.rival && this.state !== 'done') {
+      const rv = this.rival;
+      rv.thinkT -= dt;
+      if (rv.thinkT <= 0) {
+        rv.thinkT = 0.8;
+        rv.rInd = chooseTurn(rv, t.pos.x, t.pos.z, false);
+      }
+      rv.update(dt, { throttle: 1, steer: 0, indicate: rv.rInd,
+                      maxSpeed: CLASSES[rv.e.cls].limit * 1.25 });
+      if (rv.blocked) rv.beginUTurn();
+      this.rivalCar.root.position.set(rv.pos.x, rv.pos.y, rv.pos.z);
+      this.rivalCar.root.rotation.y = rv.pos.yaw;
+      rv.fireT -= dt;
+      if (rv.fireT <= 0 && dist(rv, t) < 30) {
+        rv.fireT = 1.6;
+        this.shots.push({ from: rv.pos, to: t.pos, hurt: 0, kind: 'rival' });
+        this.damageTarget(0.5, null, 'rival');
+      }
+    } else if (this.rival && this.state === 'done') {
+      // The job is done - someone's job, anyway - and the rival leaves.
+      this.rival = null;
+      this.rivalCar.root.setEnabled(false);
+    }
     }                                  // end of the not-travelling block
 
     // ---------------- the fleet ----------------------------------------
@@ -591,6 +745,8 @@ export class Mission {
         if (this.onTravel && this.level > 2 && this.level % 2 === 1) {
           this.state = 'travel';
           if (this.van) { this.van = null; this.vanCar.root.setEnabled(false); }
+          for (const r of this.runners) { r.live = false; r.car.root.setEnabled(false); }
+          if (this.rival) { this.rival = null; this.rivalCar.root.setEnabled(false); }
           this.onTravel(this.level);
         } else {
           this.state = 'locate';
@@ -609,6 +765,10 @@ export class Mission {
   mapEntries() {
     const out = this.police.map(p => ({ pos: p.pos, mapColour: 'rgba(90, 160, 255, 0.95)' }));
     if (this.van) out.push({ pos: this.van.pos, mapColour: 'rgba(255, 190, 60, 0.98)', big: true });
+    for (const r of this.runners) {
+      if (r.live) out.push({ pos: r.pos, mapColour: 'rgba(255, 170, 40, 0.85)' });
+    }
+    if (this.rival) out.push({ pos: this.rival.pos, mapColour: 'rgba(245, 245, 255, 0.95)', big: true });
     if (this.state !== 'locate' && !this.targetGone) {
       out.push({ pos: this.target.pos, mapColour: 'rgba(255, 70, 70, 0.95)', big: true });
     } else if (this.state === 'locate' && this.lastSeen) {

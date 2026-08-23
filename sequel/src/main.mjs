@@ -590,11 +590,34 @@ function coastSkyTexture() {
   dt.update();
   return dt;
 }
+// The other end of the same afternoon.
+function sunsetSkyTexture() {
+  const dt = new DynamicTexture('ssky', { width: 64, height: 512 }, scene, true);
+  const x = dt.getContext();
+  const g = x.createLinearGradient(0, 0, 0, 512);
+  g.addColorStop(0, '#2a1147'); g.addColorStop(0.45, '#8c2a5e');
+  g.addColorStop(0.72, '#ff7a3c'); g.addColorStop(0.9, '#ffc95e');
+  g.addColorStop(1, '#ffe9b0');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 512);
+  dt.update();
+  return dt;
+}
+// What the coast morph fades toward, per mode: additive targets over the
+// night values already in the code below.
+const MOODS = {
+  day:    { hemi: 0.5,  dif: [0.30, 0.37, 0.10], gnd: [0.30, 0.26, 0.10],
+            clear: [0.09, 0.31, 0.52], fog: [0.36, 0.47, 0.52],
+            expo: 0.22, con: 0.12, sunT: [0.25, 0.05, -0.25] },
+  sunset: { hemi: 0.34, dif: [0.45, 0.18, -0.05], gnd: [0.40, 0.15, 0.02],
+            clear: [0.28, 0.07, 0.20], fog: [0.42, 0.16, 0.22],
+            expo: 0.15, con: 0.06, sunT: [0.35, -0.15, -0.5] },
+};
 // One cylinder, not four walls: a box of sky planes has four corners, and
 // out on the open coast where nothing occludes the horizon you can see
 // every one of them as a hard vertical seam. A cylinder has none, is one
 // mesh instead of four, and takes the same gradient.
 const daySkies = [];
+let daySkyMat = null, daySkyTex = null, sunsetSkyTex = null;
 {
   const p = MeshBuilder.CreateCylinder('dsky', {
     diameter: 2560, height: 820, tessellation: 40,
@@ -602,22 +625,33 @@ const daySkies = [];
   }, scene);
   p.position.set(mid, 270, mid);
   const dm = new StandardMaterial('dskym', scene);
-  dm.emissiveTexture = coastSkyTexture();
+  daySkyTex = coastSkyTexture();
+  dm.emissiveTexture = daySkyTex;
   dm.disableLighting = true;
   dm.fogEnabled = false;
   p.material = dm;
   p.visibility = 0;
   p.setEnabled(false);
   daySkies.push(p);
+  daySkyMat = dm;
+}
+// Swap the coast cylinder's gradient to match the chosen mood.
+function setCoastSky() {
+  if (!daySkyMat) return;
+  if (coast2.mode === 'sunset') {
+    if (!sunsetSkyTex) sunsetSkyTex = sunsetSkyTexture();
+    daySkyMat.emissiveTexture = sunsetSkyTex;
+  } else {
+    daySkyMat.emissiveTexture = daySkyTex;
+  }
 }
 let vibe = 0;
 let vibeStep = 0;
-// The coast used to turn to daylight when you got on the ring road. It is
-// off by default now because it was suspected of costing frames. Measured
-// here it is worth two to four per cent of a coast frame - which is not
-// much - so B puts it back, and the honest way to settle it is to fly the
-// coast with it on and off and read the counter.
-const coast2 = { daylight: false };
+// The coast morph: off by default (it was once suspected of costing
+// frames; measured at two to four per cent of a coast frame). B cycles
+// NEON NIGHT -> DAYLIGHT -> SUNSET; the OUTRUN codeword goes straight to
+// sunset, as is right and proper.
+const coast2 = { mode: 'off' };
 
 // The run: score, health, and how it ends.
 const run = { score: 0, health: 100, over: false, reason: '', time: 0, started: false, saved: false };
@@ -695,6 +729,12 @@ mission.onBoom = (x, y, z, kind, clean) => {
   if (kind === 'van') {
     stats.vans += 1;
     bigWord('DROP STOPPED', 'THE COUPE IS ON ITS OWN');
+  } else if (kind === 'rival') {
+    bigWord('RIVAL DOWN', 'THE MARK IS YOURS ALONE');
+  } else if (kind === 'rivalkill') {
+    bigWord('MARK LOST', 'THE RIVAL GOT THERE FIRST');
+  } else if (kind === 'runner') {
+    // The HUD line carries it; a runner is not a headline.
   } else {
     // A spotless takedown earns the line every plan-lover knows.
     bigWord('TARGET DOWN', clean
@@ -799,6 +839,13 @@ function firePlayerGun(dt) {
     consider(V, V.pos.x, V.pos.z, 'van', V.pos.y);
   }
   for (const p of mission.police) consider(p, p.pos.x, p.pos.z, 'police', p.pos.y);
+  if (mission.rival) {
+    const R = mission.rival;
+    consider(R, R.pos.x, R.pos.z, 'rival', R.pos.y);
+  }
+  for (const r of mission.runners) {
+    if (r.live) consider(r, r.pos.x, r.pos.z, 'runner', r.pos.y);
+  }
   for (const d of traffic) consider(d, d.pos.x, d.pos.z, 'traffic', d.pos.y);
   for (const p of peds.list) {
     if (p.state === 'down') continue;
@@ -813,6 +860,12 @@ function firePlayerGun(dt) {
     run.score += 25;
   } else if (bestKind === 'target') {
     mission.damageTarget(0.5, player);
+    run.score += 25;
+  } else if (bestKind === 'rival') {
+    mission.damageRival(0.5);
+    run.score += 25;
+  } else if (bestKind === 'runner') {
+    mission.damageRunner(best, 1);
     run.score += 25;
   } else if (bestKind === 'police') {
     const o = OFFENCES.shooting;
@@ -905,6 +958,8 @@ function updateCollisions(dt, clock) {
   const everyone = [player, ...traffic, ...mission.police];
   if (!mission.targetGone) everyone.push(mission.target);
   if (mission.van) everyone.push(mission.van);
+  if (mission.rival) everyone.push(mission.rival);
+  for (const r of mission.runners) if (r.live) everyone.push(r);
   for (let i = 0; i < everyone.length; i++) {
     for (let j = i + 1; j < everyone.length; j++) {
       const a = everyone[i], b = everyone[j];
@@ -1149,7 +1204,11 @@ function updateGarage(dt, clock) {
   const job = SERVICE[garage.stage];
   let done = false;
   if (job.key === 'fuel') {
-    tank.fuel = Math.min(100, tank.fuel + 34 * dt);
+    // Petrol is priced by reputation: half a point a unit clean, half
+    // again more per star. A hot car pays for the pump's discretion.
+    const add = Math.min(34 * dt, 100 - tank.fuel);
+    tank.fuel += add;
+    run.score = Math.max(0, run.score - add * 0.5 * (1 + mission.wanted));
     done = tank.fuel > 99.5;
   } else if (job.key === 'paint') {
     garage.t += dt;
@@ -1173,7 +1232,8 @@ function updateGarage(dt, clock) {
   }
   if (garage.said !== job.key) {
     garage.said = job.key;
-    hud.say(job.say + '…');
+    hud.say(job.say +
+      (job.key === 'fuel' && mission.wanted ? ' — HOT CARS PAY MORE' : '') + '…');
   }
   if (done) {
     garage.stage += 1;
@@ -1408,8 +1468,9 @@ const tick = (dt) => {
     if (mirror.refreshRate !== want) mirror.refreshRate = want;
   }
 
-  // ---- the morph: city night <-> coast daylight ------------------------
-  const wantVibe = (coast2.daylight && player.e && player.e.cls === 'highway') ? 1
+  // ---- the morph: city night <-> the chosen coast mood -----------------
+  const mood = MOODS[coast2.mode] || MOODS.day;
+  const wantVibe = (coast2.mode !== 'off' && player.e && player.e.cls === 'highway') ? 1
     : (player.mode === 'turn' ? vibe : 0);
   vibe += (wantVibe - vibe) * Math.min(1, dt * 0.55);
   // An exponential fade never arrives, so snap the last hair of it. Without
@@ -1417,12 +1478,15 @@ const tick = (dt) => {
   // being treated as a change.
   if (Math.abs(wantVibe - vibe) < 0.005) vibe = wantVibe;
   // Free per frame: these are plain uniforms, nothing downstream rebuilds.
-  hemi.intensity = 0.22 + vibe * 0.5;
-  hemi.diffuse.set(0.45 + vibe * 0.3, 0.35 + vibe * 0.37, 0.75 + vibe * 0.1);
-  hemi.groundColor.set(0.05 + vibe * 0.3, 0.02 + vibe * 0.26, 0.1 + vibe * 0.1);
-  scene.clearColor.set(0.012 + vibe * 0.09, 0.006 + vibe * 0.31,
-                       0.035 + vibe * 0.52, 1);
-  sunM.emissiveColor.set(1 + vibe * 0.25, 1 + vibe * 0.05, 1 - vibe * 0.25);
+  hemi.intensity = 0.22 + vibe * mood.hemi;
+  hemi.diffuse.set(0.45 + vibe * mood.dif[0], 0.35 + vibe * mood.dif[1],
+                   0.75 + vibe * mood.dif[2]);
+  hemi.groundColor.set(0.05 + vibe * mood.gnd[0], 0.02 + vibe * mood.gnd[1],
+                       0.1 + vibe * mood.gnd[2]);
+  scene.clearColor.set(0.012 + vibe * mood.clear[0], 0.006 + vibe * mood.clear[1],
+                       0.035 + vibe * mood.clear[2], 1);
+  sunM.emissiveColor.set(1 + vibe * mood.sunT[0], 1 + vibe * mood.sunT[1],
+                         1 + vibe * mood.sunT[2]);
   sun.scaling.setAll(1 + vibe * 0.4);
 
   // Expensive per frame: touching the image processing configuration flags
@@ -1443,10 +1507,11 @@ const tick = (dt) => {
       p.visibility = v >= 0.98 ? 1 : v;
     }
     for (const p of nightSkies) p.setEnabled(nightOn);
-    scene.fogColor.set(0.05 + v * 0.36, 0.03 + v * 0.47, 0.11 + v * 0.52);
+    scene.fogColor.set(0.05 + v * mood.fog[0], 0.03 + v * mood.fog[1],
+                       0.11 + v * mood.fog[2]);
     scene.fogDensity = (0.0017 - v * 0.0006) * fogScale * (safe.reduceFlash ? 1.6 : 1);
-    pipe.imageProcessing.exposure = 1.05 + v * 0.22;
-    pipe.imageProcessing.contrast = 1.3 - v * 0.12;
+    pipe.imageProcessing.exposure = 1.05 + v * mood.expo;
+    pipe.imageProcessing.contrast = 1.3 - v * mood.con;
 
   }
 
@@ -1577,13 +1642,18 @@ const RULES_TEXT =
   'SEE YOU. THE LAST ONES COME FOR YOU.\n\n' +
   'A STOPPED COUPE GIVES UP ITS BRIEFCASE. RETRIEVE IT BEFORE\n' +
   'THE POLICE DO.\n\n' +
+  'FROM YOUR THIRD CONTRACT YOU HAVE COMPETITION: A RIVAL HUNTER,\n' +
+  'WHITE CAR, RED TRIM. THE AGENCY PAYS NOTHING FOR A MARK IT\n' +
+  'STOPS FIRST. LATER, EXTRA RUNNERS FEED THE DROP — EACH ONE\n' +
+  'STOPPED IS PAID, EACH ONE THROUGH HARDENS THE COUPE.\n\n' +
   'ON THE AUTHORITIES: THEY ACT ONLY ON WHAT THEY SEE. TRAFFIC\n' +
   'OFFENCES WILL COST YOU TWO STARS AT MOST. VIOLENCE COSTS MORE,\n' +
   'AND ONLY A KILLING BUYS ALL FIVE. AT THREE STARS THEY RAM, AND\n' +
   'WILL TAKE YOU WHERE YOU STAND. AT FOUR, THEY SHOOT.\n\n' +
   'SHOULD YOU ATTRACT ATTENTION, DISAPPEAR. LIE LOW — OR HAVE THE\n' +
   'CAR RESPRAYED WHERE NOBODY IN BLUE IS WATCHING. THE GREEN\n' +
-  'SQUARES ARE GARAGES: PETROL, PAINT, PANEL WORK.\n\n' +
+  'SQUARES ARE GARAGES: PETROL, PAINT, PANEL WORK — AND PETROL\n' +
+  'IS PRICED BY YOUR REPUTATION.\n\n' +
   'DRIVE CLEANLY AND YOU WILL BE PAID FOR IT. AND SHOULD YOU COME\n' +
   'ACROSS THE SIX CASSETTES — CONSIDER THEM A PERK OF THE TRADE.\n\n' +
   'I WILL BE IN TOUCH. GOOD HUNTING.';
@@ -1592,7 +1662,7 @@ const CONTROLS_TEXT =
   'SPACE FIRE · SHIFT TURBO · SLOW INTO A GARAGE SPUR TO BE SERVED\n' +
   'THE RING ROAD IS THE COAST — GO SEE IT\n\n' +
   'IN GAME: C CAMERA · G QUALITY · F REDUCED FLASHING\n' +
-  'B COAST DAYLIGHT · M MUSIC · X NEXT TRACK';
+  'B COAST MOOD (NIGHT/DAY/SUNSET) · M MUSIC · X NEXT TRACK';
 function fameText() {
   const t = loadScores();
   return t.length
@@ -1755,8 +1825,10 @@ function menuKey(code) {
     }
     if (!egg.outrun && menuTyped.endsWith('OUTRUN')) {
       egg.outrun = true;
-      coast2.daylight = true;
-      bigWord('OUTRUN', 'MAGICAL SOUND SHOWER — THE COAST IS IN DAYLIGHT');
+      coast2.mode = 'sunset';
+      setCoastSky();
+      vibeStep = -1;
+      bigWord('OUTRUN', 'MAGICAL SOUND SHOWER — SUNSET ON THE COAST');
       return;
     }
   }
@@ -1809,8 +1881,12 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyX' && sound.started) sound.next();
   if (e.code === 'KeyF') toggleFlash();
   if (e.code === 'KeyB') {
-    coast2.daylight = !coast2.daylight;
-    hud.say(coast2.daylight ? 'COAST DAYLIGHT — ON' : 'COAST DAYLIGHT — OFF (NEON)');
+    coast2.mode = coast2.mode === 'off' ? 'day'
+      : coast2.mode === 'day' ? 'sunset' : 'off';
+    setCoastSky();
+    vibeStep = -1;                     // re-applies fog/exposure at once
+    hud.say('COAST — ' + (coast2.mode === 'off' ? 'NEON NIGHT'
+      : coast2.mode === 'day' ? 'DAYLIGHT' : 'SUNSET'));
   }
   if (e.code === 'KeyC') cycleView(1);
   if (e.code === 'KeyG') {
