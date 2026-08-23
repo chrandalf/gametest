@@ -495,6 +495,36 @@ export class Mission {
         }
       }
     } else this.calledQ = null;
+    // The marker the arrow follows GLIDES between radio reports instead of
+    // teleporting. A fix that leaps 130 m in one frame reads as the mark
+    // respawning across the map - chased down with telemetry, that was the
+    // whole of the "armoured car keeps respawning" bug; the vehicles
+    // themselves never jump. The ghost drives at 30 m/s: faster than the
+    // coupe, slow enough to read as a trail being followed.
+    {
+      // The trail lives for the whole town: frozen while a level wraps up
+      // (the arrow is hidden then anyway), gliding to the next objective
+      // when the hunt resumes - so the arrow never once jumps.
+      const goal = this.state === 'done' ? null
+        : this.state === 'locate' ? this.lastSeen : t.pos;
+      if (goal) {
+        if (!this.trail) {
+          const seed = this.searchPoint || goal;
+          this.trail = { x: seed.x, z: seed.z };
+        }
+        const dx = goal.x - this.trail.x;
+        const dz = goal.z - this.trail.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 0.5) {
+          // Quick to catch up, but with a hard top speed: even a trail
+          // that has half the map to cover sweeps across it in a few
+          // seconds rather than snapping.
+          const k = Math.min(1, (Math.min(90, Math.max(30, d)) * dt) / d);
+          this.trail.x += dx * k;
+          this.trail.z += dz * k;
+        }
+      }
+    }
     if (this.state !== 'done') {
       const dp = dist(t, player);
       if (this.state === 'locate' && dp < 55) {
@@ -771,8 +801,9 @@ export class Mission {
     if (this.rival) out.push({ pos: this.rival.pos, mapColour: 'rgba(245, 245, 255, 0.95)', big: true });
     if (this.state !== 'locate' && !this.targetGone) {
       out.push({ pos: this.target.pos, mapColour: 'rgba(255, 70, 70, 0.95)', big: true });
-    } else if (this.state === 'locate' && this.lastSeen) {
-      out.push({ pos: this.lastSeen, mapColour: 'rgba(255, 130, 130, 0.6)', big: true });
+    } else if (this.state === 'locate' && (this.trail || this.lastSeen)) {
+      out.push({ pos: this.trail || this.lastSeen,
+                 mapColour: 'rgba(255, 130, 130, 0.6)', big: true });
     }
     return out;
   }
@@ -783,6 +814,8 @@ export class Mission {
   // pointing nowhere is not a direction, it is a shrug.
   bearingPoint() {
     if (this.state === 'travel') return this.travelPoint || null;
+    if (this.state === 'done') return this.target.pos;   // arrow hidden then
+    if (this.trail) return this.trail;
     if (this.state !== 'locate') return this.target.pos;
     if (this.lastSeen) return this.lastSeen;
     if (!this.searchPoint) {
