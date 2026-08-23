@@ -37,7 +37,12 @@ about *where roads are*, it is answered here.
   ledger/paint.
 - The street cull never leaves a dead end: every junction keeps at least
   two ways out (`degree < 3` guard), and the map stays one piece.
-- `GRID` (11), `CELL` (67 m average; pitches are irregular per row/column)
+- The footprint is a per-seed **rectangle**: `GX`×`GZ` junctions, each
+  9–13 and never equal (returned on the net). The crossings leave two
+  per-seed rows of the eastern ring, pushed apart until the bridges fit,
+  and the island centres between them — so it wanders along the coast
+  from town to town. `GRID` (11) survives only as the notional average;
+  `CELL` (67 m average; pitches are irregular per row/column)
 - `CLASSES` — `street`, `avenue`, `highway` (the coastal ring), `express`
   (elevated deck), `ramp` (slip road), `service` (garage spur). Each has
   `lanesPer`, `laneW`, `limit`.

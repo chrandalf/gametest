@@ -1338,7 +1338,7 @@ const tick = (dt) => {
     player.update(dt, { throttle: 0.5, steer: 0, maxSpeed: 6.5 });
     if (player.mode === 'edge' &&
         (player.e.cls !== 'avenue' || player.e.axis !== 1 ||
-         player.pos.z > net.zs[GRID - 1] - 80)) {
+         player.pos.z > net.zs[net.zs.length - 1] - 80)) {
       player.e = startEdge; player.dir = 1; player.lane = 0; player.s = 6;
       player.lat = 0; player.latV = 0; player.speed = 5; player.mode = 'edge';
       player.place();

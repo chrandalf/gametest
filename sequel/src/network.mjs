@@ -51,37 +51,48 @@ export function halfWidth(cls) {
 export function buildNetwork(seed = 19860508) {
   const rand = mulberry(seed);
 
+  // The footprint is a RECTANGLE, not a square: each town draws its own
+  // width and depth, and never the same for both - a long thin port town
+  // one seed, a deep inland sprawl the next.
+  const GX = 9 + ((rand() * 5) | 0);            // columns, 9..13
+  let GZ = 9 + ((rand() * 5) | 0);              // rows, 9..13
+  if (GZ === GX) GZ = GX + (GX < 11 ? 2 : -2);
+
   // Irregular pitches: some blocks squat, some long. Prefix-summed into
   // node coordinates.
   const pitch = () => CELL * (0.62 + rand() * 0.9);
   const xs = [0], zs = [0];
-  for (let k = 1; k < GRID; k++) { xs.push(xs[k - 1] + pitch()); zs.push(zs[k - 1] + pitch()); }
+  for (let k = 1; k < GX; k++) xs.push(xs[k - 1] + pitch());
+  for (let k = 1; k < GZ; k++) zs.push(zs[k - 1] + pitch());
 
   const nodes = [];
-  for (let j = 0; j < GRID; j++) {
-    for (let i = 0; i < GRID; i++) {
+  for (let j = 0; j < GZ; j++) {
+    for (let i = 0; i < GX; i++) {
       nodes.push({ i, j, x: xs[i], z: zs[j], y: 0, edges: [null, null, null, null] });
     }
   }
-  const at = (i, j) => (i < 0 || j < 0 || i >= GRID || j >= GRID) ? null : nodes[j * GRID + i];
+  const at = (i, j) => (i < 0 || j < 0 || i >= GX || j >= GZ) ? null : nodes[j * GX + i];
 
-  // Class layout: the perimeter ring is highway; two mid axes are avenues;
-  // everything else is street. Simple, legible, learnable - the point.
-  // WHERE the avenues run is the city's own business: a tight cross near
-  // the middle in one town, a wide box round it in another.
-  const midA = 2 + ((rand() * 3) | 0);
-  const midB = GRID - 1 - (2 + ((rand() * 3) | 0));
+  // Class layout: the perimeter ring is highway; two mid axes each way are
+  // avenues; everything else is street. Simple, legible, learnable - the
+  // point. WHERE the avenues run is the city's own business: a tight cross
+  // near the middle in one town, a wide box round it in another - and the
+  // rows and columns choose independently now.
+  const midAj = 2 + ((rand() * 3) | 0);
+  const midBj = GZ - 1 - (2 + ((rand() * 3) | 0));
+  const midAi = 2 + ((rand() * 3) | 0);
+  const midBi = GX - 1 - (2 + ((rand() * 3) | 0));
   const classFor = (a, axis) => {
-    if (axis === 0 && (a.j === 0 || a.j === GRID - 1)) return 'highway';
-    if (axis === 1 && (a.i === 0 || a.i === GRID - 1)) return 'highway';
-    if (axis === 0 && (a.j === midA || a.j === midB)) return 'avenue';
-    if (axis === 1 && (a.i === midA || a.i === midB)) return 'avenue';
+    if (axis === 0 && (a.j === 0 || a.j === GZ - 1)) return 'highway';
+    if (axis === 1 && (a.i === 0 || a.i === GX - 1)) return 'highway';
+    if (axis === 0 && (a.j === midAj || a.j === midBj)) return 'avenue';
+    if (axis === 1 && (a.i === midAi || a.i === midBi)) return 'avenue';
     return 'street';
   };
 
   const edges = [];
-  for (let j = 0; j < GRID; j++) {
-    for (let i = 0; i < GRID; i++) {
+  for (let j = 0; j < GZ; j++) {
+    for (let i = 0; i < GX; i++) {
       const n = at(i, j);
       for (const [axis, di, dj] of [[0, 1, 0], [1, 0, 1]]) {
         const m = at(i + di, j + dj);
@@ -111,7 +122,7 @@ export function buildNetwork(seed = 19860508) {
   // overlaps the ring road), a climb over the shallows, a long span, and a
   // descent onto the island.
   const degree = (n) => n.edges.filter(Boolean).length;
-  const extX = xs[GRID - 1], extZ = zs[GRID - 1];
+  const extX = xs[GX - 1], extZ = zs[GZ - 1];
   const CAUSEWAY = 62;          // flat, clear of the ring junction
   const link = (a, b, axis, cls) => {
     const e = { id: edges.length, a, b, axis, cls,
@@ -130,9 +141,21 @@ export function buildNetwork(seed = 19860508) {
     return n;
   };
 
+  // Where the crossings leave the coast is the seed's choice too: two
+  // rows of the eastern ring, pushed apart until there is comfortably
+  // room for the climb, the span and the island between them. The island
+  // sits centred between its own bridges - so it wanders up and down the
+  // coast from town to town instead of always facing the middle.
+  let jN = (rand() * Math.max(1, GZ - 5)) | 0;
+  let jS = Math.min(GZ - 1, jN + 4 + ((rand() * (GZ - 4 - jN)) | 0));
+  while (zs[jS] - zs[jN] < 480 && (jN > 0 || jS < GZ - 1)) {
+    if (jN > 0) jN -= 1;
+    if (jS < GZ - 1) jS += 1;
+  }
+
   // The island: a small grid of its own, sitting out in the water.
   const IGRID = 3, IPITCH = 74;
-  const IX0 = extX + 250, IZ0 = extZ / 2 - IPITCH;
+  const IX0 = extX + 250, IZ0 = (zs[jN] + zs[jS]) / 2 - IPITCH;
   // The crossings run out to the island's middle column, so the bend and
   // the span sit exactly on its spine - a four metre kink at a junction
   // would put half the carriageway in the sea.
@@ -174,8 +197,8 @@ export function buildNetwork(seed = 19860508) {
     bridges.push(link(rampA, rampB, 1, 'ramp'));
     return top;
   };
-  crossing(at(GRID - 1, 0), isleAt(1, 0), true);
-  crossing(at(GRID - 1, GRID - 1), isleAt(1, IGRID - 1), false);
+  crossing(at(GX - 1, jN), isleAt(1, 0), true);
+  crossing(at(GX - 1, jS), isleAt(1, IGRID - 1), false);
 
   // How wide the deck is at each end of a slip road. A ramp that simply
   // stops being three lanes wide and starts being two looks drawn on; a
@@ -297,8 +320,8 @@ export function buildNetwork(seed = 19860508) {
     // Spread them: walk the interior nodes in a stride so they do not all
     // end up in one district.
     const cand = [];
-    for (let j = 1; j < GRID - 1; j++) {
-      for (let i = 1; i < GRID - 1; i++) cand.push(at(i, j));
+    for (let j = 1; j < GZ - 1; j++) {
+      for (let i = 1; i < GX - 1; i++) cand.push(at(i, j));
     }
     for (let k = 0; k < cand.length && forecourts.length < wanted; k++) {
       const n = cand[(k * 37 + 5) % cand.length];
@@ -354,7 +377,8 @@ export function buildNetwork(seed = 19860508) {
            island, bridges, forecourts, isleAt: (i, j) => island[j * IGRID + i],
            IGRID, IPITCH, IX0, IZ0,
            bounds: { x0: bx0, x1: bx1, z0: bz0, z1: bz1 },
-           extent: { x: xs[GRID - 1], z: zs[GRID - 1] } };
+           GX, GZ,
+           extent: { x: xs[GX - 1], z: zs[GZ - 1] } };
 }
 
 // A position on the network: edge, direction of travel (+1 a->b, -1 b->a),

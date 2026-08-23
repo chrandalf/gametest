@@ -95,6 +95,8 @@ export function buildCity(scene, net, mirror, seed = 19860508) {
 
   // ---- ground: one city-wide wet mirror plane -------------------------
   const ext = net.extent;
+  // The towns are rectangles now: read the real column/row counts.
+  const NX = net.xs.length, NZ = net.zs.length;
   const ground = MeshBuilder.CreateGround('g', { width: ext.x + 320, height: ext.z + 320 }, scene);
   ground.position.set(ext.x / 2, 0, ext.z / 2);
   const gm = new PBRMaterial('gm', scene);
@@ -500,20 +502,22 @@ export function buildCity(scene, net, mirror, seed = 19860508) {
     const h = Math.sin(bi * 127.1 + bj * 311.7 + zoneSalt) * 43758.5453;
     return h - Math.floor(h);
   };
-  const centre = (GRID - 1) / 2;
+  const cX = (NX - 1) / 2, cZ = (NZ - 1) / 2;
   const zones = [];
-  for (let bj = 0; bj < GRID - 1; bj++) {
+  for (let bj = 0; bj < NZ - 1; bj++) {
     zones.push([]);
-    for (let bi = 0; bi < GRID - 1; bi++) {
+    for (let bi = 0; bi < NX - 1; bi++) {
       const hsh = blockHash(bi, bj);
-      const dc = Math.hypot(bi - centre + 0.5, bj - centre + 0.5) / centre;
+      // Normalised per axis, so a long thin town still gets an oval
+      // downtown in its middle rather than a circle hanging off one end.
+      const dc = Math.hypot((bi - cX + 0.5) / cX, (bj - cZ + 0.5) / cZ);
       let z;
       if (dc < 0.34 + hsh * 0.12) z = 'downtown';
       else if (hsh < 0.07) z = 'park';
       else {
         // Quadrants, with a wobble on each border.
         const j = (blockHash(bj, bi) - 0.5) * 1.6;
-        const east = bi + j > centre - 0.5, north = bj + j > centre - 0.5;
+        const east = bi + j > cX - 0.5, north = bj + j > cZ - 0.5;
         z = east ? (north ? 'strip' : 'docks') : (north ? 'residential' : 'industrial');
       }
       zones[bj].push(z);
@@ -522,8 +526,8 @@ export function buildCity(scene, net, mirror, seed = 19860508) {
   // Which district a point in the world is in - the briefing uses it.
   const districtAt = (x, z) => {
     let bi = 0, bj = 0;
-    while (bi < GRID - 2 && x > net.xs[bi + 1]) bi += 1;
-    while (bj < GRID - 2 && z > net.zs[bj + 1]) bj += 1;
+    while (bi < NX - 2 && x > net.xs[bi + 1]) bi += 1;
+    while (bj < NZ - 2 && z > net.zs[bj + 1]) bj += 1;
     const key = (zones[bj] && zones[bj][bi]) || 'downtown';
     return DISTRICTS[key].label;
   };
@@ -570,8 +574,8 @@ export function buildCity(scene, net, mirror, seed = 19860508) {
   };
 
   // ---- blocks: buildings, some wearing signs --------------------------
-  for (let bj = 0; bj < GRID - 1; bj++) {
-    for (let bi = 0; bi < GRID - 1; bi++) {
+  for (let bj = 0; bj < NZ - 1; bj++) {
+    for (let bi = 0; bi < NX - 1; bi++) {
       // Block interior bounds, inset from the widest surrounding road.
       const pad = halfWidth('avenue') + 5;
       const x0 = net.xs[bi] + pad, x1 = net.xs[bi + 1] - pad;
@@ -990,8 +994,8 @@ export function buildCity(scene, net, mirror, seed = 19860508) {
     for (const e of net.edges) {
       if (e.cls !== 'avenue') continue;
       // An avenue edge touching the ring: sign it, near the ring end.
-      const aRing = e.a.i === 0 || e.a.j === 0 || e.a.i === GRID - 1 || e.a.j === GRID - 1;
-      const bRing = e.b.i === 0 || e.b.j === 0 || e.b.i === GRID - 1 || e.b.j === GRID - 1;
+      const aRing = e.a.i === 0 || e.a.j === 0 || e.a.i === NX - 1 || e.a.j === NZ - 1;
+      const bRing = e.b.i === 0 || e.b.j === 0 || e.b.i === NX - 1 || e.b.j === NZ - 1;
       if (!aRing && !bRing) continue;
       const towardB = bRing;
       const s = towardB ? e.len * 0.72 : e.len * 0.28;
