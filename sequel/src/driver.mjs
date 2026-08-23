@@ -88,7 +88,13 @@ export class Driver {
       if (dist - 1 < need) accel = Math.min(accel, -BRAKE);
       if (dist < 1.4 && this.speed < 2.5) { this.speed = 0; accel = Math.min(accel, 0); }
     }
-    this.speed = Math.max(0, this.speed + accel * dt);
+    this.speed = this.speed + accel * dt;
+    if (this.speed < 0) {
+      // Reverse, for pilots that have it (the player): slow and deliberate,
+      // straight back down the lane. AI keeps the 1986 spin instead.
+      this.speed = (this.canReverse && input.throttle < 0)
+        ? Math.max(this.speed, -4.5) : 0;
+    }
     if (input.throttle > 0) this.speed = Math.min(this.speed, maxSpeed);
 
     // --- lateral: analog in lane, magnetised, quantised changes --------
@@ -123,6 +129,7 @@ export class Driver {
 
     // --- advance -------------------------------------------------------
     this.s += this.speed * dt;
+    if (this.s < 0.5 && this.speed < 0) { this.s = 0.5; this.speed = 0; }
     this.blocked = false;
 
     if (turning && this.s >= this.e.len - commitDist) {
@@ -143,9 +150,10 @@ export class Driver {
       this.s = Math.min(this.s, stopAt);
       if (this.speed < 0.5) { this.speed = 0; this.blocked = true; }
     }
-    // Blocked at a dead end: holding brake spins the car round - the 1986
-    // answer to every cul-de-sac. (A real reverse gear can come later.)
-    if (this.blocked && input.throttle < 0) this.uTurn();
+    // Blocked at a dead end: an AI holding brake spins the car round - the
+    // 1986 answer to every cul-de-sac. A pilot with a reverse gear backs
+    // out instead.
+    if (this.blocked && input.throttle < 0 && !this.canReverse) this.uTurn();
     this.place();
   }
 

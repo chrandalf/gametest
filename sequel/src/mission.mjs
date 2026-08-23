@@ -74,6 +74,10 @@ export class Mission {
     this.runners = [];               // extra couriers for the meet (level 4+)
     this.deliveries = 0;
     this.rival = null;               // the competing hunter (level 3+)
+    // Difficulty multipliers, set by main from the menu: how tough the
+    // marks are, how hard the police drive, how much bullets hurt, what
+    // petrol costs.
+    this.diff = { hp: 1, police: 1, hurt: 1, petrol: 1 };
     // The exchange: from level two the coupe is not merely running, it is
     // going somewhere. An armoured van is bringing the drop, and if the two
     // of them meet the coupe leaves the meeting stronger than it arrived.
@@ -101,14 +105,22 @@ export class Mission {
     return list[start];
   }
 
+  // Level 9 - eight contracts, four towns behind you - is the last job:
+  // the paymaster rides the ring road behind heavy plate, with every
+  // escort the game knows how to field.
+  finale() { return this.level === 9; }
+
   spawnTarget() {
     const net = this.net;
-    const streets = net.edges.filter(e => e.cls === 'street');
-    const e = this.farEdge(streets, 0.37 + this.level * 0.19);
+    const roads = this.finale()
+      ? net.edges.filter(e => e.cls === 'highway')
+      : net.edges.filter(e => e.cls === 'street');
+    const e = this.farEdge(roads, 0.37 + this.level * 0.19);
     const d = new Driver(net, e, 1, 0, e.len * 0.3);
     d.suspicion = 0;
     d.armoured = this.level >= 3;
-    d.health = 2 + this.level + (d.armoured ? 2 : 0);
+    d.health = Math.max(1, Math.round(
+      (this.finale() ? 14 : 2 + this.level + (d.armoured ? 2 : 0)) * this.diff.hp));
     d.maxHealth = d.health;
     d.stateName = 'cruise';
     d.thinkT = 0;
@@ -129,7 +141,8 @@ export class Mission {
       const aves = net.edges.filter(q => q.cls === 'avenue');
       const re = this.farEdge(aves, 0.83 + this.level * 0.11);
       const rv = new Driver(net, re, 1, 0, re.len * 0.5);
-      rv.thinkT = 0; rv.fireT = 0; rv.health = 5;
+      rv.thinkT = 0; rv.fireT = 0;
+      rv.health = Math.max(2, Math.round(5 * this.diff.hp));
       if (!this.rivalCar) {
         this.rivalCar = this.buildCar(new Color3(0.85, 0.86, 0.88), true,
                                       new Color3(1.6, 0.15, 0.1));
@@ -177,7 +190,7 @@ export class Mission {
       this.meet = best ? { x: best.x, z: best.z } : { x: t.pos.x, z: t.pos.z };
     }
     d.thinkT = 0;
-    d.health = 4 + this.level;
+    d.health = Math.max(1, Math.round((4 + this.level) * this.diff.hp));
     d.maxHealth = d.health;
     if (!this.vanCar) {
       this.vanCar = this.buildCar(new Color3(0.06, 0.10, 0.07), true,
@@ -285,6 +298,10 @@ export class Mission {
     const q = this.districtAt
       ? this.districtAt(this.target.pos.x, this.target.pos.z)
       : quadrantName(this.target.pos.x, this.target.pos.z, this.net.extent);
+    if (this.finale()) {
+      this.hud.say('THE LAST JOB · THE PAYMASTER RIDES THE RING ROAD · END IT', true);
+      return;
+    }
     const vanLine = !this.van ? ''
       : this.level <= 2 ? ' · A VAN IS BRINGING THE DROP'
       : this.level <= 4 ? ' · THE VAN RUNS IF IT SEES YOU'
@@ -414,6 +431,12 @@ export class Mission {
       if (by === 'rival') {
         this.hud.say('YOUR MARK WENT DOWN TO THE RIVAL — NOTHING PAID', true);
         if (this.onBoom) this.onBoom(t.pos.x, t.pos.y, t.pos.z, 'rivalkill', false);
+      } else if (this.finale()) {
+        // The campaign's last job, done. Free play carries on after.
+        if (this.onScore) this.onScore(2000);
+        if (this.onBoom) this.onBoom(t.pos.x, t.pos.y, t.pos.z, 'paymaster', this.cleanHands);
+        this.hud.say('THE PAYMASTER IS DOWN · +2000 · THE COAST IS YOURS', true);
+        if (this.onDrop) this.onDrop(t.pos.x, t.pos.y, t.pos.z);
       } else {
         const base = 500 * this.level;
         const bonus = this.cleanHands ? 250 : 0;
@@ -576,7 +599,8 @@ export class Mission {
       const dp = dist(t, player);
       if (t.fireT <= 0 && dp < 34) {
         t.fireT = 0.9;
-        this.shots.push({ from: t.pos, to: player.pos, hurt: 4, kind: 'target' });
+        this.shots.push({ from: t.pos, to: player.pos,
+                          hurt: 4 * this.diff.hurt, kind: 'target' });
       }
     }
 
@@ -731,7 +755,8 @@ export class Mission {
       // shadow you at a civil pace and wait for you to stop somewhere
       // stupid. Only from three stars do they drive THROUGH you - which is
       // what the ladder has promised all along.
-      const aggr = this.wanted >= 3 ? 1.85 : this.wanted > 0 ? 1.12 : 0.9;
+      const aggr = this.wanted >= 3 ? 1.85 * this.diff.police
+        : this.wanted > 0 ? 1.12 * this.diff.police : 0.9;
       p.update(dt, { throttle: 1, steer: 0, indicate: pInd,
                      maxSpeed: CLASSES[p.e.cls].limit * aggr });
       if (p.blocked) p.beginUTurn();
@@ -740,7 +765,8 @@ export class Mission {
         p.fireT -= dt;
         if (p.fireT <= 0 && dp < 30) {
           p.fireT = 1.1;
-          this.shots.push({ from: p.pos, to: player.pos, hurt: 6, kind: 'police' });
+          this.shots.push({ from: p.pos, to: player.pos,
+                            hurt: 6 * this.diff.hurt, kind: 'police' });
         }
       }
       // Busted: pinned slow at three stars or more. Stopped in a garage is
@@ -772,7 +798,8 @@ export class Mission {
         // Two contracts per town, then the trail crosses the water: on
         // every odd level after the second, the mission is the bridge -
         // main handles the hop when the player reaches the island.
-        if (this.onTravel && this.level > 2 && this.level % 2 === 1) {
+        if (this.onTravel && this.level > 2 && this.level % 2 === 1 &&
+            !this.finale()) {
           this.state = 'travel';
           if (this.van) { this.van = null; this.vanCar.root.setEnabled(false); }
           for (const r of this.runners) { r.live = false; r.car.root.setEnabled(false); }

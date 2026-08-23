@@ -112,7 +112,7 @@ export class Hud {
     this.indL.style.opacity = player.indicator === -1 && blink ? 1 : 0.12;
     this.indR.style.opacity = player.indicator === 1 && blink ? 1 : 0.12;
     // Status line.
-    if (player.blocked) this.say('DEAD END — INDICATE TO TURN');
+    if (player.blocked) this.say('DEAD END — S BACKS OUT · HELD INDICATOR SWINGS ROUND');
   }
 
   say(text, sticky) {

@@ -68,7 +68,10 @@ unhittable; traffic is not. That is the game.
 
 A driver flagged `overtake` (the player only) may push from lane 0 past
 the centre line into the oncoming lane and the magnet tucks it home on
-release — the single-lane pass. AI never crosses.
+release — the single-lane pass; time out there at speed pays (`overT` in
+main). AI never crosses. A driver flagged `canReverse` (the player only)
+backs up at 4.5 m/s when holding brake at a standstill; blocked AI still
+does the instant spin.
 
 `update(dt, { throttle, steer, indicate, maxSpeed, stopAt })`,
 `beginUTurn()`, `place()`.
@@ -101,6 +104,14 @@ gun, collisions, cameras, the garage, HUD wiring, intro, game over, `tick`.
 Also `CITIES` (the four towns and their seeds; hash-selected on the intro)
 and the clean-driving bonus (`clean` — a minute with no heat, no shunt, no
 red run pays 100).
+
+The campaign has an ending: level 9 (eight contracts, four towns) is
+`mission.finale()` — the paymaster on the ring road; killing it pays
+2000 and flags `stats.campaignDone`, then free play continues. `DIFFS`
+(EASY/NORMAL/HARD → `mission.diff` multipliers) and the CONTINUE menu
+item (localStorage `neoncity_save`, written at each town arrival) also
+live in main. Each `CITIES` entry carries `sky` (night palette) and
+`coast` (default mood).
 
 **The front door** lives here too: title → menu (`menuKey`, `menuItems`,
 `RULES_TEXT`) over an attract mode — pre-start the car self-drives the

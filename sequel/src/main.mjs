@@ -88,11 +88,17 @@ hemi.groundColor = new Color3(0.05, 0.02, 0.1);
 // which streets exist, where the garages are, how the districts fall. The
 // choice rides in the URL hash so a restart stays in the same town and
 // switching is a clean reload into a different one.
+// Each town carries its own night-sky palette and its own default coast
+// mood, so crossing the bridge FEELS like arriving somewhere else.
 const CITIES = [
-  { name: 'NEON CITY',    seed: 19860508 },
-  { name: 'SODIUM BAY',   seed: 19870127 },
-  { name: 'VELVET SHORE', seed: 19881104 },
-  { name: 'MERIDIAN',     seed: 19900615 },
+  { name: 'NEON CITY',    seed: 19860508, coast: 'off',
+    sky: ['#07021a', '#2a0c4e', '#7a1e63', '#c93a6e'] },
+  { name: 'SODIUM BAY',   seed: 19870127, coast: 'day',
+    sky: ['#120618', '#3a1c3e', '#8a4a2e', '#e0923e'] },
+  { name: 'VELVET SHORE', seed: 19881104, coast: 'sunset',
+    sky: ['#0a0220', '#3a0a4e', '#94185e', '#e0447e'] },
+  { name: 'MERIDIAN',     seed: 19900615, coast: 'off',
+    sky: ['#02141a', '#0c3a3e', '#1e6a5e', '#3ac98e'] },
 ];
 let cityIdx = 0;
 {
@@ -110,8 +116,9 @@ function skyTexture() {
   const dt = new DynamicTexture('sky', { width: 64, height: 512 }, scene, true);
   const x = dt.getContext();
   const g = x.createLinearGradient(0, 0, 0, 512);
-  g.addColorStop(0, '#07021a'); g.addColorStop(0.55, '#2a0c4e');
-  g.addColorStop(0.85, '#7a1e63'); g.addColorStop(1, '#c93a6e');
+  const [c0, c1, c2, c3] = CITY.sky;
+  g.addColorStop(0, c0); g.addColorStop(0.55, c1);
+  g.addColorStop(0.85, c2); g.addColorStop(1, c3);
   x.fillStyle = g; x.fillRect(0, 0, 64, 512);
   dt.update();
   return dt;
@@ -473,7 +480,9 @@ const sunward = net.edges
 const startEdge = sunward[0] || net.edges.find(e => e.cls === 'avenue') || net.edges[0];
 const player = new Driver(net, startEdge, 1, 0, Math.min(20, startEdge.len * 0.4));
 // Only the player may cross the centre line to pass: AI keeps its lane.
+// And only the player owns a reverse gear - hold S at a standstill.
 player.overtake = true;
+player.canReverse = true;
 const playerCar = buildCar(new Color3(0.8, 0.83, 0.9), true, new Color3(0.25, 1.3, 1.6));
 // A certain talking Trans Am's scanner, waiting on its codeword.
 const kittBar = (() => {
@@ -523,8 +532,25 @@ function aiInput(d, dt, t) {
 }
 
 // ---- the hunt: target coupe, police cruiser, mission card --------------
+// Difficulty: how tough the marks are, how hard the police drive, how much
+// bullets hurt, what petrol costs. The choice persists between visits.
+const DIFFS = [
+  { name: 'EASY',   v: { hp: 0.7, police: 0.85, hurt: 0.6, petrol: 0.5 } },
+  { name: 'NORMAL', v: { hp: 1,   police: 1,    hurt: 1,   petrol: 1 } },
+  { name: 'HARD',   v: { hp: 1.3, police: 1.1,  hurt: 1.3, petrol: 1.5 } },
+];
+let diffIdx = 1;
+try {
+  const d = parseInt(localStorage.getItem('neoncity_diff'), 10);
+  if (d >= 0 && d < DIFFS.length) diffIdx = d;
+} catch (e) { /* stays NORMAL */ }
+
 const hud = new Hud(net, cityBits.stations);
 const mission = new Mission(scene, net, buildCar, hud, player);
+mission.diff = DIFFS[diffIdx].v;
+// The boot spawn ran on defaults; respawn so the first coupe is priced
+// for the chosen difficulty too.
+if (diffIdx !== 1) mission.spawnTarget();
 // The briefing names the quarter, not a compass point.
 mission.districtAt = cityBits.districtAt;
 const signals = new Signals(scene, net);
@@ -651,7 +677,8 @@ let vibeStep = 0;
 // frames; measured at two to four per cent of a coast frame). B cycles
 // NEON NIGHT -> DAYLIGHT -> SUNSET; the OUTRUN codeword goes straight to
 // sunset, as is right and proper.
-const coast2 = { mode: 'off' };
+const coast2 = { mode: CITY.coast || 'off' };
+setCoastSky();                       // sunset towns get their sky at boot
 
 // The run: score, health, and how it ends.
 const run = { score: 0, health: 100, over: false, reason: '', time: 0, started: false, saved: false };
@@ -741,6 +768,10 @@ mission.onBoom = (x, y, z, kind, clean) => {
     bigWord('MARK LOST', 'THE RIVAL GOT THERE FIRST');
   } else if (kind === 'runner') {
     // The HUD line carries it; a runner is not a headline.
+  } else if (kind === 'paymaster') {
+    stats.campaignDone = true;
+    sound.fanfare();
+    bigWord('CAMPAIGN COMPLETE', 'THE PAYMASTER IS DOWN · THE COAST IS YOURS');
   } else {
     // A spotless takedown earns the line every plan-lover knows.
     bigWord('TARGET DOWN', clean
@@ -929,7 +960,8 @@ function renderOver() {
     `${stats.maxWanted ? '★'.repeat(stats.maxWanted) : 'SPOTLESS'}\n` +
     `THE MILES — ${km} KM · TOP SPEED ${Math.round(stats.topSpeed * 2.237)} MPH`;
   document.getElementById('ovtext').textContent =
-    `${run.reason}\n\nSCORE ${s} · LEVEL ${mission.level}\n` +
+    `${run.reason}\n\nSCORE ${s} · LEVEL ${mission.level}` +
+    (stats.campaignDone ? ' · CAMPAIGN COMPLETE' : '') + '\n' +
     `SURVIVED ${Math.round(run.time)}s IN ${CITY.name}\n\n${ledger}\n\n` +
     (run.saved ? `SAVED · ${initials.padEnd(3, '_')}\n\n${rows}\n\n`
                : `TYPE 3 INITIALS THEN ENTER\n> ${initials.padEnd(3, '_')}\n\n${rows}\n\n`) +
@@ -1214,7 +1246,8 @@ function updateGarage(dt, clock) {
     // again more per star. A hot car pays for the pump's discretion.
     const add = Math.min(34 * dt, 100 - tank.fuel);
     tank.fuel += add;
-    run.score = Math.max(0, run.score - add * 0.5 * (1 + mission.wanted));
+    run.score = Math.max(0, run.score -
+      add * 0.5 * (1 + mission.wanted) * mission.diff.petrol);
     done = tank.fuel > 99.5;
   } else if (job.key === 'paint') {
     garage.t += dt;
@@ -1257,6 +1290,7 @@ const tank = { fuel: 100, low: false };
 const turbo = { charge: 1, active: false };
 const holdT = { q: 0, e: 0 };
 const clean = { t: 0 };          // seconds of tidy driving toward the bonus
+let overT = 0, overSaid = false; // time spent out in the oncoming lane
 
 const tick = (dt) => {
   clock += dt;
@@ -1327,6 +1361,16 @@ const tick = (dt) => {
       sound.chime();
       hud.say('SCORE 1986 — A FINE YEAR', true);
     }
+    // The oncoming lane pays: nerve is worth money in 1986. Eight points a
+    // second while committed past the centre line at speed.
+    if (player.mode === 'edge' && player.lat < -1.8 && player.speed > 12) {
+      overT += dt;
+      run.score += dt * 8;
+      if (overT > 1.5 && !overSaid) {
+        overSaid = true;
+        hud.say('IN THE ONCOMING — NERVE PAYS');
+      }
+    } else { overT = 0; overSaid = false; }
     // Hold 55 on the nose for eight seconds and 1984 has a song about it.
     if (!egg.h55) {
       const mph = player.speed * 2.237;
@@ -1695,9 +1739,13 @@ const RULES_TEXT =
   'IS PRICED BY YOUR REPUTATION.\n\n' +
   'DRIVE CLEANLY AND YOU WILL BE PAID FOR IT. AND SHOULD YOU COME\n' +
   'ACROSS THE SIX CASSETTES — CONSIDER THEM A PERK OF THE TRADE.\n\n' +
+  'ONE LAST THING. EIGHT CONTRACTS ACROSS THE FOUR TOWNS BUY YOU\n' +
+  'THE FINAL JOB: THE PAYMASTER HIMSELF, RIDING THE RING ROAD\n' +
+  'BEHIND HEAVY PLATE. END IT, AND THE COAST IS YOURS.\n\n' +
   'I WILL BE IN TOUCH. GOOD HUNTING.';
 const CONTROLS_TEXT =
   'W/S DRIVE · A/D CHANGE LANE · Q/E INDICATE (HOLD FOR U-TURN)\n' +
+  'HOLD S AT A STANDSTILL TO REVERSE · HOLD D TO PASS IN THE ONCOMING\n' +
   'SPACE FIRE · SHIFT TURBO · SLOW INTO A GARAGE SPUR TO BE SERVED\n' +
   'THE RING ROAD IS THE COAST — GO SEE IT\n\n' +
   'IN GAME: C CAMERA · G QUALITY · F REDUCED FLASHING\n' +
@@ -1708,12 +1756,25 @@ function fameText() {
     ? 'HALL OF FAME\n\n' + t.slice(0, 8).map((r, i) => `${i + 1}. ${r.n}  ${r.s}`).join('\n')
     : 'NO SCORES YET — BE FIRST';
 }
+function readSave() {
+  try { return JSON.parse(localStorage.getItem('neoncity_save') || 'null'); }
+  catch (e) { return null; }
+}
 function menuItems() {
-  return [
+  const items = [
     { id: 'drive', label: 'DRIVE', hint: 'find the black coupe · dodge the law' },
+  ];
+  const sv = readSave();
+  if (sv && CITIES[sv.city]) {
+    items.push({ id: 'continue', label: `CONTINUE  ·  ${CITIES[sv.city].name}`,
+      hint: 'pick the campaign up at your last town arrival' });
+  }
+  items.push(
     { id: 'rules', label: 'THE BRIEFING', hint: 'your handler explains the job' },
     { id: 'town', label: `TOWN  <  ${CITY.name}  >`,
       hint: 'four towns, four maps — switching rebuilds the city' },
+    { id: 'diff', label: `DIFFICULTY  <  ${DIFFS[diffIdx].name}  >`,
+      hint: 'marks, police, bullets and petrol all scale' },
     { id: 'camera', label: `CAMERA  <  ${VIEWS[view].name}  >`,
       hint: 'chase · close · bonnet · far' },
     { id: 'graphics', label: `GRAPHICS  <  ${QNAME[scaleStep]}  >`,
@@ -1724,7 +1785,8 @@ function menuItems() {
       hint: 'steadier lights for photosensitive players' },
     { id: 'controls', label: 'CONTROLS' },
     { id: 'fame', label: 'HALL OF FAME' },
-  ];
+  );
+  return items;
 }
 function renderMenu() {
   const title = menuScreen === 'title';
@@ -1757,6 +1819,13 @@ function menuAdjust(id, dir) {
     return;
   }
   if (id === 'camera') cycleView(dir);
+  else if (id === 'diff') {
+    diffIdx = (diffIdx + dir + DIFFS.length) % DIFFS.length;
+    try { localStorage.setItem('neoncity_diff', String(diffIdx)); }
+    catch (e) { /* the choice just does not persist */ }
+    mission.diff = DIFFS[diffIdx].v;
+    mission.spawnTarget();           // reprice the waiting coupe at once
+  }
   else if (id === 'graphics') { quality.manual = true; scaleStep = (scaleStep + dir + 4) % 4; applyQuality(); }
   else if (id === 'music') { menuPrefs.music = !menuPrefs.music; applyMusicPref(); }
   else if (id === 'flash') toggleFlash();
@@ -1852,6 +1921,12 @@ document.getElementById('over').addEventListener('click', () => {
     mission.spawnTarget();
     startGame();
     bigWord(CITY.name, 'FUELLED UP ON THE WAY · THE TRAIL PICKS UP HERE');
+    // A town arrival is the campaign's checkpoint: CONTINUE on the menu
+    // picks up from here even after a bust or a closed tab.
+    try {
+      localStorage.setItem('neoncity_save',
+        JSON.stringify({ city: cityIdx, packed }));
+    } catch (e) { /* no persistence: CONTINUE just will not appear */ }
   }
 }
 // Music as early as the browser will let it happen: an autoplay attempt on
@@ -1911,6 +1986,13 @@ function menuKey(code) {
   else if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
     const id = items[menuSel].id;
     if (id === 'drive') startGame();
+    else if (id === 'continue') {
+      const sv = readSave();
+      if (sv && CITIES[sv.city]) {
+        location.hash = 'city' + sv.city + '.' + sv.packed;
+        location.reload();
+      }
+    }
     else if (id === 'rules') menuEls.panel.textContent = RULES_TEXT;
     else if (id === 'controls') menuEls.panel.textContent = CONTROLS_TEXT;
     else if (id === 'fame') menuEls.panel.textContent = fameText();
