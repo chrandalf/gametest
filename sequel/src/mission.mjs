@@ -616,15 +616,34 @@ export class Mission {
     if (this.state !== 'locate') this.lastSeen = { x: t.pos.x, z: t.pos.z };
 
     const fleeing = t.stateName === 'fleeing' && this.state !== 'done';
+    // The coupe decides ONCE per block, like a car with somewhere to be.
+    // It used to re-roll its intention twice a second while fleeing -
+    // which read as a car fitting about all over the road - and turn at
+    // random while cruising. Now it commits at each junction, indicates
+    // in advance like everybody else, and when it has no meet to make it
+    // drives to a real destination across town and picks another on
+    // arrival. Smooth, readable, chaseable.
+    if (!this.wanderPoint ||
+        Math.hypot(t.pos.x - this.wanderPoint.x, t.pos.z - this.wanderPoint.z) < 45) {
+      for (let tries = 0; tries < 12; tries++) {
+        const n = this.net.nodes[(Math.random() * this.net.nodes.length) | 0];
+        if (n.sea || n.forecourt || n.isle) continue;
+        if (Math.hypot(n.x - t.pos.x, n.z - t.pos.z) < 150) continue;
+        this.wanderPoint = { x: n.x, z: n.z };
+        break;
+      }
+      if (!this.wanderPoint) this.wanderPoint = { x: t.pos.x, z: t.pos.z };
+    }
     t.thinkT -= dt;
     let tInd;
-    if (t.thinkT <= 0) {
-      t.thinkT = fleeing ? 0.55 : 3.5;
+    if (t.edgeMark !== t.e || t.thinkT <= 0) {
+      t.edgeMark = t.e;
+      t.thinkT = 4;                    // fallback re-think on very long blocks
       tInd = fleeing
         ? chooseTurn(t, player.pos.x, player.pos.z, true)
         : this.van
           ? chooseTurn(t, this.meet.x, this.meet.z, false)
-          : (Math.random() < 0.5 ? 'straight' : Math.random() < 0.5 ? 'left' : 'right');
+          : chooseTurn(t, this.wanderPoint.x, this.wanderPoint.z, false);
     }
     const fleeMult = 1.45 + this.level * 0.07;
     const tCap = this.state === 'done' ? 0
@@ -756,8 +775,12 @@ export class Mission {
     if (this.rival && this.state !== 'done') {
       const rv = this.rival;
       rv.thinkT -= dt;
-      if (rv.thinkT <= 0) {
-        rv.thinkT = 0.8;
+      // Same commitment discipline as the coupe: one decision per block,
+      // so the rival bears down on the mark instead of jinking after its
+      // every move.
+      if (rv.edgeMark !== rv.e || rv.thinkT <= 0) {
+        rv.edgeMark = rv.e;
+        rv.thinkT = 4;
         rv.rInd = chooseTurn(rv, t.pos.x, t.pos.z, false);
       }
       rv.update(dt, { throttle: 1, steer: 0, indicate: rv.rInd,
