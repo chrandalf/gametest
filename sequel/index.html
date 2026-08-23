@@ -32,7 +32,8 @@
   /* !important because #tgtbox sets display:flex inline. */
   body.attract #title, body.attract #tgtbox, body.attract #speedbox,
   body.attract #gauges, body.attract #map, body.attract #stars,
-  body.attract #score, body.attract #whywanted, body.attract #msg {
+  body.attract #score, body.attract #whywanted, body.attract #msg,
+  body.attract #vanbox, body.attract #fuelbox {
     display: none !important; }
   .mi { text-shadow: 0 1px 8px rgba(0, 0, 0, 0.85); }
   /* ---- the front door: title + menu over the attract camera ---- */
@@ -136,6 +137,10 @@
       text-align: left; max-width: 62vw; }
     #tgtbox { font-size: 10px !important; top: 32px !important; }
     #tgtbox #tgt { font-size: 14px !important; }
+    #vanbox { font-size: 9px !important; top: 52px !important; }
+    #vanbox #vantgt { font-size: 12px !important; }
+    #fuelbox { font-size: 9px !important; top: 68px !important; }
+    #fuelbox #fueltgt { font-size: 12px !important; }
     #fps { font-size: 9px !important; top: 10px !important; right: 12px !important; }
     #stars { font-size: 14px !important; top: 26px !important; }
     #whywanted { font-size: 8px !important; top: 42px !important; }
@@ -174,6 +179,14 @@
 <div id="tgtbox" style="position:fixed;top:52px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;color:#ff8f8f;font:700 13px monospace;text-shadow:0 0 8px rgba(255,110,110,0.5)">
   <span id="tgt" style="display:inline-block;font-size:20px">&#9650;</span>
   <span id="tgtd"></span>
+</div>
+<div id="vanbox" style="display:none;position:fixed;top:78px;left:50%;transform:translateX(-50%);align-items:center;gap:8px;color:#ffd34d;font:700 12px monospace;text-shadow:0 0 8px rgba(255,190,60,0.5)">
+  <span id="vantgt" style="display:inline-block;font-size:16px">&#9650;</span>
+  <span id="vand"></span>
+</div>
+<div id="fuelbox" style="display:none;position:fixed;top:100px;left:50%;transform:translateX(-50%);align-items:center;gap:8px;color:#7dffa8;font:700 12px monospace;text-shadow:0 0 8px rgba(90,255,140,0.5)">
+  <span id="fueltgt" style="display:inline-block;font-size:16px">&#9650;</span>
+  <span id="fueld"></span>
 </div>
 <div id="speedbox">
   <span id="indL">&#9664;</span>

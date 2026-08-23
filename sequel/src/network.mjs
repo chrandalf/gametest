@@ -325,6 +325,24 @@ export function buildNetwork(seed = 19860508) {
     }
   }
 
+  // One more forecourt on the island: a tank that runs dry mid-crossing
+  // strands the whole campaign out at sea. The spur points off the west
+  // edge, where the island's base rock (46 m of margin in citygen) keeps
+  // the forecourt on dry land.
+  {
+    const n = isleAt(0, 1);
+    if (n && !n.edges[1]) {
+      const f = { i: 700 + forecourts.length, j: 700 + forecourts.length,
+                  x: n.x - SPUR, z: n.z, y: 0, forecourt: true,
+                  edges: [null, null, null, null] };
+      nodes.push(f);
+      const e = link(f, n, 0, 'service');
+      n.forecourt = true;
+      forecourts.push({ node: f, parent: n, edge: e, x: f.x, z: f.z,
+                        dx: -1, dz: 0, axis: 0 });
+    }
+  }
+
   const live = edges.filter(e => !e.dead);
   live.forEach((e, i) => { e.id = i; });
   let bx0 = 1e9, bx1 = -1e9, bz0 = 1e9, bz1 = -1e9;

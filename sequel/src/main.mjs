@@ -1283,7 +1283,7 @@ const tick = (dt) => {
     tank.fuel = Math.max(0, tank.fuel -
       (0.06 + player.speed * 0.014 + (turbo.active ? 0.5 : 0)) * dt);
     if (tank.fuel < 25 && !tank.low) { tank.low = true;
-      hud.say('FUEL LOW — GREEN SQUARES SELL PETROL'); }
+      hud.say('FUEL LOW — FOLLOW THE GREEN ARROW'); }
     if (tank.fuel > 40) tank.low = false;
   }
   let cap = CLASSES[player.e.cls].limit * (turbo.active ? 3.2 : 2.2);
@@ -1583,21 +1583,53 @@ const tick = (dt) => {
     tgtEl.style.transform = 'rotate(' + ang.toFixed(2) + 'rad)';
     const dTgt = Math.hypot(bp.x - player.pos.x, bp.z - player.pos.z);
     const secs = pickups.caseSeconds();
-    const van = mission.van
-      ? ' · VAN ' + Math.round(Math.hypot(mission.van.pos.x - player.pos.x,
-                                          mission.van.pos.z - player.pos.z)) + 'm'
-      : '';
-    const lead = mission.state !== 'locate' ? ''
+    const lead = mission.state === 'travel' ? 'THE BRIDGE '
+      : mission.state !== 'locate' ? ''
       : mission.lastSeen ? 'LAST SEEN ' : 'SEARCH ';
     tgtdEl.textContent = secs
       ? 'BRIEFCASE · ' + secs + 's'
-      : lead + Math.round(dTgt) + 'm' + van;
+      : lead + Math.round(dTgt) + 'm';
     tgtBox.style.opacity = mission.state === 'done' ? 0 : 1;
     tgtBox.style.color = mission.state === 'locate' ? '#ff9a8a' : '#ff5a4d';
   } else {
     tgtBox.style.opacity = 0.35;
     tgtEl.style.transform = 'none';
     tgtdEl.textContent = 'NO FIX';
+  }
+
+  // The armoured van gets its own arrow: amber, under the target line,
+  // saying whether it is still rolling or already parked at the meet.
+  if (mission.van && live) {
+    const v = mission.van;
+    const angV = Math.atan2(v.pos.x - player.pos.x, v.pos.z - player.pos.z)
+      - player.pos.yaw;
+    vanTgtEl.style.transform = 'rotate(' + angV.toFixed(2) + 'rad)';
+    const dV = Math.round(Math.hypot(v.pos.x - player.pos.x, v.pos.z - player.pos.z));
+    const parked = Math.hypot(v.pos.x - mission.meet.x, v.pos.z - mission.meet.z) < 32
+      && v.speed < 2;
+    vandEl.textContent = (parked ? 'VAN AT THE MEET · ' : 'VAN · ') + dV + 'm';
+    vanBoxEl.style.display = 'flex';
+  } else {
+    vanBoxEl.style.display = 'none';
+  }
+
+  // Below a quarter tank, the nearest pumps get a green arrow of their
+  // own - the island's included, which matters mid-crossing.
+  if (tank.low && live) {
+    let bestSt = null, bd = 1e9;
+    for (const st of cityBits.stations) {
+      const d2 = Math.hypot(st.x - player.pos.x, st.z - player.pos.z);
+      if (d2 < bd) { bd = d2; bestSt = st; }
+    }
+    if (bestSt) {
+      const angF = Math.atan2(bestSt.x - player.pos.x, bestSt.z - player.pos.z)
+        - player.pos.yaw;
+      fuelTgtEl.style.transform = 'rotate(' + angF.toFixed(2) + 'rad)';
+      fueldEl.textContent = 'PETROL · ' + Math.round(bd) + 'm';
+      fuelBoxEl.style.display = 'flex';
+    }
+  } else {
+    fuelBoxEl.style.display = 'none';
   }
 };
 scene.onBeforeRenderObservable.add(() =>
@@ -1956,6 +1988,12 @@ applyQuality();
 const fpsEl = document.getElementById('fps');
 const cueLEl = document.getElementById('cueL');
 const cueREl = document.getElementById('cueR');
+const vanBoxEl = document.getElementById('vanbox');
+const vanTgtEl = document.getElementById('vantgt');
+const vandEl = document.getElementById('vand');
+const fuelBoxEl = document.getElementById('fuelbox');
+const fuelTgtEl = document.getElementById('fueltgt');
+const fueldEl = document.getElementById('fueld');
 const touchQ = document.getElementById('tQ');
 const touchE = document.getElementById('tE');
 const fuelBar = document.getElementById('fuel');
