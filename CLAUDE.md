@@ -30,7 +30,11 @@ about *where roads are*, it is answered here.
   the street cull and the forecourts all fall out of it; `citygen` takes
   the same seed for the districts. `main.mjs` owns `CITIES`, the four
   named towns, picked on the intro screen (◄ ► before Enter; the choice
-  rides in the URL hash and switching reloads).
+  rides in the URL hash and switching reloads). The towns are also one
+  campaign: two contracts each, then the mission goes `travel`, landfall
+  on the island hops to the next town (`hopTown` → sessionStorage
+  `neoncity_hop` → reload → restore), carrying score/level/hull/tank/
+  ledger/paint.
 - The street cull never leaves a dead end: every junction keeps at least
   two ways out (`degree < 3` guard), and the map stays one piece.
 - `GRID` (11), `CELL` (67 m average; pitches are irregular per row/column)

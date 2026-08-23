@@ -375,6 +375,11 @@ export class Mission {
       } else this.unseenT = Math.max(0, this.unseenT - dt * 2);
     }
 
+    // In travel there is no coupe and no van - the job is the bridge.
+    // Only the law comes along (a hot player crossing with cruisers in
+    // tow is the best version of the drive), so the target and van
+    // sections are skipped wholesale.
+    if (this.state !== 'travel') {
     // ---------------- target ------------------------------------------
     // The radio: while you are hunting, somebody phones in roughly where
     // the coupe is every so often. Without this the briefing's one fixed
@@ -522,6 +527,8 @@ export class Mission {
       }
     }
 
+    }                                  // end of the not-travelling block
+
     // ---------------- the fleet ----------------------------------------
     for (const p of this.police) {
       p.thinkT -= dt;
@@ -577,11 +584,20 @@ export class Mission {
       }
       if (this.doneT > 9) {
         this.level += 1;
-        this.state = 'locate';
         this.cleanHands = true;
-        this.spawnTarget();
-        if (this.onLevel) this.onLevel(this.level);
-        this.announce();
+        // Two contracts per town, then the trail crosses the water: on
+        // every odd level after the second, the mission is the bridge -
+        // main handles the hop when the player reaches the island.
+        if (this.onTravel && this.level > 2 && this.level % 2 === 1) {
+          this.state = 'travel';
+          if (this.van) { this.van = null; this.vanCar.root.setEnabled(false); }
+          this.onTravel(this.level);
+        } else {
+          this.state = 'locate';
+          this.spawnTarget();
+          if (this.onLevel) this.onLevel(this.level);
+          this.announce();
+        }
       }
     }
     this.targetCar.root.position.set(t.pos.x, t.pos.y, t.pos.z);
@@ -606,6 +622,7 @@ export class Mission {
   // briefing named - because "NO FIX, SEARCH THE DISTRICT" with the arrow
   // pointing nowhere is not a direction, it is a shrug.
   bearingPoint() {
+    if (this.state === 'travel') return this.travelPoint || null;
     if (this.state !== 'locate') return this.target.pos;
     if (this.lastSeen) return this.lastSeen;
     if (!this.searchPoint) {

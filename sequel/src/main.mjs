@@ -497,7 +497,11 @@ const TRAFFIC_COLOURS = [
 ];
 const traffic = [];
 for (let k = 0; k < 14; k++) {
-  const e = net.edges[(k * 37) % net.edges.length];
+  // The first two cars live on the crossings - bridges nobody drives
+  // read as closed.
+  const e = (k < 2 && net.bridges && net.bridges[k * 2])
+    ? net.bridges[k * 2]
+    : net.edges[(k * 37) % net.edges.length];
   const lane = k % CLASSES[e.cls].lanesPer;
   const d = new Driver(net, e, k % 2 ? 1 : -1, lane, (k * 19) % Math.max(24, e.len - 12));
   d.ai = { nextThink: 2 + k, cruise: 0.5 + (k % 5) * 0.09 };
@@ -654,6 +658,33 @@ mission.onLevel = (level) => {
   bigWord('LEVEL ' + level, 'THE HUNT GOES ON');
 };
 // Kills explode. A van that silently winks out reads as a bug, not a win.
+// ---- town-hopping: the four towns are one campaign ----------------------
+// Two contracts per town, then the trail crosses the water. The mission
+// flips to 'travel', the arrow points at the island, and reaching it
+// carries the whole run - score, level, hull, tank, ledger, paint - into
+// the next town through a reload.
+mission.travelPoint = (() => {
+  const isle = net.isleAt ? net.isleAt(1, 1) : null;
+  return isle ? { x: isle.x, z: isle.z } : null;
+})();
+mission.onTravel = (level) => {
+  stats.coupes += 1;
+  sound.fanfare();
+  const next = CITIES[(cityIdx + 1) % CITIES.length];
+  bigWord('LEVEL ' + level, 'THE TRAIL LEAVES TOWN');
+  hud.say(`THE COUPE'S PAYMASTERS ARE IN ${next.name} — TAKE THE BRIDGE TO THE ISLAND`, true);
+};
+function hopTown() {
+  try {
+    sessionStorage.setItem('neoncity_hop', JSON.stringify({
+      score: Math.round(run.score), level: mission.level, health: run.health,
+      fuel: tank.fuel, time: run.time, stats, resprayIdx,
+    }));
+  } catch (e) { /* private window: the run restarts fresh over there */ }
+  location.hash = 'city' + ((cityIdx + 1) % CITIES.length);
+  location.reload();
+}
+
 // From level five the van's mass is a weapon: its rams land on the hull.
 mission.onVanRam = (hurt) => {
   run.health -= hurt;
@@ -1348,6 +1379,13 @@ const tick = (dt) => {
   // gunfight in a paint shop is nobody's idea of a good time.
   mission.playerSafe = !!garage.at;
   mission.update(dt, player, clock);
+  // Travelling, and made landfall: any island road counts as arriving -
+  // the moment the wheels touch the far shore, the run moves town.
+  if (mission.state === 'travel' && player.mode === 'edge' &&
+      (player.e.a.isle || player.e.b.isle)) {
+    hopTown();
+    return;
+  }
   for (const sh of mission.shots) {
     showTracer(sh.from.x, sh.from.z, sh.to.x, sh.to.z, player.pos.y + 0.9);
     const dodge = Math.min(0.75, player.speed / 45);
@@ -1657,6 +1695,32 @@ document.getElementById('over').addEventListener('click', () => {
     b.addEventListener('pointerdown', (ev) => { b.setPointerCapture(ev.pointerId); down(ev); });
     b.addEventListener('pointerup', up);
     b.addEventListener('pointercancel', up);
+  }
+}
+
+// ---- arriving from another town -----------------------------------------
+// A hop record means this boot is the far side of a bridge: skip the front
+// door, restore the run, and pick the trail up at the next contract.
+{
+  let hop = null;
+  try {
+    hop = JSON.parse(sessionStorage.getItem('neoncity_hop') || 'null');
+    sessionStorage.removeItem('neoncity_hop');
+  } catch (e) { /* nothing saved */ }
+  if (hop) {
+    run.score = hop.score || 0;
+    run.health = hop.health ?? 100;
+    run.time = hop.time || 0;
+    tank.fuel = hop.fuel ?? 100;
+    Object.assign(stats, hop.stats || {});
+    resprayIdx = hop.resprayIdx || 0;
+    const [, col] = RESPRAY[resprayIdx];
+    playerCar.paint.albedoColor.copyFrom(col);
+    playerCar.paint.emissiveColor.copyFrom(col.scale(0.16));
+    mission.level = hop.level || 1;
+    mission.spawnTarget();
+    startGame();
+    bigWord(CITY.name, 'THE TRAIL PICKS UP HERE');
   }
 }
 // Music as early as the browser will let it happen: an autoplay attempt on
