@@ -65,8 +65,13 @@ export class Driver {
     const deadEnd = !turning && !opts.straight;
 
     // --- speed ---------------------------------------------------------
+    // Wet tarmac (the `wet` flag, set by the weather) blunts everything:
+    // less shove, much less brake, less engine drag. The junction assist
+    // still uses the dry BRAKE constant, so corners stay unhittable - the
+    // rain changes how the car feels, never what the grammar promises.
     const maxSpeed = input.maxSpeed || 999;
-    let accel = input.throttle > 0 ? 12 : (input.throttle < 0 ? -22 : -4.5);
+    let accel = input.throttle > 0 ? (this.wet ? 10 : 12)
+      : (input.throttle < 0 ? (this.wet ? -15 : -22) : (this.wet ? -3.2 : -4.5));
     // Auto-brake for the corner (or the wall at a dead end).
     const commitDist = turning ? this.turnStartDist(opts[want]) : 0;
     const stopAt = deadEnd

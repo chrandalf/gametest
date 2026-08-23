@@ -1134,8 +1134,48 @@ export function buildCity(scene, net, mirror, seed = 19860508) {
       depth: e.axis === 0 ? 2.6 : 0.25 }, scene);
     bar.position.set(bp.x, 0.5, bp.z);
     bar.material = barrierMat;
-    roadworks.push({ e, dir: 1, lane, s0: s0 - 6, s1: s1 + 3 });
+    const rw = { e, dir: 1, lane, s0: s0 - 6, s1: s1 + 3 };
+    // Most works keep a contractor's plank leaning on the barrier. Hit it
+    // fast enough and the cones are somebody else's problem.
+    if (rand() < 0.65) {
+      rw.ramp = true;
+      const rp = lanePos(e, 1, lane, s0 - 4.4);
+      const plank = MeshBuilder.CreateBox('barr', {
+        width: e.axis === 0 ? 3.4 : 2.8, height: 0.14,
+        depth: e.axis === 0 ? 2.8 : 3.4 }, scene);
+      plank.position.set(rp.x, 0.5, rp.z);
+      if (e.axis === 0) plank.rotation.z = 0.34; else plank.rotation.x = -0.34;
+      plank.material = barrierMat;
+    }
+    roadworks.push(rw);
   }
 
-  return { glow, stations, roadworks, surf, districtAt, zones };
+  // ---- speed bumps: sleepy streets that punish a heavy right foot ------
+  // A stripe across the carriageway. Rolled over, it thumps; taken at
+  // speed, the whole car leaves the ground - main owns the ballistics.
+  const bumps = [];
+  {
+    const bumpMat = new StandardMaterial('bumpm', scene);
+    bumpMat.emissiveColor = new Color3(1.1, 0.85, 0.2);
+    bumpMat.disableLighting = true;
+    const sts = net.edges.filter(e => e.cls === 'street' && e.len > 50);
+    for (const e of sts) {
+      if (rand() > 0.22) continue;
+      const fracs = rand() < 0.4 ? [0.5] : [0.36, 0.66];
+      for (const frac of fracs) {
+        const sA = e.len * frac;
+        const hw = halfWidth(e.cls);
+        const b = MeshBuilder.CreateBox('bump', {
+          width: e.axis === 0 ? 1.1 : hw * 2 - 0.6,
+          height: 0.15,
+          depth: e.axis === 0 ? hw * 2 - 0.6 : 1.1 }, scene);
+        b.position.set(e.axis === 0 ? e.a.x + sA : e.a.x, 0.06,
+                       e.axis === 0 ? e.a.z : e.a.z + sA);
+        b.material = bumpMat;
+        bumps.push({ e, sA });
+      }
+    }
+  }
+
+  return { glow, stations, roadworks, bumps, surf, districtAt, zones };
 }

@@ -221,7 +221,7 @@ function tileAt(x, z) {
 {
   const MERGE = new Set(['rd', 'wk', 'kb', 'sl', 'el', 'ml', 'b', 'sg',
                          'pad', 'pump', 'sand', 'sea', 'gp', 'gpan',
-                         'cone', 'barr', 'pole', 'dk', 'prp', 'dd', 'pier',
+                         'cone', 'barr', 'bump', 'pole', 'dk', 'prp', 'dd', 'pier',
                          'twl', 'bod', 'parapole', 'shade', 'ib', 'iland',
                          'trunk', 'leaf', 'grass', 'crate', 'stack']);
   // Where each merged mesh sits has to be worked out from the meshes going
@@ -661,6 +661,48 @@ let daySkyMat = null, daySkyTex = null, sunsetSkyTex = null;
   daySkies.push(p);
   daySkyMat = dm;
 }
+// ---- rain: two streak layers riding the camera --------------------------
+// Cheap the 1986 way: scrolling streak textures on planes parented to the
+// camera, two depths for parallax. Created after the district pass so the
+// tiler never captures them.
+const rainPlanes = [];
+{
+  const mkTex = (n) => {
+    const dt = new DynamicTexture('rain' + n, { width: 256, height: 256 }, scene, true);
+    const x = dt.getContext();
+    x.clearRect(0, 0, 256, 256);
+    x.strokeStyle = 'rgba(205, 222, 255, 0.55)';
+    for (let k = 0; k < 90; k++) {
+      const h = Math.sin(k * 12.9898 + n * 78.233) * 43758.5453;
+      const rx = (h - Math.floor(h)) * 256;
+      const ry = (k * 37 + n * 91) % 256;
+      x.lineWidth = 0.8 + (k % 3) * 0.4;
+      x.beginPath();
+      x.moveTo(rx, ry);
+      x.lineTo(rx - 3, ry + 13 + (k % 5) * 3);
+      x.stroke();
+    }
+    dt.update();
+    dt.hasAlpha = true;
+    return dt;
+  };
+  for (const [dist, w, speed, alpha] of [[2.1, 4.6, 2.2, 0.5], [3.6, 8, 1.4, 0.35]]) {
+    const tex = mkTex(dist);
+    const p = MeshBuilder.CreatePlane('rainp', { width: w, height: w * 0.62 }, scene);
+    p.parent = cam;
+    p.position.set(0, 0, dist);
+    const m = new StandardMaterial('rainm' + dist, scene);
+    m.emissiveTexture = tex;
+    m.opacityTexture = tex;
+    m.disableLighting = true;
+    m.fogEnabled = false;
+    m.alpha = alpha;
+    p.material = m;
+    p.setEnabled(false);
+    rainPlanes.push({ p, tex, speed });
+  }
+}
+
 // Swap the coast cylinder's gradient to match the chosen mood.
 function setCoastSky() {
   if (!daySkyMat) return;
@@ -685,7 +727,7 @@ const run = { score: 0, health: 100, over: false, reason: '', time: 0, started: 
 // The ledger the game-over screen reads out: the good, the bad, the miles.
 const stats = { coupes: 0, vans: 0, cases: 0, tapes: 0, cleanBonuses: 0,
                 resprays: 0, redsRun: 0, rams: 0, pedsHit: 0, shots: 0,
-                distance: 0, topSpeed: 0, maxWanted: 0 };
+                distance: 0, topSpeed: 0, maxWanted: 0, stunts: 0 };
 // Easter eggs: each fires once a run.
 const egg = { lotus: false, mph88: false, y1986: false,
               kitt: false, outrun: false, h55: false };
@@ -719,6 +761,7 @@ mission.onLevel = (level) => {
   stats.coupes += 1;
   sound.fanfare();
   bigWord('LEVEL ' + level, 'THE HUNT GOES ON');
+  rollWeather(true);                 // the sky rolls with each contract
 };
 // Kills explode. A van that silently winks out reads as a bug, not a win.
 // ---- town-hopping: the four towns are one campaign ----------------------
@@ -953,7 +996,8 @@ function renderOver() {
   const ledger =
     `THE GOOD — COUPES ${stats.coupes} · VANS ${stats.vans} · CASES ${stats.cases}` +
     ` · TAPES ${stats.tapes}\n` +
-    `           CLEAN BONUSES ${stats.cleanBonuses} · RESPRAYS ${stats.resprays}\n` +
+    `           CLEAN BONUSES ${stats.cleanBonuses} · RESPRAYS ${stats.resprays}` +
+    ` · STUNTS ${stats.stunts}\n` +
     `THE BAD  — REDS RUN ${stats.redsRun} · CARS RAMMED ${stats.rams}` +
     ` · PEDESTRIANS HIT ${stats.pedsHit}\n` +
     `           SHOTS FIRED ${stats.shots} · WORST HEAT ` +
@@ -1076,6 +1120,7 @@ const glowLayer = new GlowLayer('glow', scene,
 // emissive quad re-rendered into the blur target whenever you faced the
 // sunset, for a halo the bloom pass already provides.
 for (const p of [...nightSkies, ...daySkies, sun]) glowLayer.addExcludedMesh(p);
+for (const rp of rainPlanes) glowLayer.addExcludedMesh(rp.p);
 for (const msh of scene.meshes) {
   const mn = msh.material && msh.material.name;
   if (mn === 'sand' || mn === 'sea') glowLayer.addExcludedMesh(msh);
@@ -1292,6 +1337,58 @@ const holdT = { q: 0, e: 0 };
 const clean = { t: 0 };          // seconds of tidy driving toward the bonus
 let overT = 0, overSaid = false; // time spent out in the oncoming lane
 
+// ---- air: bumps taken fast, ramps taken faster --------------------------
+// A jump is a vertical arc over the road the car is already on: the lane
+// grammar keeps steering the ground path, so you can clear cones and roof
+// a passing car but never land anywhere you cannot drive out of.
+const air = { y: 0, v: 0, prevE: null, prevDir: 0, prevS: 0 };
+function updateAir(dt) {
+  if (air.y > 0 || air.v !== 0) {
+    air.v -= 30 * dt;
+    air.y += air.v * dt;
+    if (air.y <= 0) {
+      air.y = 0; air.v = 0;
+      shake = Math.max(shake, 0.22);
+      sound.clunk();
+    }
+  }
+  if (player.mode !== 'edge') { air.prevE = null; return; }
+  if (air.prevE === player.e && air.prevDir === player.dir && air.y === 0) {
+    for (const b of cityBits.bumps) {
+      if (b.e !== player.e) continue;
+      const sT = player.dir > 0 ? b.sA : player.e.len - b.sA;
+      if (air.prevS < sT && player.s >= sT) {
+        if (player.speed > 15) {
+          air.v = Math.min(10, player.speed * 0.34);   // launched
+          sound.clunk();
+        } else if (player.speed > 6) {
+          player.speed *= 0.72;                        // thumped
+          shake = Math.max(shake, 0.2);
+          sound.clunk();
+        }
+      }
+    }
+  }
+  air.prevE = player.e; air.prevDir = player.dir; air.prevS = player.s;
+}
+
+// ---- weather ------------------------------------------------------------
+const weather = { rain: false, thunderT: 12, flash: 0 };
+function applyWeather(quiet) {
+  player.wet = weather.rain;
+  for (const d of traffic) d.wet = weather.rain;
+  mirror.level = weather.rain ? 1.0 : 0.8;
+  for (const rp of rainPlanes) rp.p.setEnabled(weather.rain);
+  if (!quiet) hud.say(weather.rain ? 'RAIN MOVING IN — LONGER STOPPING'
+                                   : 'THE RAIN HAS PASSED');
+}
+function rollWeather(announce) {
+  const was = weather.rain;
+  weather.rain = Math.random() < 0.3;
+  applyWeather(!(announce && weather.rain !== was));
+}
+const carFeel = { roll: 0, pitch: 0, lastV: 0 };
+
 const tick = (dt) => {
   clock += dt;
   if (run.over) return;
@@ -1345,6 +1442,8 @@ const tick = (dt) => {
     }
   }
 
+  if (live) { updateAir(dt); player.pos.y += air.y; }
+
   if (live) {
     updateGarage(dt, clock);
     signpostGarage(dt);
@@ -1386,6 +1485,18 @@ const tick = (dt) => {
 
   playerCar.root.position.set(player.pos.x, player.pos.y, player.pos.z);
   playerCar.root.rotation.y = player.pos.yaw;
+  // Body language: lean into lane changes, squat on the throttle, dip on
+  // the brakes, nose-up off a ramp.
+  {
+    const a = (player.speed - carFeel.lastV) / Math.max(dt, 1e-3);
+    carFeel.lastV = player.speed;
+    carFeel.roll += ((-player.latV * 0.045) - carFeel.roll) * Math.min(1, dt * 7);
+    const pitchGoal = Math.max(-0.07, Math.min(0.05, -a * 0.004)) +
+      (air.y > 0 ? Math.max(-0.1, -air.v * 0.01) : 0);
+    carFeel.pitch += (pitchGoal - carFeel.pitch) * Math.min(1, dt * 6);
+    playerCar.root.rotation.z = Math.max(-0.14, Math.min(0.14, carFeel.roll));
+    playerCar.root.rotation.x = carFeel.pitch;
+  }
   const blink = safe.reduceFlash || Math.sin(clock * 9) > 0;
   playerCar.indL.setEnabled(player.indicator === -1 && blink);
   playerCar.indR.setEnabled(player.indicator === 1 && blink);
@@ -1479,8 +1590,19 @@ const tick = (dt) => {
     }
     if (player.mode === 'edge' && player.e === rw.e && player.dir === rw.dir &&
         player.lane === rw.lane && player.s > rw.s0 && player.s < rw.s1) {
-      player.speed *= Math.max(0, 1 - 2.4 * dt);
-      shake = Math.max(shake, 0.25);
+      if (rw.ramp && player.speed > 18 && air.y === 0 && clock > (rw.stuntT || 0)) {
+        // The contractor's plank: fast enough and the cones are somebody
+        // else's problem.
+        rw.stuntT = clock + 3;
+        air.v = Math.min(13, player.speed * 0.42);
+        run.score += 100;
+        stats.stunts += 1;
+        hud.say('STUNT · +100');
+        sound.chime();
+      } else if (air.y === 0) {
+        player.speed *= Math.max(0, 1 - 2.4 * dt);
+        shake = Math.max(shake, 0.25);
+      }
     }
   }
 
@@ -1529,7 +1651,7 @@ const tick = (dt) => {
   // being treated as a change.
   if (Math.abs(wantVibe - vibe) < 0.005) vibe = wantVibe;
   // Free per frame: these are plain uniforms, nothing downstream rebuilds.
-  hemi.intensity = 0.22 + vibe * mood.hemi;
+  hemi.intensity = 0.22 + vibe * mood.hemi + weather.flash * 1.4;
   hemi.diffuse.set(0.45 + vibe * mood.dif[0], 0.35 + vibe * mood.dif[1],
                    0.75 + vibe * mood.dif[2]);
   hemi.groundColor.set(0.05 + vibe * mood.gnd[0], 0.02 + vibe * mood.gnd[1],
@@ -1575,6 +1697,20 @@ const tick = (dt) => {
       else b.tex.uOffset = (b.tex.uOffset + b.speed * dt) % 1;
     }
   }
+  // Rain falls, and now and then the sky goes off like a flashbulb.
+  if (weather.rain) {
+    for (const rp of rainPlanes) {
+      rp.tex.vOffset -= rp.speed * dt;
+      rp.tex.uOffset += rp.speed * 0.12 * dt;
+    }
+    weather.thunderT -= dt;
+    if (weather.thunderT <= 0) {
+      weather.thunderT = 14 + Math.random() * 26;
+      sound.thunder();
+      if (!safe.reduceFlash) weather.flash = 0.9;
+    }
+  }
+  if (weather.flash > 0.01) weather.flash *= Math.exp(-dt * 5);
   pickups.update(dt, player);
   updateDistricts(player.pos.x, player.pos.z);
   coast.update(dt, player, clock, mission.wanted);
@@ -1692,6 +1828,7 @@ scene.onBeforeRenderObservable.add(() =>
 window.game = {
   player, traffic, net, hud, tick, mission, coast, tiles, pickups,
   run, tank, turbo, garage, peds, signals, coast2, city: CITY, clean, stats, sound,
+  air, weather, bumps: cityBits.bumps, roadworks: cityBits.roadworks,
   zones: cityBits.zones, districtAt: cityBits.districtAt,
   stations: cityBits.stations,
   nav: { nodeAhead, headingSlot, turnOptions },
@@ -1746,6 +1883,7 @@ const RULES_TEXT =
 const CONTROLS_TEXT =
   'W/S DRIVE · A/D CHANGE LANE · Q/E INDICATE (HOLD FOR U-TURN)\n' +
   'HOLD S AT A STANDSTILL TO REVERSE · HOLD D TO PASS IN THE ONCOMING\n' +
+  'H HONKS THE HORN · SPEED BUMPS AND WORKS PLANKS JUMP AT SPEED\n' +
   'SPACE FIRE · SHIFT TURBO · SLOW INTO A GARAGE SPUR TO BE SERVED\n' +
   'THE RING ROAD IS THE COAST — GO SEE IT\n\n' +
   'IN GAME: C CAMERA · G QUALITY · F REDUCED FLASHING\n' +
@@ -2001,6 +2139,27 @@ function menuKey(code) {
 }
 renderMenu();
 
+// The horn: pedestrians mid-road hurry up, and the car dawdling ahead in
+// your lane tucks over a lane if it has one. Tiny, tactile, very 1986.
+function hornBlast() {
+  sound.horn();
+  for (const q of peds.list) {
+    if (q.state !== 'cross') continue;
+    const qp = peds.posOf(q);
+    if (Math.hypot(qp.x - player.pos.x, qp.z - player.pos.z) < 22) {
+      q.speed = Math.max(q.speed, 2.6);
+    }
+  }
+  for (const d of traffic) {
+    if (d.mode !== 'edge' || d.e !== player.e || d.dir !== player.dir) continue;
+    const gap = (d.s - player.s) * player.dir;
+    if (gap > 0 && gap < 30 && d.lane < d.lanesPer() - 1) {
+      d.lane += 1;
+      d.lat -= CLASSES[d.e.cls].laneW;
+    }
+  }
+}
+
 function cycleView(dir) {
   view = (view + dir + VIEWS.length) % VIEWS.length;
   cam.fov = VIEWS[view].fov;
@@ -2032,6 +2191,7 @@ addEventListener('keydown', (e) => {
       : coast2.mode === 'day' ? 'DAYLIGHT' : 'SUNSET'));
   }
   if (e.code === 'KeyC') cycleView(1);
+  if (e.code === 'KeyH' && !e.repeat) hornBlast();
   if (e.code === 'KeyG') {
     quality.manual = true;
     scaleStep = (scaleStep + 1) % 4;
@@ -2095,6 +2255,7 @@ setInterval(() => {
 // from the first frame rather than waiting for someone to press F.
 hud.reduceFlash = safe.reduceFlash;
 applyQuality();
+rollWeather(false);                  // the town decides its own first sky
 
 const fpsEl = document.getElementById('fps');
 const cueLEl = document.getElementById('cueL');

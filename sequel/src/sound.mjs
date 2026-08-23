@@ -138,6 +138,10 @@ export class Sound {
   crash(mag) { this.noise(0.25 + mag * 0.15, 0.3 + mag * 0.3, 500); }
   chime() { this.blip(880, 0.12, 0.12, 'sine'); this.blip(1320, 0.2, 0.08, 'sine'); }
   clunk() { this.blip(140, 0.1, 0.15, 'triangle'); }
+  // Two-tone, impatient, 1986.
+  horn() { this.blip(310, 0.26, 0.2, 'square'); this.blip(392, 0.26, 0.15, 'square'); }
+  // Thunder: a long soft rumble, no crack - the flash does the drama.
+  thunder() { this.noise(1.1, 0.5, 130); }
   // A vehicle coming apart: a long low rumble under a bass drop.
   boom() {
     if (!this.started || !this.on) return;
