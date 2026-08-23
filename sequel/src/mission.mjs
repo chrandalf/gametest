@@ -115,6 +115,8 @@ export class Mission {
                                      new Color3(0.75, 0.06, 0.05));
     }
     this.target = d;
+    this.targetGone = false;
+    this.targetCar.root.setEnabled(true);
     this.lastSeen = null;
     this.searchPoint = null;
     this.sightingT = 6;              // the radio's first report comes early
@@ -164,6 +166,7 @@ export class Mission {
     if (!v) return;
     v.health -= n;
     if (v.health > 0) {
+      v.spooked = true;              // a runner crew bolts at the first hit
       this.hud.say(`VAN HIT · ${v.health} MORE`);
       return;
     }
@@ -210,9 +213,12 @@ export class Mission {
     const q = this.districtAt
       ? this.districtAt(this.target.pos.x, this.target.pos.z)
       : quadrantName(this.target.pos.x, this.target.pos.z, this.net.extent);
+    const vanLine = !this.van ? ''
+      : this.level <= 2 ? ' · A VAN IS BRINGING THE DROP'
+      : this.level <= 4 ? ' · THE VAN RUNS IF IT SEES YOU'
+      : ' · THE VAN CREW FIGHTS BACK';
     this.hud.say(`LEVEL ${this.level} · LOCATE BLACK COUPE · LAST SEEN ${q}` +
-      (this.target.armoured ? ' · ARMOURED' : '') +
-      (this.van ? ' · A VAN IS BRINGING THE DROP' : ''), true);
+      (this.target.armoured ? ' · ARMOURED' : '') + vanLine, true);
   }
 
   // ------------------------------------------------------------ wanted ----
@@ -266,11 +272,19 @@ export class Mission {
   // into. Contact you did not start is not an offence - otherwise a cruiser
   // that rams you on purpose books you for it.
   onPlayerImpact(other, speed, player, pedsNear, atFault) {
-    if (other === this.target && this.state !== 'done') {
-      if (speed > 6) this.damageTarget(1, player);
+    if (other === this.target) {
+      // A live target takes the hit; a dead one is a wreck, and clipping
+      // the wreck you just earned must never read as ramming traffic -
+      // that was handing out stars for winning.
+      if (this.state !== 'done' && speed > 6) this.damageTarget(1, player);
     } else if (other === this.van) {
-      // Loaded and armoured: ramming it hurts you more than it.
+      // Loaded and armoured: ramming it hurts you more than it. And from
+      // level five it is the van doing the ramming - its mass lands on
+      // your hull, whoever started the contact.
       if (speed > 6) this.damageVan(0.6, player);
+      if (this.level >= 5 && speed > 8 && this.onVanRam) {
+        this.onVanRam(Math.min(16, speed * 1.1));
+      }
     } else if (this.police.includes(other)) {
       // Same bar as ramming a civilian: it has to be a hit, not a nudge.
       // Cruisers on surveillance crowd you on purpose, and brushing one at
@@ -443,15 +457,44 @@ export class Mission {
       const v = this.van;
       v.thinkT -= dt;
       let vInd;
-      // Drive to the rendezvous; arrived, pull up and wait for the coupe.
+      // The van grows teeth as the levels climb. The first crew (level 2)
+      // sits at the meet and takes what comes - the easy round. The next
+      // crews (3-4) are runners: spooked by the player closing in or by
+      // taking a hit, they bolt at speed and only settle when you back
+      // right off - the chase. From level 5 the crew defends itself: see
+      // the player near the meet and the van comes for YOU, and its mass
+      // hurts (onVanRam, in the impact handler).
+      const role = this.level <= 2 ? 'settled' : this.level <= 4 ? 'runner' : 'hunter';
+      const dpv = dist(v, player);
       const toMeet = Math.hypot(v.pos.x - this.meet.x, v.pos.z - this.meet.z);
-      const arrived = toMeet < 30;
-      if (v.thinkT <= 0) {
-        v.thinkT = 2.2;
-        vInd = arrived ? 'straight' : chooseTurn(v, this.meet.x, this.meet.z, false);
+      let goal = this.meet, fleeing2 = false, hunting = false;
+      if (role === 'runner') {
+        if (dpv < 45) v.spooked = true;
+        if (dpv > 170) v.spooked = false;
+        if (v.spooked) { goal = player.pos; fleeing2 = true; }
+      } else if (role === 'hunter' && dpv < 85 && !this.playerSafe) {
+        goal = player.pos; hunting = true;
+        // A hunter pointing the wrong way swings round on the spot rather
+        // than looping the block - the chase must come TO you.
+        v.swingT = (v.swingT || 0) - dt;
+        if (v.mode === 'edge' && v.swingT <= 0 && dpv > 14) {
+          const fx = Math.sin(v.pos.yaw), fz = Math.cos(v.pos.yaw);
+          const dx = player.pos.x - v.pos.x, dz = player.pos.z - v.pos.z;
+          if ((fx * dx + fz * dz) / Math.max(1, Math.hypot(dx, dz)) < -0.4) {
+            v.beginUTurn();
+            v.swingT = 5;
+          }
+        }
       }
+      const arrived = !fleeing2 && !hunting && toMeet < 30;
+      if (v.thinkT <= 0) {
+        v.thinkT = (fleeing2 || hunting) ? 0.6 : 2.2;
+        vInd = arrived ? 'straight' : chooseTurn(v, goal.x, goal.z, fleeing2);
+      }
+      const vCap = arrived ? 3
+        : CLASSES[v.e.cls].limit * (fleeing2 ? 1.35 : hunting ? 1.5 : 0.8);
       v.update(dt, { throttle: arrived ? -1 : 1, steer: 0, indicate: vInd,
-                     maxSpeed: arrived ? 3 : CLASSES[v.e.cls].limit * 0.8 });
+                     maxSpeed: vCap });
       if (v.blocked) v.beginUTurn();
       this.vanCar.root.position.set(v.pos.x, v.pos.y, v.pos.z);
       this.vanCar.root.rotation.y = v.pos.yaw;
@@ -525,6 +568,13 @@ export class Mission {
     // ---------------- loop ---------------------------------------------
     if (this.state === 'done') {
       this.doneT += dt;
+      // The wreck burns for a moment, then it is gone - a dead coupe
+      // sitting solid in the road for nine seconds was a wall you could
+      // be booked for driving into.
+      if (this.doneT > 2.5 && !this.targetGone) {
+        this.targetGone = true;
+        this.targetCar.root.setEnabled(false);
+      }
       if (this.doneT > 9) {
         this.level += 1;
         this.state = 'locate';
@@ -543,9 +593,9 @@ export class Mission {
   mapEntries() {
     const out = this.police.map(p => ({ pos: p.pos, mapColour: 'rgba(90, 160, 255, 0.95)' }));
     if (this.van) out.push({ pos: this.van.pos, mapColour: 'rgba(255, 190, 60, 0.98)', big: true });
-    if (this.state !== 'locate') {
+    if (this.state !== 'locate' && !this.targetGone) {
       out.push({ pos: this.target.pos, mapColour: 'rgba(255, 70, 70, 0.95)', big: true });
-    } else if (this.lastSeen) {
+    } else if (this.state === 'locate' && this.lastSeen) {
       out.push({ pos: this.lastSeen, mapColour: 'rgba(255, 130, 130, 0.6)', big: true });
     }
     return out;

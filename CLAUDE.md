@@ -126,7 +126,7 @@ Things that live here and are easy to hunt for:
 ### The rest
 | file | owns |
 |---|---|
-| `mission.mjs` | The director: target coupe, the armoured van and the exchange, police fleet, the wanted ladder (`OFFENCES` — each has a cap; only killing reaches 5; 1–2★ the police tail, 3★ they ram and can bust, 4★ they shoot), lie-low, respray, levels |
+| `mission.mjs` | The director: target coupe, the armoured van and the exchange (the van drives to a picked `meet`; its crew escalates by level — ≤2 settled, 3–4 runner, 5+ hunter that U-turns onto you and rams via `onVanRam`), police fleet, the wanted ladder (`OFFENCES` — each has a cap; only killing reaches 5; 1–2★ the police tail, 3★ they ram and can bust, 4★ they shoot), lie-low, respray, levels. Dead coupes burn off after 2.5 s (`targetGone`) and leave the collision world |
 | `lights.mjs` | Traffic signals. Three real lenses per head, `green → amber → red → red+amber → green`. Each head faces one approach |
 | `peds.mjs` | Pedestrians: walk, cross, get hit |
 | `pickups.mjs` | Six cassettes and the briefcase the coupe drops |

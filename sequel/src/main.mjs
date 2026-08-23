@@ -654,6 +654,11 @@ mission.onLevel = (level) => {
   bigWord('LEVEL ' + level, 'THE HUNT GOES ON');
 };
 // Kills explode. A van that silently winks out reads as a bug, not a win.
+// From level five the van's mass is a weapon: its rams land on the hull.
+mission.onVanRam = (hurt) => {
+  run.health -= hurt;
+  shake = Math.max(shake, 0.6);
+};
 mission.onBoom = (x, y, z, kind, clean) => {
   boom(x, y, z);
   if (kind === 'van') {
@@ -757,7 +762,7 @@ function firePlayerGun(dt) {
     if (ang < 0.14) { best = obj; bestD = d; bestKind = kind; }
   };
   const T = mission.target;
-  consider(T, T.pos.x, T.pos.z, 'target', T.pos.y);
+  if (mission.state !== 'done') consider(T, T.pos.x, T.pos.z, 'target', T.pos.y);
   if (mission.van) {
     const V = mission.van;
     consider(V, V.pos.x, V.pos.z, 'van', V.pos.y);
@@ -864,7 +869,10 @@ addEventListener('keydown', (e) => {
 let shake = 0;
 const hitCooldown = new Map();
 function updateCollisions(dt, clock) {
-  const everyone = [player, ...traffic, mission.target, ...mission.police];
+  // A vanished wreck is not a wall: once the dead coupe burns off, it
+  // leaves the physical world too.
+  const everyone = [player, ...traffic, ...mission.police];
+  if (!mission.targetGone) everyone.push(mission.target);
   if (mission.van) everyone.push(mission.van);
   for (let i = 0; i < everyone.length; i++) {
     for (let j = i + 1; j < everyone.length; j++) {
@@ -1526,7 +1534,9 @@ const RULES_TEXT =
   'GO THERE. FIND IT. RAM IT OR SHOOT IT UNTIL IT STOPS MOVING.\n\n' +
   'BE ADVISED: FROM YOUR SECOND CONTRACT, AN ARMOURED VAN BRINGS\n' +
   'THE TARGET ITS DROP. TAKE THE VAN BEFORE THE MEETING — LET\n' +
-  'THEM MEET, AND YOU WILL BE CHASING ARMOUR PLATE.\n\n' +
+  'THEM MEET, AND YOU WILL BE CHASING ARMOUR PLATE. THE CREWS\n' +
+  'LEARN, TOO: THE FIRST SIT AND WAIT. LATER ONES RUN WHEN THEY\n' +
+  'SEE YOU. THE LAST ONES COME FOR YOU.\n\n' +
   'A STOPPED COUPE GIVES UP ITS BRIEFCASE. RETRIEVE IT BEFORE\n' +
   'THE POLICE DO.\n\n' +
   'ON THE AUTHORITIES: THEY ACT ONLY ON WHAT THEY SEE. TRAFFIC\n' +
