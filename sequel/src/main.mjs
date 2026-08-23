@@ -730,7 +730,8 @@ const stats = { coupes: 0, vans: 0, cases: 0, tapes: 0, cleanBonuses: 0,
                 distance: 0, topSpeed: 0, maxWanted: 0, stunts: 0 };
 // Easter eggs: each fires once a run.
 const egg = { lotus: false, mph88: false, y1986: false,
-              kitt: false, outrun: false, h55: false };
+              kitt: false, outrun: false, h55: false,
+              vhs: false, goonies: false };
 let h55T = 0;
 const playerPrev = { e: null, dir: 0, s: 0 };
 let speedTattleT = 0;
@@ -753,6 +754,16 @@ pickups.onCase = () => {
   hud.say('BRIEFCASE RECOVERED · +250', true);
 };
 pickups.onCaseLost = () => hud.say('THE LAW GOT TO THE BRIEFCASE FIRST');
+pickups.onScram = () => {
+  mission.scramble();
+  sound.fanfare();
+  bigWord('SCRAMBLED', 'THE FLEET IS BLIND — RUN THEM DOWN');
+};
+pickups.onTreasure = () => {
+  run.score += 500;
+  sound.fanfare();
+  bigWord('THE RICH STUFF', 'HEY YOU GUYS · +500');
+};
 mission.onDrop = (x, y, z) => pickups.dropCase(x, y, z);
 // A fresh six every level, somewhere new - and a proper cheer, because a
 // line of HUD text is no way to be told you have won a level.
@@ -784,6 +795,7 @@ function hopTown() {
   const packed = btoa(JSON.stringify({
     score: Math.round(run.score), level: mission.level, health: run.health,
     fuel: tank.fuel, time: run.time, stats, resprayIdx,
+    upgrades, tankMax: tank.max,
   }));
   // Belt, braces, and the hash itself: storage can be blocked inside the
   // artifact sandbox, and a hop that loses the run dumps the player onto
@@ -797,7 +809,7 @@ function hopTown() {
 
 // From level five the van's mass is a weapon: its rams land on the hull.
 mission.onVanRam = (hurt) => {
-  run.health -= hurt;
+  run.health -= hurt * (upgrades.plate ? 0.75 : 1);
   shake = Math.max(shake, 0.6);
 };
 mission.onBoom = (x, y, z, kind, clean) => {
@@ -811,6 +823,8 @@ mission.onBoom = (x, y, z, kind, clean) => {
     bigWord('MARK LOST', 'THE RIVAL GOT THERE FIRST');
   } else if (kind === 'runner') {
     // The HUD line carries it; a runner is not a headline.
+  } else if (kind === 'cruiser') {
+    // The HUD line carries it; the boom is the point.
   } else if (kind === 'paymaster') {
     stats.campaignDone = true;
     sound.fanfare();
@@ -1289,11 +1303,11 @@ function updateGarage(dt, clock) {
   if (job.key === 'fuel') {
     // Petrol is priced by reputation: half a point a unit clean, half
     // again more per star. A hot car pays for the pump's discretion.
-    const add = Math.min(34 * dt, 100 - tank.fuel);
+    const add = Math.min(34 * dt, tank.max - tank.fuel);
     tank.fuel += add;
     run.score = Math.max(0, run.score -
       add * 0.5 * (1 + mission.wanted) * mission.diff.petrol);
-    done = tank.fuel > 99.5;
+    done = tank.fuel > tank.max - 0.5;
   } else if (job.key === 'paint') {
     garage.t += dt;
     if (garage.t > job.secs) {
@@ -1324,14 +1338,41 @@ function updateGarage(dt, clock) {
     garage.t = 0;
     if (garage.stage >= SERVICE.length) {
       sound.chime();
-      hud.say('ALL DONE — HOLD THE INDICATOR TO SWING HER ROUND', true);
+      hud.say('ALL DONE' + upgradeOffer() +
+        ' — OR HOLD THE INDICATOR TO SWING HER ROUND', true);
     }
   }
 }
 
 // The tank and the turbo: Turbo Esprit's two pressures. Fuel burns with
 // distance and speed; the turbo drains fast, recharges slow, and shoves.
-const tank = { fuel: 100, low: false };
+const tank = { fuel: 100, max: 100, low: false };
+// Upgrades: bought with SCORE at a serviced garage, which is the gamble -
+// spend the high score to chase a higher one.
+const upgrades = { tank: false, plate: false, turbo: false };
+const UPGRADE_PRICES = { tank: 800, plate: 1000, turbo: 1200 };
+function buyUpgrade(key) {
+  if (upgrades[key]) { hud.say('ALREADY FITTED'); return; }
+  const price = UPGRADE_PRICES[key];
+  if (run.score < price) {
+    hud.say(`${key.toUpperCase()} COSTS ${price} — YOU ARE ${Math.ceil(price - run.score)} SHORT`);
+    return;
+  }
+  run.score -= price;
+  upgrades[key] = true;
+  if (key === 'tank') { tank.max = 135; tank.fuel = tank.max; }
+  sound.chime();
+  hud.say((key === 'tank' ? 'LONG-RANGE TANK FITTED — 135 LITRES'
+        : key === 'plate' ? 'PLATING FITTED — HITS LAND SOFTER'
+        : 'TURBO REBUILT — SPOOLS QUICKER') + ` · -${price}`, true);
+}
+function upgradeOffer() {
+  const bits = [];
+  if (!upgrades.tank) bits.push('1 TANK 800');
+  if (!upgrades.plate) bits.push('2 PLATE 1000');
+  if (!upgrades.turbo) bits.push('3 TURBO 1200');
+  return bits.length ? ' · ' + bits.join(' · ') : '';
+}
 const turbo = { charge: 1, active: false };
 const holdT = { q: 0, e: 0 };
 const clean = { t: 0 };          // seconds of tidy driving toward the bonus
@@ -1411,7 +1452,8 @@ const tick = (dt) => {
   turbo.active = (keys.ShiftLeft || keys.ShiftRight) && throttle > 0 &&
                  turbo.charge > 0.03 && tank.fuel > 0;
   turbo.charge = Math.max(0, Math.min(1,
-    turbo.charge + (turbo.active ? -0.28 : (egg.lotus ? 0.105 : 0.07)) * dt));
+    turbo.charge + (turbo.active ? (upgrades.turbo ? -0.23 : -0.28)
+      : (egg.lotus ? 0.105 : 0.07) * (upgrades.turbo ? 1.45 : 1)) * dt));
   if (turbo.active && player.mode === 'edge') player.speed += 16 * dt;
 
   // Fuel: burns with speed, faster on turbo; empty means a crawl. The
@@ -1623,7 +1665,7 @@ const tick = (dt) => {
     showTracer(sh.from.x, sh.from.z, sh.to.x, sh.to.z, player.pos.y + 0.9);
     const dodge = Math.min(0.75, player.speed / 45);
     if (Math.random() > dodge) {
-      run.health -= sh.hurt;
+      run.health -= sh.hurt * (upgrades.plate ? 0.75 : 1);
       shake = Math.max(shake, 0.3);
     }
   }
@@ -1712,6 +1754,7 @@ const tick = (dt) => {
   }
   if (weather.flash > 0.01) weather.flash *= Math.exp(-dt * 5);
   pickups.update(dt, player);
+  if (live) pickups.updateScram(dt, player, mission.wanted);
   updateDistricts(player.pos.x, player.pos.z);
   coast.update(dt, player, clock, mission.wanted);
   // The siren carries by distance: nothing until a cruiser is within
@@ -1761,7 +1804,7 @@ const tick = (dt) => {
 
   hud.update(dt, player, [...traffic, ...mission.mapEntries(),
                           ...coast.mapEntries(), ...pickups.mapEntries()]);
-  fuelBar.style.width = tank.fuel.toFixed(0) + '%';
+  fuelBar.style.width = (tank.fuel / tank.max * 100).toFixed(0) + '%';
   fuelBar.style.background = tank.fuel < 25 ? '#ff5a4d' : '#ffd34d';
   turboBar.style.width = (turbo.charge * 100).toFixed(0) + '%';
   const bp = mission.bearingPoint();
@@ -2047,9 +2090,11 @@ document.getElementById('over').addEventListener('click', () => {
     run.score = hop.score || 0;
     run.health = hop.health ?? 100;
     run.time = hop.time || 0;
+    Object.assign(upgrades, hop.upgrades || {});
+    tank.max = hop.tankMax || (upgrades.tank ? 135 : 100);
     // You fuelled up on the way over. Arriving in a strange town with a
     // dry tank and no idea where the garages are is nobody's idea of fun.
-    tank.fuel = 100;
+    tank.fuel = tank.max;
     Object.assign(stats, hop.stats || {});
     resprayIdx = hop.resprayIdx || 0;
     const [, col] = RESPRAY[resprayIdx];
@@ -2083,7 +2128,7 @@ for (const ev of ['pointerdown', 'touchstart', 'keydown']) {
 function menuKey(code) {
   // Codewords typed anywhere on the front door. The decade obliges.
   if (/^Key[A-Z]$/.test(code)) {
-    menuTyped = (menuTyped + code[3]).slice(-6);
+    menuTyped = (menuTyped + code[3]).slice(-8);
     if (!egg.lotus && menuTyped.endsWith('TURBO')) {
       egg.lotus = true;
       playerCar.paint.albedoColor.set(0.92, 0.92, 0.95);
@@ -2103,6 +2148,18 @@ function menuKey(code) {
       setCoastSky();
       vibeStep = -1;
       bigWord('OUTRUN', 'MAGICAL SOUND SHOWER — SUNSET ON THE COAST');
+      return;
+    }
+    if (!egg.vhs && menuTyped.endsWith('VHS')) {
+      egg.vhs = true;
+      document.body.classList.add('vhs');
+      bigWord('VHS', 'BE KIND · REWIND');
+      return;
+    }
+    if (!egg.goonies && menuTyped.endsWith('GOONIES')) {
+      egg.goonies = true;
+      pickups.buryTreasure(player);
+      bigWord('NEVER SAY DIE', 'X MARKS THE RICH STUFF — CHECK THE MAP');
       return;
     }
   }
@@ -2192,6 +2249,12 @@ addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyC') cycleView(1);
   if (e.code === 'KeyH' && !e.repeat) hornBlast();
+  // Parked and serviced: the workshop sells go-faster parts for score.
+  if (garage.at && garage.stage >= SERVICE.length) {
+    if (e.code === 'Digit1') buyUpgrade('tank');
+    if (e.code === 'Digit2') buyUpgrade('plate');
+    if (e.code === 'Digit3') buyUpgrade('turbo');
+  }
   if (e.code === 'KeyG') {
     quality.manual = true;
     scaleStep = (scaleStep + 1) % 4;
@@ -2286,6 +2349,13 @@ scene.onAfterRenderObservable.add(() => {
   lastDraws = c - prevDrawCount; prevDrawCount = c;
 });
 setInterval(() => {
+  if (egg.vhs) {
+    const t = Math.floor(run.time);
+    const mm = String(Math.floor(t / 60)).padStart(2, '0');
+    const ss = String(t % 60).padStart(2, '0');
+    document.getElementById('vhstime').textContent =
+      `SP 0:${mm}:${ss} · MAY 08 1986`;
+  }
   const f = engine.getFps();
   fpsEl.textContent = f.toFixed(0) + ' FPS  ' + lastDraws + ' DRAW  ' +
     scene.getActiveMeshes().length + ' MESH  ' + QNAME[scaleStep] +

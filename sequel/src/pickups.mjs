@@ -51,7 +51,78 @@ export class Pickups {
     this.caseLive = false;
     this.caseT = 0;
 
+    // The scrambler: a white orb that appears when the heat is worst.
+    // Grab it and the fleet is blind and running - the arcade taught us
+    // what a power pellet is for.
+    const scramMat = new StandardMaterial('scramM', scene);
+    scramMat.emissiveColor = new Color3(1.6, 1.6, 1.9);
+    scramMat.disableLighting = true;
+    this.scramMat = scramMat;
+    this.scram = MeshBuilder.CreateSphere('case', { diameter: 1.5, segments: 10 }, scene);
+    this.scram.material = scramMat;
+    this.scram.setEnabled(false);
+    this.scramLive = false;
+    this.scramCool = 25;
+
+    // The rich stuff, for those who know the word.
+    const goldMat = new StandardMaterial('goldM', scene);
+    goldMat.emissiveColor = new Color3(1.8, 1.4, 0.3);
+    goldMat.disableLighting = true;
+    this.treasure = MeshBuilder.CreateBox('case',
+      { width: 1.2, height: 0.55, depth: 0.75 }, scene);
+    this.treasure.material = goldMat;
+    this.treasure.setEnabled(false);
+    this.treasureLive = false;
+
     this.scatter(1);
+  }
+
+  // Somewhere far from the player, on an ordinary road.
+  farSpot(player, minD) {
+    const roads = this.net.edges.filter(e =>
+      (e.cls === 'street' || e.cls === 'avenue') && e.len > 40);
+    for (let tries = 0; tries < 30; tries++) {
+      const e = roads[(Math.random() * roads.length) | 0];
+      const p = lanePos(e, 1, 0, e.len * (0.3 + Math.random() * 0.4));
+      if (Math.hypot(p.x - player.pos.x, p.z - player.pos.z) > minD) return p;
+    }
+    const e = roads[0];
+    return lanePos(e, 1, 0, e.len * 0.5);
+  }
+
+  updateScram(dt, player, wanted) {
+    if (this.scramLive) {
+      const g = 1.4 + Math.sin(this.t * 3.2) * 0.5;
+      this.scramMat.emissiveColor.set(g, g, g * 1.15);
+      this.scram.rotation.y = this.t;
+      if (this.near(this.scram, player)) {
+        this.scramLive = false;
+        this.scram.setEnabled(false);
+        this.scramCool = 75;
+        if (this.onScram) this.onScram();
+      } else if (wanted === 0) {
+        // Heat gone, offer gone.
+        this.scramLive = false;
+        this.scram.setEnabled(false);
+        this.scramCool = 25;
+      }
+    } else {
+      this.scramCool -= dt;
+      if (wanted >= 4 && this.scramCool <= 0) {
+        const p = this.farSpot(player, 180);
+        this.scram.position.set(p.x, p.y + 1.1, p.z);
+        this.scram.setEnabled(true);
+        this.scramLive = true;
+        if (this.hud) this.hud.say('A SCRAMBLER IS BROADCASTING — WHITE DOT ON THE MAP');
+      }
+    }
+  }
+
+  buryTreasure(player) {
+    const p = this.farSpot(player, 250);
+    this.treasure.position.set(p.x, p.y + 0.9, p.z);
+    this.treasure.setEnabled(true);
+    this.treasureLive = true;
   }
 
   // Somewhere on the ordinary streets, spread out, never on a bridge deck
@@ -103,6 +174,14 @@ export class Pickups {
         if (this.onCassette) this.onCassette(this.tapes.filter(x => x.live).length);
       }
     }
+    if (this.treasureLive) {
+      this.treasure.rotation.y = spin * 0.5;
+      if (this.near(this.treasure, player)) {
+        this.treasureLive = false;
+        this.treasure.setEnabled(false);
+        if (this.onTreasure) this.onTreasure();
+      }
+    }
     if (this.caseLive) {
       this.caseT -= dt;
       this.case.rotation.y = spin * 0.6;
@@ -134,6 +213,14 @@ export class Pickups {
     if (this.caseLive) {
       out.push({ pos: { x: this.case.position.x, z: this.case.position.z },
                  mapColour: 'rgba(255, 250, 200, 1)' });
+    }
+    if (this.scramLive) {
+      out.push({ pos: { x: this.scram.position.x, z: this.scram.position.z },
+                 mapColour: 'rgba(255, 255, 255, 0.98)', big: true });
+    }
+    if (this.treasureLive) {
+      out.push({ pos: { x: this.treasure.position.x, z: this.treasure.position.z },
+                 mapColour: 'rgba(255, 215, 80, 1)', big: true });
     }
     return out;
   }

@@ -102,6 +102,22 @@
   body.touchmode #speedbox { left: 20px; bottom: 164px; }
   /* !important: the gauges div positions itself inline. */
   body.touchmode #gauges { left: 20px !important; bottom: 214px !important; }
+  /* ---- VHS mode: for those who typed the word ---- */
+  #vhsfx, #vhstamp { display: none; }
+  body.vhs #c { filter: saturate(1.35) contrast(1.06); }
+  body.vhs #vhsfx { display: block; position: fixed; inset: 0; z-index: 6;
+    pointer-events: none;
+    background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0 1px,
+      transparent 1px 3px); }
+  body.vhs #vhsfx::after { content: ''; position: absolute; left: 0; right: 0;
+    height: 22px;
+    background: linear-gradient(rgba(255, 255, 255, 0.04),
+      rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.04));
+    animation: vtrack 7s linear infinite; }
+  @keyframes vtrack { 0% { top: 104%; } 100% { top: -8%; } }
+  body.vhs #vhstamp { display: block; position: fixed; left: 22px; top: 64px;
+    z-index: 6; color: #f2f2ee; font: 700 14px monospace; opacity: 0.8;
+    text-shadow: 1px 1px 0 #000; pointer-events: none; }
   /* ---- the turn cue: which ways peel off at the junction ahead ---- */
   #turncue { position: fixed; bottom: 118px; left: 50%;
     transform: translateX(-50%); display: flex; gap: 18px; z-index: 7;
@@ -235,6 +251,8 @@
   <div class="tbtn" id="tC" data-k="KeyC">CAM</div>
   <div class="tbtn" id="tH" data-k="KeyH">HRN</div>
 </div>
+<div id="vhsfx"></div>
+<div id="vhstamp">&#9654; PLAY<br><span id="vhstime"></span></div>
 <div id="bigword"><div id="bwmain"></div><div id="bwsub"></div></div>
 <div id="over" style="display:none;position:fixed;inset:0;background:rgba(3,0,12,0.88);z-index:10;align-items:center;justify-content:center">
   <pre id="ovtext" style="color:#8dffcf;font:700 16px monospace;text-align:center;text-shadow:0 0 12px rgba(90,255,190,0.5);letter-spacing:1px"></pre>

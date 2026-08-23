@@ -270,10 +270,32 @@ export class Mission {
     this.rivalCar.root.setEnabled(false);
   }
 
+  // The scrambler: fifteen seconds where the fleet is blind and running,
+  // a star sheds every five of them, and a solid hit knocks a cruiser
+  // clean off the board. The arcade taught us what a power pellet is for.
+  scramble() {
+    this.scrambleT = 15;
+    this.scrambleTick = 0;
+    this.hud.say('SCRAMBLED — THE FLEET IS BLIND · RUN THEM DOWN', true);
+  }
+
+  knockOut(p) {
+    const i = this.police.indexOf(p);
+    if (i < 0) return;
+    this.police.splice(i, 1);
+    p.car.root.setEnabled(false);
+    if (this.onScore) this.onScore(200);
+    this.hud.say('CRUISER RUN OFF THE ROAD · +200');
+    if (this.onBoom) this.onBoom(p.pos.x, p.pos.y, p.pos.z, 'cruiser');
+  }
+
   policeWanted() { return Math.min(1 + this.wanted, 5); }
 
   ensurePolice() {
-    const want = this.policeWanted();
+    let want = this.policeWanted();
+    // No reinforcements while the fleet is scrambled: knockouts stick
+    // until the scrambler dies.
+    if (this.scrambleT > 0) want = Math.min(want, this.police.length);
     const net = this.net;
     while (this.police.length < want) {
       const k = this.police.length;
@@ -380,6 +402,12 @@ export class Mission {
     } else if (this.runners.includes(other)) {
       if (speed > 6) this.damageRunner(other, 1);
     } else if (this.police.includes(other)) {
+      // Scrambled, the cruisers are prey: a solid hit knocks one out and
+      // nobody books anybody.
+      if (this.scrambleT > 0) {
+        if (speed > 8) this.knockOut(other);
+        return;
+      }
       // Same bar as ramming a civilian: it has to be a hit, not a nudge.
       // Cruisers on surveillance crowd you on purpose, and brushing one at
       // parking speed must not be the assault that starts the shooting.
@@ -476,6 +504,19 @@ export class Mission {
                         this.witnessCap);
         this.witness = 0;
         this.witnessCap = 0;
+      }
+    }
+    // The scrambler burns down, shedding a star every five seconds it runs.
+    if (this.scrambleT > 0) {
+      this.scrambleT -= dt;
+      this.scrambleTick += dt;
+      if (this.scrambleTick >= 5) {
+        this.scrambleTick -= 5;
+        if (this.wanted > 0) this.bumpWanted(-1, '');
+      }
+      if (this.scrambleT <= 0) {
+        this.hud.say('THE SCRAMBLER DIED — THEY CAN SEE YOU AGAIN');
+        this.ensurePolice();
       }
     }
     // Lying low: a long minute out of police sight sheds a star.
@@ -738,14 +779,34 @@ export class Mission {
     }                                  // end of the not-travelling block
 
     // ---------------- the fleet ----------------------------------------
+    const scrambled = this.scrambleT > 0;
     for (const p of this.police) {
       p.thinkT -= dt;
       let pInd;
       const dp = dist(p, player);
-      if (this.wanted > 0) {
+      if (scrambled) {
+        // Blind and running: every cruiser flees the player flat out.
+        if (p.thinkT <= 0) {
+          p.thinkT = 0.5;
+          pInd = chooseTurn(p, player.pos.x, player.pos.z, true);
+        }
+      } else if (this.wanted > 0) {
         if (p.thinkT <= 0) {
           p.thinkT = this.wanted >= 3 ? 0.3 : 0.9;
-          pInd = chooseTurn(p, player.pos.x, player.pos.z, false);
+          // Five stars, the fleet hunts like the arcade taught it: one on
+          // your bumper, one aiming ahead of you, one making for your next
+          // corner, one hanging back to cut off the retreat.
+          let gx = player.pos.x, gz = player.pos.z;
+          if (this.wanted >= 5) {
+            const role = this.police.indexOf(p) % 4;
+            const fx = Math.sin(player.pos.yaw), fz = Math.cos(player.pos.yaw);
+            if (role === 1) { gx += fx * 70; gz += fz * 70; }
+            else if (role === 2 && player.mode === 'edge') {
+              const n = nodeAhead(player.e, player.dir);
+              gx = n.x; gz = n.z;
+            } else if (role === 3) { gx -= fx * 60; gz -= fz * 60; }
+          }
+          pInd = chooseTurn(p, gx, gz, false);
         }
       } else if (p.thinkT <= 0) {
         p.thinkT = 4;
@@ -755,13 +816,15 @@ export class Mission {
       // shadow you at a civil pace and wait for you to stop somewhere
       // stupid. Only from three stars do they drive THROUGH you - which is
       // what the ladder has promised all along.
-      const aggr = this.wanted >= 3 ? 1.85 * this.diff.police
+      const aggr = scrambled ? 1.35
+        : this.wanted >= 3 ? 1.85 * this.diff.police
         : this.wanted > 0 ? 1.12 * this.diff.police : 0.9;
       p.update(dt, { throttle: 1, steer: 0, indicate: pInd,
                      maxSpeed: CLASSES[p.e.cls].limit * aggr });
       if (p.blocked) p.beginUTurn();
-      // Four stars: they shoot - but not at a car in a garage.
-      if (this.wanted >= 4 && !this.playerSafe) {
+      // Four stars: they shoot - but not at a car in a garage, and not
+      // while the scrambler has them blind.
+      if (this.wanted >= 4 && !this.playerSafe && !scrambled) {
         p.fireT -= dt;
         if (p.fireT <= 0 && dp < 30) {
           p.fireT = 1.1;
@@ -774,7 +837,8 @@ export class Mission {
       // obeying the law must never be what hands you to it. Traffic
       // offences cap at two stars, so a bust always traces back to
       // violence.
-      if (this.wanted >= 3 && dp < 7 && player.speed < 3 && !this.playerSafe) {
+      if (this.wanted >= 3 && dp < 7 && player.speed < 3 && !this.playerSafe &&
+          !scrambled) {
         p.bustT += dt;
         if (p.bustT > 2.5) this.busted = true;
       } else p.bustT = 0;

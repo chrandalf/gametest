@@ -123,9 +123,17 @@ live in main. Each `CITIES` entry carries `sky` (night palette) and
 sunward boulevard (`startEdge`) and `updateAttractCam` holds the poster
 shot. Everything the attract car does is gated off the law and the tank
 by `live`. Plus `boom`/`shards` (explosions), `bigWord` (level/kill word
-art), `stats` (the game-over ledger) and `egg` (TURBO/KITT/OUTRUN typed
-on the front door; 88 mph; eight seconds held at 55 mph; score 1986; a
-clean coupe kill quotes the A-Team). Touch devices get tap-to-navigate
+art), `stats` (the game-over ledger) and `egg` (TURBO/KITT/OUTRUN/VHS/
+GOONIES typed on the front door; 88 mph; eight seconds held at 55 mph;
+score 1986; a clean coupe kill quotes the A-Team). The toy layer also
+lives in main: `air` (jumps off speed bumps and works planks — vertical
+arcs over the road, never off it), `weather` (rain per town/contract:
+wet flag on drivers, streak planes on the camera, thunder), `hornBlast`
+(H), `upgrades`/`buyUpgrade` (tank/plate/turbo for score at a serviced
+garage, keys 1/2/3, carried through hops), and `carFeel` (roll/pitch
+body language). The scrambler (pickups, at 4★+) blinds the fleet for
+15 s — they flee, stars shed every 5 s, rams knock cruisers out at +200
+— and at 5★ the fleet hunts with Pac-Man roles (mission). Touch devices get tap-to-navigate
 menus and on-screen buttons (`#touch`) that dispatch real KeyboardEvents,
 shown via `body.touchmode`; music starts as early as autoplay policy
 allows (`tryMusic`, `sound.resume`).
