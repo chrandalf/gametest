@@ -709,13 +709,17 @@ mission.onTravel = (level) => {
   hud.say(`THE COUPE'S PAYMASTERS ARE IN ${next.name} — TAKE THE BRIDGE TO THE ISLAND`, true);
 };
 function hopTown() {
-  try {
-    sessionStorage.setItem('neoncity_hop', JSON.stringify({
-      score: Math.round(run.score), level: mission.level, health: run.health,
-      fuel: tank.fuel, time: run.time, stats, resprayIdx,
-    }));
-  } catch (e) { /* private window: the run restarts fresh over there */ }
-  location.hash = 'city' + ((cityIdx + 1) % CITIES.length);
+  const packed = btoa(JSON.stringify({
+    score: Math.round(run.score), level: mission.level, health: run.health,
+    fuel: tank.fuel, time: run.time, stats, resprayIdx,
+  }));
+  // Belt, braces, and the hash itself: storage can be blocked inside the
+  // artifact sandbox, and a hop that loses the run dumps the player onto
+  // the front door mid-campaign - which reads as "the game ended". The
+  // fragment survives a reload with no storage at all.
+  try { sessionStorage.setItem('neoncity_hop', packed); } catch (e) { /* blocked */ }
+  try { localStorage.setItem('neoncity_hop', packed); } catch (e) { /* blocked */ }
+  location.hash = 'city' + ((cityIdx + 1) % CITIES.length) + '.' + packed;
   location.reload();
 }
 
@@ -1439,10 +1443,11 @@ const tick = (dt) => {
   // gunfight in a paint shop is nobody's idea of a good time.
   mission.playerSafe = !!garage.at;
   mission.update(dt, player, clock);
-  // Travelling, and made landfall: any island road counts as arriving -
-  // the moment the wheels touch the far shore, the run moves town.
+  // Travelling, and made landfall: a street with BOTH ends on the island
+  // counts as arriving. (The descent ramp touches an island node, and
+  // firing there cut the crossing short mid-flight.)
   if (mission.state === 'travel' && player.mode === 'edge' &&
-      (player.e.a.isle || player.e.b.isle)) {
+      player.e.a.isle && player.e.b.isle) {
     hopTown();
     return;
   }
@@ -1804,12 +1809,32 @@ document.getElementById('over').addEventListener('click', () => {
 // A hop record means this boot is the far side of a bridge: skip the front
 // door, restore the run, and pick the trail up at the next contract.
 {
-  let hop = null;
+  let packed = null;
   try {
-    hop = JSON.parse(sessionStorage.getItem('neoncity_hop') || 'null');
+    packed = sessionStorage.getItem('neoncity_hop');
     sessionStorage.removeItem('neoncity_hop');
-  } catch (e) { /* nothing saved */ }
+  } catch (e) { /* blocked */ }
+  if (!packed) {
+    try { packed = localStorage.getItem('neoncity_hop'); } catch (e) { /* blocked */ }
+  }
+  try { localStorage.removeItem('neoncity_hop'); } catch (e) { /* blocked */ }
+  if (!packed) {
+    // Storage failed on the far side of the bridge: the hash carried it.
+    const mh = /city\d\.([A-Za-z0-9+/=]+)/.exec(location.hash || '');
+    if (mh) packed = mh[1];
+  }
+  let hop = null;
+  if (packed) {
+    try { hop = JSON.parse(atob(packed)); }
+    catch (e) {
+      try { hop = JSON.parse(packed); } catch (e2) { /* not a hop record */ }
+    }
+  }
   if (hop) {
+    // Strip the payload off the hash so a manual refresh replays cleanly.
+    try {
+      history.replaceState(null, '', location.pathname + location.search + '#city' + cityIdx);
+    } catch (e) { /* sandboxed history: the payload just stays */ }
     run.score = hop.score || 0;
     run.health = hop.health ?? 100;
     run.time = hop.time || 0;
