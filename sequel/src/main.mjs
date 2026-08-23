@@ -671,7 +671,9 @@ coast.onScore = (n) => { run.score += n; };
 pickups.onCassette = (left) => {
   run.score += 120;
   stats.tapes += 1;
-  sound.next();
+  // A chime, not a track change: skipping the song mid-flow every time
+  // you grabbed a tape ruined whatever was playing. X still skips by hand.
+  sound.chime();
   hud.say(left ? `CASSETTE FOUND · +120 · ${left} STILL OUT THERE`
                 : 'EVERY CASSETTE FOUND · +120 · SIDE B FOREVER', true);
 };
@@ -1838,7 +1840,9 @@ document.getElementById('over').addEventListener('click', () => {
     run.score = hop.score || 0;
     run.health = hop.health ?? 100;
     run.time = hop.time || 0;
-    tank.fuel = hop.fuel ?? 100;
+    // You fuelled up on the way over. Arriving in a strange town with a
+    // dry tank and no idea where the garages are is nobody's idea of fun.
+    tank.fuel = 100;
     Object.assign(stats, hop.stats || {});
     resprayIdx = hop.resprayIdx || 0;
     const [, col] = RESPRAY[resprayIdx];
@@ -1847,7 +1851,7 @@ document.getElementById('over').addEventListener('click', () => {
     mission.level = hop.level || 1;
     mission.spawnTarget();
     startGame();
-    bigWord(CITY.name, 'THE TRAIL PICKS UP HERE');
+    bigWord(CITY.name, 'FUELLED UP ON THE WAY · THE TRAIL PICKS UP HERE');
   }
 }
 // Music as early as the browser will let it happen: an autoplay attempt on
